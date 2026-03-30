@@ -31,31 +31,38 @@ func main() {
 	os.Exit(run())
 }
 
-func run() int {
-	var (
-		listenAddr  = flag.String("listen-address", ":9312", "Address to listen on for metrics")
-		metricsPath = flag.String("metrics-path", "/metrics", "Path under which to expose metrics")
-		apiKey      = flag.String("api-key", "", "Hyperping API key (env: HYPERPING_API_KEY)")
-		cacheTTL    = flag.Duration("cache-ttl", 60*time.Second, "How often to refresh data from the API")
-		logLevel      = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		logFormat     = flag.String("log-format", "text", "Log format (text, json)")
-		webConfigFile = flag.String("web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
-	)
+type config struct {
+	listenAddr    string
+	metricsPath   string
+	apiKey        string
+	cacheTTL      time.Duration
+	logLevel      string
+	logFormat     string
+	webConfigFile string
+}
+
+func parseConfig() (config, bool) {
+	var cfg config
+	flag.StringVar(&cfg.listenAddr, "listen-address", ":9312", "Address to listen on for metrics")
+	flag.StringVar(&cfg.metricsPath, "metrics-path", "/metrics", "Path under which to expose metrics")
+	flag.StringVar(&cfg.apiKey, "api-key", "", "Hyperping API key (env: HYPERPING_API_KEY)")
+	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 60*time.Second, "How often to refresh data from the API")
+	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	flag.StringVar(&cfg.logFormat, "log-format", "text", "Log format (text, json)")
+	flag.StringVar(&cfg.webConfigFile, "web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
 	flag.Parse()
 
-	if *apiKey == "" {
-		*apiKey = os.Getenv("HYPERPING_API_KEY")
+	if cfg.apiKey == "" {
+		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
-	if *apiKey == "" {
+	if cfg.apiKey == "" {
 		fmt.Fprintln(os.Stderr, "error: API key required (use --api-key or HYPERPING_API_KEY)")
-		return 1
+		return cfg, false
 	}
+	return cfg, true
+}
 
-	logger := setupLogger(*logLevel, *logFormat)
-
-	apiClient := client.NewClient(*apiKey, client.WithMaxRetries(2))
-
-	c := collector.NewCollector(apiClient, *cacheTTL, logger)
+func newRegistry(c *collector.Collector) *prometheus.Registry {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(c)
 	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -68,11 +75,12 @@ func run() int {
 	}, []string{"version", "revision", "goversion"})
 	buildInfo.WithLabelValues(version, revision, runtime.Version()).Set(1)
 	registry.MustRegister(buildInfo)
+	return registry
+}
 
+func newMux(metricsPath string, registry *prometheus.Registry, c *collector.Collector) (http.Handler, error) {
 	mux := http.NewServeMux()
-	mux.Handle(*metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{
-		EnableOpenMetrics: true,
-	}))
+	mux.Handle(metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
@@ -91,26 +99,44 @@ func run() int {
 		Description: "Prometheus exporter for Hyperping monitoring service.",
 		Version:     version,
 		Links: []web.LandingLinks{
-			{Address: *metricsPath, Text: "Metrics"},
+			{Address: metricsPath, Text: "Metrics"},
 			{Address: "/healthz", Text: "Health"},
 			{Address: "/readyz", Text: "Readiness"},
 		},
 	})
 	if err != nil {
+		return nil, err
+	}
+	mux.Handle("/", landingPage)
+	return mux, nil
+}
+
+func run() int {
+	cfg, ok := parseConfig()
+	if !ok {
+		return 1
+	}
+
+	logger := setupLogger(cfg.logLevel, cfg.logFormat)
+	apiClient := client.NewClient(cfg.apiKey, client.WithMaxRetries(2))
+	c := collector.NewCollector(apiClient, cfg.cacheTTL, logger)
+
+	registry := newRegistry(c)
+	mux, err := newMux(cfg.metricsPath, registry, c)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
 		return 1
 	}
-	mux.Handle("/", landingPage)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
 	go c.Start(ctx)
-
-	srv := &http.Server{
-		Addr:              *listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	noSocket := false
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	webFlags := &web.FlagConfig{
+		WebListenAddresses: &[]string{cfg.listenAddr},
+		WebSystemdSocket:   &noSocket,
+		WebConfigFile:      &cfg.webConfigFile,
 	}
 
 	go func() {
@@ -125,16 +151,10 @@ func run() int {
 
 	logger.Info("starting hyperping exporter",
 		"version", version,
-		"address", *listenAddr,
-		"metrics_path", *metricsPath,
-		"cache_ttl", *cacheTTL,
+		"address", cfg.listenAddr,
+		"metrics_path", cfg.metricsPath,
+		"cache_ttl", cfg.cacheTTL,
 	)
-
-	webFlags := &web.FlagConfig{
-		WebListenAddresses: &[]string{*listenAddr},
-		WebSystemdSocket:   func() *bool { b := false; return &b }(),
-		WebConfigFile:      webConfigFile,
-	}
 	if err := web.ListenAndServe(srv, webFlags, logger); err != nil && err != http.ErrServerClosed {
 		logger.Error("server error", "error", err)
 		return 1

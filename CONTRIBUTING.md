@@ -33,15 +33,6 @@ To run a single test:
 go test -run TestFunctionName ./internal/collector/
 ```
 
-### Real API Tests
-
-If you need to validate against the live Hyperping API:
-
-```bash
-export HYPERPING_API_KEY=your_key_here
-go test ./... -run TestRealAPI
-```
-
 ## Linting
 
 ```bash
