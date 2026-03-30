@@ -55,7 +55,9 @@ dockers:
   - image_templates:
       - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
     use: buildx
-
+    ids: [hyperping-exporter]
+    goos: linux
+    goarch: amd64
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
@@ -64,11 +66,12 @@ dockers:
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
-    goarch: amd64
   - image_templates:
       - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
     use: buildx
-
+    ids: [hyperping-exporter]
+    goos: linux
+    goarch: arm64
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
@@ -77,7 +80,6 @@ dockers:
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
-    goarch: arm64
 
 docker_manifests:
   - name_template: "ghcr.io/develeap/hyperping-exporter:{{ .Version }}"
