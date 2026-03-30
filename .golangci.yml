@@ -1,0 +1,14 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # errcheck in test files: cleanup defers and test-server writes
+      # are intentionally fire-and-forget.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Unused struct fields in test helpers are acceptable.
+      - path: _test\.go
+        linters:
+          - unused

@@ -63,20 +63,20 @@ func run() int {
 	}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if c.IsReady() {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "ready")
+			_, _ = fmt.Fprintln(w, "ready")
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintln(w, "not ready")
+			_, _ = fmt.Fprintln(w, "not ready")
 		}
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<html><head><title>Hyperping Exporter</title></head>
+		_, _ = fmt.Fprintf(w, `<html><head><title>Hyperping Exporter</title></head>
 <body><h1>Hyperping Exporter</h1><p><a href="%s">Metrics</a></p>
 <p>Version: %s</p></body></html>`, *metricsPath, version)
 	})
