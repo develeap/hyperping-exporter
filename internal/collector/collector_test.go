@@ -153,7 +153,8 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 	api.monitorsErr = errors.New("temporary failure")
 	c.Refresh(context.Background())
 
-	assert.False(t, c.IsReady())
+	// everSucceeded latches true after first success; transient failures must not reset it.
+	assert.True(t, c.IsReady())
 
 	// Old monitor data remains; lastSuccessTime was set on first scrape so data_age IS emitted.
 	// Per monitor: up + paused + check_interval + info + outage_active + status_code + tier = 7

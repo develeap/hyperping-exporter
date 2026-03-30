@@ -76,6 +76,11 @@ const maxOutagePaginationPages = 100
 //   - Direct array: [{...}, {...}]
 //   - Wrapped in "outages": {"outages": [{...}], "hasNextPage": bool}
 //   - Wrapped in "data": {"data": [{...}]}
+//
+// SCALABILITY NOTE: The Hyperping API does not support server-side filtering
+// of resolved outages. This loop fetches all outage pages and filters client-side.
+// With a large monitor fleet and long account history this can be slow.
+// Recommended: set --cache-ttl >= 120s to reduce API pressure.
 func (c *Client) ListOutages(ctx context.Context) ([]Outage, error) {
 	var allOutages []Outage
 

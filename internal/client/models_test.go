@@ -627,3 +627,76 @@ func TestCreateStatusPageService_Description_JSON(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Healthcheck GetTimezone — 0% coverage
+// =============================================================================
+
+// TestHealthcheck_GetTimezone covers both branches of the GetTimezone helper,
+// which abstracts over the API's inconsistent use of "timezone" vs "tz" fields.
+// Coverage target: models_healthcheck.go:42-47.
+func TestHealthcheck_GetTimezone(t *testing.T) {
+	t.Run("timezone field set", func(t *testing.T) {
+		h := Healthcheck{Timezone: "America/New_York", Tz: ""}
+		if got := h.GetTimezone(); got != "America/New_York" {
+			t.Errorf("GetTimezone() = %q, want %q", got, "America/New_York")
+		}
+	})
+
+	t.Run("tz field set (GET response)", func(t *testing.T) {
+		h := Healthcheck{Timezone: "", Tz: "Europe/London"}
+		if got := h.GetTimezone(); got != "Europe/London" {
+			t.Errorf("GetTimezone() = %q, want %q", got, "Europe/London")
+		}
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		h := Healthcheck{Timezone: "", Tz: ""}
+		if got := h.GetTimezone(); got != "" {
+			t.Errorf("GetTimezone() = %q, want empty string", got)
+		}
+	})
+
+	t.Run("timezone takes precedence over tz", func(t *testing.T) {
+		h := Healthcheck{Timezone: "US/Pacific", Tz: "Europe/Berlin"}
+		if got := h.GetTimezone(); got != "US/Pacific" {
+			t.Errorf("GetTimezone() = %q, want %q", got, "US/Pacific")
+		}
+	})
+}
+
+// =============================================================================
+// Monitor UnmarshalJSON error paths
+// =============================================================================
+
+// TestMonitor_UnmarshalJSON_InvalidTopLevel exercises the error returned when
+// the top-level JSON value is not an object (e.g. a JSON array) — which causes
+// the inner json.Unmarshal(data, &wire) call inside UnmarshalJSON to fail.
+// Coverage target: models_monitor.go:70-72.
+func TestMonitor_UnmarshalJSON_InvalidTopLevel(t *testing.T) {
+	// A JSON array triggers UnmarshalJSON but fails the inner struct unmarshal.
+	var m Monitor
+	err := json.Unmarshal([]byte(`[1, 2, 3]`), &m)
+	if err == nil {
+		t.Fatal("expected error for JSON array input, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot unmarshal array") {
+		t.Errorf("expected 'cannot unmarshal array' error, got %v", err)
+	}
+}
+
+// TestMonitor_UnmarshalJSON_UnknownEscalationPolicyType exercises the final
+// error return when escalation_policy cannot be parsed as a string or object.
+// Coverage target: models_monitor.go:103.
+func TestMonitor_UnmarshalJSON_UnknownEscalationPolicyType(t *testing.T) {
+	// An array is neither a string nor an object — triggers the final error.
+	data := `{"uuid":"mon_1","name":"test","url":"https://example.com","protocol":"HTTPS","http_method":"GET","check_frequency":60,"follow_redirects":true,"expected_status_code":"200","escalation_policy":[1,2,3]}`
+	var m Monitor
+	err := json.Unmarshal([]byte(data), &m)
+	if err == nil {
+		t.Fatal("expected error for array escalation_policy, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot unmarshal escalation_policy") {
+		t.Errorf("expected 'cannot unmarshal escalation_policy' error, got %v", err)
+	}
+}

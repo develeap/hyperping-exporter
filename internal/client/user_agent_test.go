@@ -47,7 +47,7 @@ func TestBuildUserAgent(t *testing.T) {
 			},
 		},
 		{
-			name:            "with TF_APPEND_USER_AGENT",
+			name:            "with HYPERPING_APPEND_USER_AGENT env var",
 			version:         "1.0.0",
 			appendUserAgent: "custom-module/2.0",
 			expectedPattern: "hyperping-exporter/1.0.0",
@@ -61,11 +61,11 @@ func TestBuildUserAgent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set TF_APPEND_USER_AGENT if provided
+			// Set HYPERPING_APPEND_USER_AGENT if provided
 			if tt.appendUserAgent != "" {
-				oldEnv := os.Getenv("TF_APPEND_USER_AGENT")
-				os.Setenv("TF_APPEND_USER_AGENT", tt.appendUserAgent)
-				defer os.Setenv("TF_APPEND_USER_AGENT", oldEnv)
+				oldEnv := os.Getenv("HYPERPING_APPEND_USER_AGENT")
+				os.Setenv("HYPERPING_APPEND_USER_AGENT", tt.appendUserAgent)
+				defer os.Setenv("HYPERPING_APPEND_USER_AGENT", oldEnv)
 			}
 
 			result := buildUserAgent(tt.version)
@@ -154,10 +154,10 @@ func TestClient_UserAgentWithAppend(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Set TF_APPEND_USER_AGENT
-	oldEnv := os.Getenv("TF_APPEND_USER_AGENT")
-	os.Setenv("TF_APPEND_USER_AGENT", "my-terraform-module/1.5.0")
-	defer os.Setenv("TF_APPEND_USER_AGENT", oldEnv)
+	// Set HYPERPING_APPEND_USER_AGENT
+	oldEnv := os.Getenv("HYPERPING_APPEND_USER_AGENT")
+	os.Setenv("HYPERPING_APPEND_USER_AGENT", "my-terraform-module/1.5.0")
+	defer os.Setenv("HYPERPING_APPEND_USER_AGENT", oldEnv)
 
 	c := NewClient("test_key",
 		WithBaseURL(server.URL),
@@ -251,18 +251,19 @@ func TestClient_UserAgentOnRetry(t *testing.T) {
 }
 
 func TestBuildUserAgent_EmptyAppendUserAgent(t *testing.T) {
-	// Ensure empty TF_APPEND_USER_AGENT doesn't add extra spaces
-	oldEnv := os.Getenv("TF_APPEND_USER_AGENT")
-	os.Setenv("TF_APPEND_USER_AGENT", "")
-	defer os.Setenv("TF_APPEND_USER_AGENT", oldEnv)
+	// Ensure empty HYPERPING_APPEND_USER_AGENT doesn't add extra spaces
+	oldEnv := os.Getenv("HYPERPING_APPEND_USER_AGENT")
+	os.Setenv("HYPERPING_APPEND_USER_AGENT", "")
+	defer os.Setenv("HYPERPING_APPEND_USER_AGENT", oldEnv)
 
 	result := buildUserAgent("1.0.0")
 
 	// Should not end with a space
 	if strings.HasSuffix(result, " ") {
-		t.Errorf("User-Agent should not end with space when TF_APPEND_USER_AGENT is empty, got %q", result)
+		t.Errorf("User-Agent should not end with space when HYPERPING_APPEND_USER_AGENT is empty, got %q", result)
 	}
 }
+
 
 func TestWithVersion_Option(t *testing.T) {
 	c := NewClient("test_key", WithVersion("5.4.3"))
@@ -290,8 +291,8 @@ func BenchmarkBuildUserAgent(b *testing.B) {
 }
 
 func BenchmarkBuildUserAgent_WithAppend(b *testing.B) {
-	os.Setenv("TF_APPEND_USER_AGENT", "custom-module/2.0")
-	defer os.Unsetenv("TF_APPEND_USER_AGENT")
+	os.Setenv("HYPERPING_APPEND_USER_AGENT", "custom-module/2.0")
+	defer os.Unsetenv("HYPERPING_APPEND_USER_AGENT")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

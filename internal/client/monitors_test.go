@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,71 @@ func TestClient_ListMonitors_Empty(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Errorf("expected 0 monitors, got %d", len(result))
+	}
+}
+
+// TestClient_ListMonitors_LargeList exercises the debug log branch that fires
+// when more than 200 monitors are returned.
+// Coverage target: monitors.go:31-36.
+func TestClient_ListMonitors_LargeList(t *testing.T) {
+	// Build a slice of 201 monitors to trigger the large-list warning.
+	monitors := make([]Monitor, 201)
+	for i := range monitors {
+		monitors[i] = Monitor{
+			UUID:     "mon_" + strconv.Itoa(i),
+			Name:     "Monitor " + strconv.Itoa(i),
+			URL:      "https://example.com",
+			Protocol: "http",
+		}
+	}
+
+	logger := &mockLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(monitors)
+	}))
+	defer server.Close()
+
+	c := NewClient("test_key", WithBaseURL(server.URL), WithMaxRetries(0), WithLogger(logger))
+
+	result, err := c.ListMonitors(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(result) != 201 {
+		t.Errorf("expected 201 monitors, got %d", len(result))
+	}
+
+	// Verify the large-list debug log was emitted.
+	foundLargeListLog := false
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "large monitor list returned") {
+			foundLargeListLog = true
+			break
+		}
+	}
+	if !foundLargeListLog {
+		t.Error("expected 'large monitor list returned' log message for >200 monitors")
+	}
+}
+
+// TestClient_ListMonitors_Error exercises the error path in ListMonitors.
+// Coverage target: monitors.go:18-20 (error from doRequest).
+func TestClient_ListMonitors_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	}))
+	defer server.Close()
+
+	c := NewClient("test_key", WithBaseURL(server.URL), WithMaxRetries(0))
+
+	_, err := c.ListMonitors(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to list monitors") {
+		t.Errorf("expected 'failed to list monitors' error, got %v", err)
 	}
 }
 

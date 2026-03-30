@@ -20,3 +20,6 @@ Thumbs.db
 
 # goreleaser snapshot
 /dist/
+
+# k8s Secret with real credentials (use secret.yaml.example as template)
+deploy/k8s/secret.yaml
