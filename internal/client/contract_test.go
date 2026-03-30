@@ -530,7 +530,7 @@ func TestContractStatusPage_MarshalCreateRequest(t *testing.T) {
 		Languages: []string{"en"},
 	}
 
-	data, err := json.Marshal(req)
+	data, err := json.Marshal(req) //nolint:gosec // G117: CreateStatusPageRequest.Password is an access-control field, not a stored credential
 	if err != nil {
 		t.Fatalf("failed to marshal status page create request: %v", err)
 	}
