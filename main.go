@@ -11,18 +11,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/exporter-toolkit/web"
 
 	"github.com/develeap/hyperping-exporter/internal/client"
 	"github.com/develeap/hyperping-exporter/internal/collector"
 )
 
 var version = "dev"
+var revision = "unknown"
 
 func main() {
 	os.Exit(run())
@@ -34,8 +37,9 @@ func run() int {
 		metricsPath = flag.String("metrics-path", "/metrics", "Path under which to expose metrics")
 		apiKey      = flag.String("api-key", "", "Hyperping API key (env: HYPERPING_API_KEY)")
 		cacheTTL    = flag.Duration("cache-ttl", 60*time.Second, "How often to refresh data from the API")
-		logLevel    = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		logFormat   = flag.String("log-format", "text", "Log format (text, json)")
+		logLevel      = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		logFormat     = flag.String("log-format", "text", "Log format (text, json)")
+		webConfigFile = flag.String("web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
 	)
 	flag.Parse()
 
@@ -57,6 +61,14 @@ func run() int {
 	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registry.MustRegister(collectors.NewGoCollector())
 
+	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "hyperping",
+		Name:      "build_info",
+		Help:      "A metric with constant value 1 labeled with build metadata.",
+	}, []string{"version", "revision", "goversion"})
+	buildInfo.WithLabelValues(version, revision, runtime.Version()).Set(1)
+	registry.MustRegister(buildInfo)
+
 	mux := http.NewServeMux()
 	mux.Handle(*metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
@@ -74,12 +86,21 @@ func run() int {
 			_, _ = fmt.Fprintln(w, "not ready")
 		}
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, `<html><head><title>Hyperping Exporter</title></head>
-<body><h1>Hyperping Exporter</h1><p><a href="%s">Metrics</a></p>
-<p>Version: %s</p></body></html>`, *metricsPath, version)
+	landingPage, err := web.NewLandingPage(web.LandingConfig{
+		Name:        "Hyperping Exporter",
+		Description: "Prometheus exporter for Hyperping monitoring service.",
+		Version:     version,
+		Links: []web.LandingLinks{
+			{Address: *metricsPath, Text: "Metrics"},
+			{Address: "/healthz", Text: "Health"},
+			{Address: "/readyz", Text: "Readiness"},
+		},
 	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
+		return 1
+	}
+	mux.Handle("/", landingPage)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -109,7 +130,12 @@ func run() int {
 		"cache_ttl", *cacheTTL,
 	)
 
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	webFlags := &web.FlagConfig{
+		WebListenAddresses: &[]string{*listenAddr},
+		WebSystemdSocket:   func() *bool { b := false; return &b }(),
+		WebConfigFile:      webConfigFile,
+	}
+	if err := web.ListenAndServe(srv, webFlags, logger); err != nil && err != http.ErrServerClosed {
 		logger.Error("server error", "error", err)
 		return 1
 	}

@@ -1,5 +1,11 @@
 # hyperping-exporter
 
+[![CI](https://github.com/develeap/hyperping-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/develeap/hyperping-exporter/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/develeap/hyperping-exporter)](https://github.com/develeap/hyperping-exporter/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/develeap/hyperping-exporter)](https://goreportcard.com/report/github.com/develeap/hyperping-exporter)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/ghcr.io-develeap%2Fhyperping--exporter-blue?logo=docker)](https://github.com/develeap/hyperping-exporter/pkgs/container/hyperping-exporter)
+
 A standalone [Prometheus](https://prometheus.io/) exporter for [Hyperping](https://hyperping.io/) monitoring. Exposes monitor status, healthchecks, SLA ratios, outage metrics, and tenant health scores as Prometheus gauges.
 
 Extracted from [develeap/terraform-provider-hyperping](https://github.com/develeap/terraform-provider-hyperping) to serve as a standalone, reusable exporter. The same battle-tested API client (with circuit breaker, retry, and rate-limit handling) is embedded here with zero runtime dependency on the provider.
@@ -35,6 +41,11 @@ Metrics are served at `http://localhost:9312/metrics`.
 
 ## Configuration
 
+### Getting Your API Key
+1. Log in to [Hyperping](https://hyperping.io) → **Account Settings** → **API**
+2. Click **Create API Key** — the key needs read access to monitors, healthchecks, outages, and reports
+3. Export it: `export HYPERPING_API_KEY=sk_your_key_here`
+
 All flags can also be set via environment variables.
 
 | Flag | Env var | Default | Description |
@@ -45,6 +56,25 @@ All flags can also be set via environment variables.
 | `--cache-ttl` | — | `60s` | How often to refresh data from the API |
 | `--log-level` | — | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `--log-format` | — | `text` | Log format: `text` or `json` |
+
+### Performance Tuning
+| Concern | Recommendation |
+|---------|---------------|
+| **Freshness vs API load** | Default 60s TTL makes 5 parallel API calls per refresh. Hyperping's rate limit is 60 req/min — stay above 30s TTL for comfortable headroom. |
+| **Cardinality** | Each monitor contributes ~9 time series. 100 monitors ≈ 900 series — negligible for any Prometheus setup. |
+| **Scrape interval** | Set Prometheus scrape interval ≥ cache-ttl. Scraping faster than the cache refreshes returns identical data. |
+
+### TLS and Basic Authentication
+Use `--web.config.file` to enable TLS or HTTP basic auth:
+```yaml
+# web-config.yml
+tls_server_config:
+  cert_file: server.crt
+  key_file:  server.key
+basic_auth_users:
+  prometheus: $2y$12$...  # bcrypt hash
+```
+See the [exporter-toolkit web configuration](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md) for the full schema.
 
 ---
 
@@ -94,6 +124,28 @@ All flags can also be set via environment variables.
 | `hyperping_scrape_duration_seconds` | Gauge | — | Duration of the last API scrape |
 | `hyperping_scrape_success` | Gauge | — | Whether the last API scrape succeeded (1) or failed (0) |
 | `hyperping_data_age_seconds` | Gauge | — | Seconds since the last successful cache refresh |
+| `hyperping_build_info` | Gauge | `version`, `revision`, `goversion` | Build metadata (always 1) |
+
+### Example PromQL Queries
+```promql
+# Monitors currently down (excluding paused)
+hyperping_monitor_up{} == 0 unless on(uuid) hyperping_monitor_paused == 1
+
+# Number of active outages across fleet
+sum(hyperping_monitor_outage_active)
+
+# Fleet 24-hour SLA
+hyperping_tenant_avg_sla_ratio{period="24h"}
+
+# Monitors below 99% SLA over 7 days
+hyperping_monitor_sla_ratio{period="7d"} < 0.99
+
+# SSL certificates expiring within 14 days
+hyperping_monitor_ssl_expiration_days < 14
+
+# Stale data watchdog (alert if data older than 2 minutes)
+hyperping_data_age_seconds > 120
+```
 
 ### Escalation tier join pattern (PromQL)
 
@@ -189,6 +241,19 @@ Pre-configured rules in `deploy/prometheus/alerts.yml`:
 This exporter uses the same Hyperping API client as [develeap/terraform-provider-hyperping](https://github.com/develeap/terraform-provider-hyperping), but the client code is fully vendored here — there is no runtime dependency on the provider. The exporter was originally developed inside PR #104 of the provider and extracted here to serve as an independent, reusable tool.
 
 If you use both projects, a cleanup PR to remove the basic exporter from the provider repo is tracked separately.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `error: API key required` at startup | `HYPERPING_API_KEY` not set | Export the env var or use `--api-key` |
+| `/readyz` returns 503 | No successful API scrape yet | Wait up to `--cache-ttl`; check logs for API errors |
+| `hyperping_scrape_success 0` | API unreachable or auth failure | Check API key, network connectivity, and logs |
+| `hyperping_data_age_seconds` rising | Circuit breaker open after repeated failures | Check Hyperping API status; wait 30s for circuit to recover |
+| SSL metrics missing for a monitor | Monitor is not HTTP or SSL is not configured | Only HTTP/HTTPS monitors with SSL configured expose SSL days |
+| Rate limit errors in logs | `--cache-ttl` too low | Increase cache-ttl to 60s or higher |
 
 ---
 

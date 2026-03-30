@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+.golangci.yml
+.goreleaser.yml
+deploy/
+*.md
+*.out
+*.html
+coverage.*
+hyperping-exporter
+/dist/
+internal/client/testdata/
