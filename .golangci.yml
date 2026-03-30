@@ -1,6 +1,10 @@
 version: "2"
 
 linters:
+  default: standard
+  enable:
+    - gosec
+
   exclusions:
     rules:
       # errcheck in test files: cleanup defers and test-server writes
@@ -12,3 +16,12 @@ linters:
       - path: _test\.go
         linters:
           - unused
+      # G104/G307: best-effort Close() calls in deferred cleanup are intentional.
+      - linters:
+          - gosec
+        text: "G(104|307)"
+      # G304: file path variables in tests are controlled (VCR cassette paths).
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G304"

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -600,4 +601,112 @@ func TestEscalationTier(t *testing.T) {
 	assert.Equal(t, "core", escalationTier(client.Monitor{EscalationPolicy: &policyUUID}))
 	assert.Equal(t, "noncore", escalationTier(client.Monitor{EscalationPolicy: nil}))
 	assert.Equal(t, "noncore", escalationTier(client.Monitor{EscalationPolicy: &emptyUUID}))
+}
+
+// refreshCountingAPI wraps mockAPI and counts each ListMonitors call.
+type refreshCountingAPI struct {
+	inner *mockAPI
+	count *atomic.Int32
+}
+
+func (a *refreshCountingAPI) ListMonitors(ctx context.Context) ([]client.Monitor, error) {
+	a.count.Add(1)
+	return a.inner.ListMonitors(ctx)
+}
+func (a *refreshCountingAPI) ListHealthchecks(ctx context.Context) ([]client.Healthcheck, error) {
+	return a.inner.ListHealthchecks(ctx)
+}
+func (a *refreshCountingAPI) ListOutages(ctx context.Context) ([]client.Outage, error) {
+	return a.inner.ListOutages(ctx)
+}
+func (a *refreshCountingAPI) ListMonitorReports(ctx context.Context, from, to string) ([]client.MonitorReport, error) {
+	return a.inner.ListMonitorReports(ctx, from, to)
+}
+
+func TestStart_BlocksUntilContextDone(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []client.Monitor{},
+		healthchecks: []client.Healthcheck{},
+	}
+	c := NewCollector(api, 10*time.Second, newTestLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.Start(ctx)
+		close(done)
+	}()
+
+	require.Eventually(t, c.IsReady, time.Second, 5*time.Millisecond, "initial refresh should mark ready")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after context cancellation")
+	}
+}
+
+func TestStart_PeriodicRefreshOnTick(t *testing.T) {
+	var calls atomic.Int32
+	api := &refreshCountingAPI{
+		inner: &mockAPI{
+			monitors:     []client.Monitor{},
+			healthchecks: []client.Healthcheck{},
+		},
+		count: &calls,
+	}
+
+	// 20ms TTL; run for 100ms → expect 1 immediate + ≥3 ticks
+	c := NewCollector(api, 20*time.Millisecond, newTestLogger())
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	c.Start(ctx) // blocks until timeout
+	assert.GreaterOrEqual(t, int(calls.Load()), 3, "expected at least 3 refreshes")
+}
+
+func TestRefresh_ReportErrorPreservesStaleData(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []client.Healthcheck{},
+		reports:      []client.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	firstCount := testutil.CollectAndCount(c) // includes health_score (30d reports loaded)
+
+	// Reports fail on second refresh; core data succeeds.
+	api.reportsErr = errors.New("reports unavailable")
+	api.reports = nil
+	c.Refresh(context.Background())
+
+	assert.True(t, c.IsReady(), "core success must keep ready state")
+	assert.Equal(t, firstCount, testutil.CollectAndCount(c), "stale reports should be retained — metric count must be unchanged")
+}
+
+func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
+		healthchecks: []client.Healthcheck{},
+		reportsErr:   errors.New("reports unavailable"),
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c.Refresh(context.Background())
+
+	assert.True(t, c.IsReady(), "report failure must not fail the scrape")
+}
+
+func TestAvgSLAForPeriod_Empty(t *testing.T) {
+	assert.Equal(t, 0.0, avgSLAForPeriod(nil))
+	assert.Equal(t, 0.0, avgSLAForPeriod([]client.MonitorReport{}))
+}
+
+func TestComputeHealthScore_CapAtMax(t *testing.T) {
+	// upRatio > 1.0 is not realistic but exercises the base > 100 cap.
+	score := computeHealthScore(2.0, 1.0, 0, 10)
+	assert.Equal(t, 100.0, score)
 }

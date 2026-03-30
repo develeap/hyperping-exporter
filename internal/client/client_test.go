@@ -6,12 +6,15 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sony/gobreaker"
 )
 
 func TestNewClient(t *testing.T) {
@@ -1626,4 +1629,75 @@ func TestMarshalBody(t *testing.T) {
 			t.Errorf("unexpected error message: %q", err.Error())
 		}
 	})
+}
+
+func TestIsCircuitBreakerOpen(t *testing.T) {
+	if !IsCircuitBreakerOpen(gobreaker.ErrOpenState) {
+		t.Error("expected true for gobreaker.ErrOpenState")
+	}
+	if IsCircuitBreakerOpen(errors.New("some other error")) {
+		t.Error("expected false for non-circuit-breaker error")
+	}
+	if IsCircuitBreakerOpen(nil) {
+		t.Error("expected false for nil")
+	}
+}
+
+func TestBuildUserAgent_TFAppendUserAgent(t *testing.T) {
+	t.Run("appends sanitized segment", func(t *testing.T) {
+		t.Setenv("TF_APPEND_USER_AGENT", "custom-tool/2.0")
+		ua := buildUserAgent("1.0.0")
+		if !strings.Contains(ua, "custom-tool/2.0") {
+			t.Errorf("expected UA to contain 'custom-tool/2.0', got %q", ua)
+		}
+	})
+
+	t.Run("strips control characters", func(t *testing.T) {
+		// \x01 (SOH) is a valid env-var byte on Linux but invalid in HTTP headers.
+		t.Setenv("TF_APPEND_USER_AGENT", "bad\x01agent")
+		ua := buildUserAgent("1.0.0")
+		if strings.Contains(ua, "\x01") {
+			t.Errorf("expected control char \\x01 stripped from UA, got %q", ua)
+		}
+	})
+
+	t.Run("truncates to max length", func(t *testing.T) {
+		t.Setenv("TF_APPEND_USER_AGENT", strings.Repeat("x", 300))
+		ua := buildUserAgent("1.0.0")
+		if len([]rune(ua)) > maxUserAgentLength {
+			t.Errorf("UA length %d exceeds max %d", len([]rune(ua)), maxUserAgentLength)
+		}
+	})
+}
+
+func TestCalculateBackoff_ZeroJitter(t *testing.T) {
+	// retryWaitMin=1ns → wait=1ns, half=0 → early return without jitter.
+	c := &Client{
+		retryWaitMin: 1 * time.Nanosecond,
+		retryWaitMax: 1 * time.Nanosecond,
+	}
+	wait := c.calculateBackoff(0, 0)
+	if wait != 1*time.Nanosecond {
+		t.Errorf("expected 1ns, got %v", wait)
+	}
+}
+
+// errCloseBody wraps a Reader with a Close that always errors.
+type errCloseBody struct {
+	io.Reader
+}
+
+func (e *errCloseBody) Close() error { return errors.New("simulated close error") }
+
+func TestReadResponseBody_CloseError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errCloseBody{Reader: strings.NewReader("ok")},
+	}
+	_, err := readResponseBody(resp)
+	if err == nil {
+		t.Fatal("expected error from body close failure")
+	}
+	if !strings.Contains(err.Error(), "failed to close response body") {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
