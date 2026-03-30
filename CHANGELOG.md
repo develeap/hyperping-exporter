@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- Client observability metrics: `hyperping_client_api_call_duration_ms`, `hyperping_client_retry_total`, `hyperping_client_circuit_breaker_state` expose API call latency, retry counts, and circuit breaker state
+- Client observability metrics: `hyperping_client_api_call_duration_seconds`, `hyperping_client_retry_total`, `hyperping_client_circuit_breaker_state` expose API call latency, retry counts, and circuit breaker state
 - `WithCircuitBreakerSettings(gobreaker.Settings)` and `WithNoCircuitBreaker()` client options
 - `deploy/k8s/secret.yaml.example` — Secret manifest template for Kubernetes deployments
 - PodDisruptionBudget template in Helm chart (`podDisruptionBudget.enabled`)

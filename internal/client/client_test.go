@@ -354,10 +354,10 @@ type mockMetrics struct {
 }
 
 type apiCallMetric struct {
-	method     string
-	path       string
-	statusCode int
-	durationMs int64
+	method      string
+	path        string
+	statusCode  int
+	durationSec float64
 }
 
 type retryMetric struct {
@@ -366,12 +366,12 @@ type retryMetric struct {
 	attempt int
 }
 
-func (m *mockMetrics) RecordAPICall(ctx context.Context, method, path string, statusCode int, durationMs int64) {
+func (m *mockMetrics) RecordAPICall(ctx context.Context, method, path string, statusCode int, durationSec float64) {
 	m.apiCalls = append(m.apiCalls, apiCallMetric{
-		method:     method,
-		path:       path,
-		statusCode: statusCode,
-		durationMs: durationMs,
+		method:      method,
+		path:        path,
+		statusCode:  statusCode,
+		durationSec: durationSec,
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -474,9 +475,15 @@ func buildActiveOutageIndex(outages []client.Outage) map[string]client.Outage {
 
 // sanitizeURL strips query parameters and fragments from a URL to prevent
 // label cardinality explosion from session tokens or trace IDs in query strings.
+// On parse failure it falls back to a simple string truncation at '?' or '#'
+// so that query params are never leaked even when the URL is malformed.
 func sanitizeURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
+		// Fallback: strip at the first query/fragment delimiter without url.Parse.
+		if i := strings.IndexAny(raw, "?#"); i != -1 {
+			return raw[:i]
+		}
 		return raw
 	}
 	u.RawQuery = ""

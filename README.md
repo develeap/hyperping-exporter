@@ -130,9 +130,9 @@ See the [exporter-toolkit web configuration](https://github.com/prometheus/expor
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `hyperping_client_api_call_duration_ms` | Histogram | `endpoint` | API call latency in milliseconds |
-| `hyperping_client_retry_total` | Counter | `endpoint` | Number of retried requests per endpoint |
-| `hyperping_client_circuit_breaker_state` | Gauge | `state` | Circuit breaker state: 0=closed, 1=half-open, 2=open |
+| `hyperping_client_api_call_duration_seconds` | Histogram | `method`, `path`, `status_code` | Duration of Hyperping API calls in seconds |
+| `hyperping_client_retry_total` | Counter | `method`, `path`, `attempt` | Total retried API requests per endpoint and attempt number |
+| `hyperping_client_circuit_breaker_state` | Gauge | `state` | Circuit breaker state: 1 for the active state (`closed`, `half-open`, or `open`) |
 
 ### Example PromQL Queries
 ```promql
@@ -188,10 +188,9 @@ Manifests are in `deploy/k8s/`:
 # Create namespace
 kubectl create namespace monitoring
 
-# Copy and fill in the secret template, then apply it
-cp deploy/k8s/secret.yaml.example deploy/k8s/secret.yaml
-# Edit deploy/k8s/secret.yaml and replace the placeholder with your base64-encoded key
-kubectl apply -f deploy/k8s/secret.yaml -n monitoring
+# Create the secret (preferred — avoids leaking the key in the object annotation)
+kubectl create secret generic hyperping-credentials \
+  --from-literal=api-key=YOUR_KEY -n monitoring
 
 # Deploy
 kubectl apply -f deploy/k8s/

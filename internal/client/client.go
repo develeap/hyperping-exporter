@@ -72,8 +72,8 @@ type Logger interface {
 // Metrics is an optional interface for collecting operational metrics.
 // This allows integration with Prometheus, CloudWatch, Datadog, etc.
 type Metrics interface {
-	// RecordAPICall records an API call with method, path, status code, and duration.
-	RecordAPICall(ctx context.Context, method, path string, statusCode int, durationMs int64)
+	// RecordAPICall records an API call with method, path, status code, and duration in seconds.
+	RecordAPICall(ctx context.Context, method, path string, statusCode int, durationSec float64)
 	// RecordRetry records a retry attempt.
 	RecordRetry(ctx context.Context, method, path string, attempt int)
 	// RecordCircuitBreakerState records circuit breaker state changes.
@@ -281,7 +281,8 @@ func WithNoCircuitBreaker() Option {
 // for environments with different failure characteristics.
 func WithCircuitBreakerSettings(settings gobreaker.Settings) Option {
 	return func(c *Client) {
-		c.circuitBreakerSettings = &settings
+		s := settings // copy by value to prevent post-construction mutation via caller's variable
+		c.circuitBreakerSettings = &s
 	}
 }
 
@@ -481,7 +482,7 @@ func (c *Client) processHTTPResponse(
 	})
 
 	if c.metrics != nil {
-		c.metrics.RecordAPICall(ctx, method, path, resp.StatusCode, duration.Milliseconds())
+		c.metrics.RecordAPICall(ctx, method, path, resp.StatusCode, duration.Seconds())
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

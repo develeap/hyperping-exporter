@@ -23,8 +23,8 @@ func NewClientMetrics(registry *prometheus.Registry) *prometheusClientMetrics {
 	m := &prometheusClientMetrics{
 		apiCallDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "hyperping_client",
-			Name:      "api_call_duration_milliseconds",
-			Help:      "Duration of Hyperping API calls in milliseconds.",
+			Name:      "api_call_duration_seconds",
+			Help:      "Duration of Hyperping API calls in seconds.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"method", "path", "status_code"}),
 
@@ -46,8 +46,8 @@ func NewClientMetrics(registry *prometheus.Registry) *prometheusClientMetrics {
 }
 
 // RecordAPICall implements client.Metrics.
-func (m *prometheusClientMetrics) RecordAPICall(_ context.Context, method, path string, statusCode int, durationMs int64) {
-	m.apiCallDuration.WithLabelValues(method, path, strconv.Itoa(statusCode)).Observe(float64(durationMs))
+func (m *prometheusClientMetrics) RecordAPICall(_ context.Context, method, path string, statusCode int, durationSec float64) {
+	m.apiCallDuration.WithLabelValues(method, path, strconv.Itoa(statusCode)).Observe(durationSec)
 }
 
 // RecordRetry implements client.Metrics.
