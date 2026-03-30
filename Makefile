@@ -17,7 +17,7 @@ test:
 lint:
 	golangci-lint run ./...
 
-docker-build:
+docker-build: build
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 docker-run:

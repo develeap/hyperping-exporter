@@ -8,6 +8,5 @@ deploy/
 *.out
 *.html
 coverage.*
-hyperping-exporter
 /dist/
 internal/client/testdata/
