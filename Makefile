@@ -25,8 +25,8 @@ docker-run:
 		-e HYPERPING_API_KEY="$$HYPERPING_API_KEY" \
 		$(IMAGE_NAME):$(IMAGE_TAG)
 
-compose-up:
-	$(COMPOSE) up -d
+compose-up: build
+	$(COMPOSE) up -d --build
 
 compose-down:
 	$(COMPOSE) down
