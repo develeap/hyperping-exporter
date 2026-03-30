@@ -1,0 +1,81 @@
+version: 2
+
+project_name: hyperping-exporter
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: hyperping-exporter
+    main: .
+    binary: hyperping-exporter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+dockers:
+  - image_templates:
+      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+    goarch: amd64
+  - image_templates:
+      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/develeap/hyperping-exporter:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
+      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/develeap/hyperping-exporter:latest"
+    image_templates:
+      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
+      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
