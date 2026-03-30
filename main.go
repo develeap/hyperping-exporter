@@ -62,9 +62,11 @@ func parseConfig() (config, bool) {
 	return cfg, true
 }
 
-func newRegistry(c *collector.Collector) *prometheus.Registry {
+// newBaseRegistry creates a Prometheus registry pre-loaded with the standard
+// process/Go/build-info collectors. The caller is responsible for registering
+// any additional collectors (e.g. the Hyperping collector, client metrics).
+func newBaseRegistry() *prometheus.Registry {
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(c)
 	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registry.MustRegister(collectors.NewGoCollector())
 
@@ -118,10 +120,11 @@ func run() int {
 	}
 
 	logger := setupLogger(cfg.logLevel, cfg.logFormat)
-	apiClient := client.NewClient(cfg.apiKey, client.WithMaxRetries(2))
+	registry := newBaseRegistry()
+	clientMetrics := collector.NewClientMetrics(registry)
+	apiClient := client.NewClient(cfg.apiKey, client.WithMaxRetries(2), client.WithMetrics(clientMetrics))
 	c := collector.NewCollector(apiClient, cfg.cacheTTL, logger)
-
-	registry := newRegistry(c)
+	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
@@ -132,7 +135,13 @@ func run() int {
 	defer stop()
 	go c.Start(ctx)
 	noSocket := false
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Addr:              cfg.listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
 	webFlags := &web.FlagConfig{
 		WebListenAddresses: &[]string{cfg.listenAddr},
 		WebSystemdSocket:   &noSocket,

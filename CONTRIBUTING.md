@@ -41,6 +41,14 @@ make lint
 
 The CI pipeline enforces a clean lint pass. Fix all reported issues before opening a PR.
 
+## Vulnerability Scanning
+
+```bash
+make govulncheck
+```
+
+**Vulnerability scan** — `govulncheck ./...` is run as a dedicated CI job (pinned to v1.1.4); you can run it locally with `make govulncheck`. Fix any reported vulnerabilities before opening a PR.
+
 ## VCR Cassettes
 
 Recorded HTTP interactions are stored in `internal/client/testdata/` as `.yaml` files. These cassettes allow the test suite to run offline and deterministically.
@@ -57,7 +65,7 @@ Commit the updated cassette files alongside your code change.
 - **Conventional commits** — use `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `chore:`
 - **Tests pass** — `make test` must succeed with no race conditions
 - **Lint clean** — `make lint` must produce no errors
-- **Coverage** — maintain 90%+ test coverage; the CI pipeline enforces this
+- **Coverage** — CI enforces a 90% minimum; the codebase is currently at ~98%, so aim to keep coverage high when adding new code
 - **One concern per PR** — keep PRs focused; split unrelated changes
 
 ## Branch Naming

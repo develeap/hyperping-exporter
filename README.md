@@ -22,7 +22,7 @@ docker run -p 9312:9312 \
   ghcr.io/develeap/hyperping-exporter:latest
 ```
 
-**Binary download** — grab the latest release from the [Releases](https://github.com/develeap/hyperping-exporter/releases) page, then:
+**Binary download** — grab the latest release from the [Releases](https://github.com/develeap/hyperping-exporter/releases) page. Each archive includes an SBOM (`*.sbom.json`) for supply-chain verification. Then:
 
 ```bash
 HYPERPING_API_KEY=your_key ./hyperping-exporter
@@ -126,6 +126,14 @@ See the [exporter-toolkit web configuration](https://github.com/prometheus/expor
 | `hyperping_data_age_seconds` | Gauge | — | Seconds since the last successful cache refresh |
 | `hyperping_build_info` | Gauge | `version`, `revision`, `goversion` | Build metadata (always 1) |
 
+### Client API metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `hyperping_client_api_call_duration_seconds` | Histogram | `method`, `path`, `status_code` | Duration of Hyperping API calls in seconds |
+| `hyperping_client_retry_total` | Counter | `method`, `path`, `attempt` | Total retried API requests per endpoint and attempt number |
+| `hyperping_client_circuit_breaker_state` | Gauge | `state` | Circuit breaker state: 1 for the active state (`closed`, `half-open`, or `open`) |
+
 ### Example PromQL Queries
 ```promql
 # Monitors currently down (excluding paused)
@@ -168,7 +176,7 @@ Three pre-built dashboards are included in `deploy/grafana/dashboards/`:
 
 **Import instructions:** In Grafana, go to **Dashboards → Import**, upload the JSON file, and select your Prometheus data source.
 
-When using the Docker Compose stack (`make compose-up`), dashboards are provisioned automatically and available at `http://localhost:3000` (admin / admin).
+When using the Docker Compose stack (`make compose-up`), dashboards are provisioned automatically and available at `http://localhost:3000` (admin / {GRAFANA_ADMIN_PASSWORD}).
 
 ---
 
@@ -177,8 +185,10 @@ When using the Docker Compose stack (`make compose-up`), dashboards are provisio
 Manifests are in `deploy/k8s/`:
 
 ```bash
-# Create namespace and secret
+# Create namespace
 kubectl create namespace monitoring
+
+# Create the secret (preferred — avoids leaking the key in the object annotation)
 kubectl create secret generic hyperping-credentials \
   --from-literal=api-key=YOUR_KEY -n monitoring
 
@@ -190,6 +200,35 @@ Files:
 - `deployment.yaml` — single-replica Deployment with liveness/readiness probes
 - `service.yaml` — ClusterIP Service on port 9312
 - `servicemonitor.yaml` — Prometheus Operator `ServiceMonitor` for automatic scrape discovery
+- `secret.yaml.example` — Secret manifest template (copy, fill in your key, do not commit)
+
+Security hardening applied to the Deployment: `automountServiceAccountToken: false` and `seccompProfile: RuntimeDefault` on the pod security context.
+
+---
+
+## Helm deployment
+
+A Helm chart is available in `deploy/helm/hyperping-exporter/`. Either `config.apiKey` or `config.existingSecret` must be set — the chart fails at render time if both are empty.
+
+```bash
+helm install hyperping-exporter ./deploy/helm/hyperping-exporter \
+  --set config.apiKey=your_key \
+  -n monitoring --create-namespace
+```
+
+Key configuration values:
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `config.apiKey` | `""` | Hyperping API key (required if `existingSecret` not set) |
+| `config.existingSecret` | `""` | Name of an existing Secret with key `api-key` |
+| `config.cacheTTL` | `60s` | How often to refresh data from the API |
+| `config.logLevel` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor |
+| `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget |
+| `podDisruptionBudget.minAvailable` | `1` | Minimum available pods during disruption |
+
+Includes a PodDisruptionBudget template (disabled by default; enable with `--set podDisruptionBudget.enabled=true`).
 
 ---
 
@@ -198,14 +237,16 @@ Files:
 Starts the exporter, Prometheus (with alert + recording rules), and Grafana:
 
 ```bash
-HYPERPING_API_KEY=your_key make compose-up
+HYPERPING_API_KEY=your_key GRAFANA_ADMIN_PASSWORD=your_password make compose-up
 ```
+
+`GRAFANA_ADMIN_PASSWORD` is required — the stack will fail loudly if it is not set. All services bind to `127.0.0.1` only for local dev safety.
 
 | Service | URL |
 |---------|-----|
 | Exporter metrics | http://localhost:9312/metrics |
 | Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (admin/admin) |
+| Grafana | http://localhost:3000 (admin / {GRAFANA_ADMIN_PASSWORD}) |
 
 ```bash
 make compose-down
@@ -249,7 +290,7 @@ If you use both projects, a cleanup PR to remove the basic exporter from the pro
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `error: API key required` at startup | `HYPERPING_API_KEY` not set | Export the env var or use `--api-key` |
-| `/readyz` returns 503 | No successful API scrape yet | Wait up to `--cache-ttl`; check logs for API errors |
+| `/readyz` returns 503 | No successful API scrape yet (only on first start; once the exporter has scraped successfully once, it stays ready through transient API failures) | Wait up to `--cache-ttl`; check logs for API errors |
 | `hyperping_scrape_success 0` | API unreachable or auth failure | Check API key, network connectivity, and logs |
 | `hyperping_data_age_seconds` rising | Circuit breaker open after repeated failures | Check Hyperping API status; wait 30s for circuit to recover |
 | SSL metrics missing for a monitor | Monitor is not HTTP or SSL is not configured | Only HTTP/HTTPS monitors with SSL configured expose SSL days |

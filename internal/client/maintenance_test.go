@@ -380,6 +380,37 @@ func TestClient_ListMaintenance_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestClient_ListMaintenance_MaintenanceKeyWrappedResponse exercises the
+// "maintenance" key branch in parseMaintenanceListResponse (distinct from
+// "maintenanceWindows" and "data").
+// Coverage target: maintenance.go:82-84.
+func TestClient_ListMaintenance_MaintenanceKeyWrappedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"maintenance": []Maintenance{
+				{UUID: "mw_test", Name: "Test Window", Title: LocalizedText{En: "Test"}},
+			},
+			"hasNextPage": false,
+			"total":       1,
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := NewClient("test_key", WithBaseURL(server.URL), WithMaxRetries(0))
+	maintenance, err := client.ListMaintenance(context.Background())
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maintenance) != 1 {
+		t.Errorf("expected 1 maintenance window, got %d", len(maintenance))
+	}
+	if maintenance[0].UUID != "mw_test" {
+		t.Errorf("expected UUID 'mw_test', got %s", maintenance[0].UUID)
+	}
+}
+
 func TestClient_ListMaintenance_EmptyWrappedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{

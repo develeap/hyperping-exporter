@@ -981,3 +981,273 @@ func TestStatusPages_RateLimit(t *testing.T) {
 		t.Error("expected error for rate limit")
 	}
 }
+
+// =============================================================================
+// CreateStatusPage error path
+// =============================================================================
+
+// TestCreateStatusPage_RequestError exercises the doRequest error path in
+// CreateStatusPage when the server returns a non-2xx response.
+// Coverage target: statuspages.go:72-74.
+func TestCreateStatusPage_RequestError(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	})
+	defer server.Close()
+
+	req := CreateStatusPageRequest{
+		Name:      "Error Test Page",
+		Languages: []string{"en"},
+	}
+
+	_, err := client.CreateStatusPage(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for server error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to create status page") {
+		t.Errorf("expected 'failed to create status page' error, got %v", err)
+	}
+}
+
+// =============================================================================
+// DeleteStatusPage error path
+// =============================================================================
+
+// TestDeleteStatusPage_RequestError exercises the doRequest error path in
+// DeleteStatusPage when the server returns a non-2xx response.
+// Coverage target: statuspages.go:108-110.
+func TestDeleteStatusPage_RequestError(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	})
+	defer server.Close()
+
+	err := client.DeleteStatusPage(context.Background(), "sp_abc123")
+	if err == nil {
+		t.Fatal("expected error for server error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to delete status page") {
+		t.Errorf("expected 'failed to delete status page' error, got %v", err)
+	}
+}
+
+// =============================================================================
+// AddSubscriber error path
+// =============================================================================
+
+// TestAddSubscriber_RequestError exercises the doRequest error path in
+// AddSubscriber when the server returns a non-2xx response.
+// Coverage target: statuspages.go:161-163.
+func TestAddSubscriber_RequestError(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	})
+	defer server.Close()
+
+	req := AddSubscriberRequest{
+		Type:  "email",
+		Email: stringPtr("user@example.com"),
+	}
+
+	_, err := client.AddSubscriber(context.Background(), "sp_abc123", req)
+	if err == nil {
+		t.Fatal("expected error for server error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to add subscriber") {
+		t.Errorf("expected 'failed to add subscriber' error, got %v", err)
+	}
+}
+
+// =============================================================================
+// GetSubscriber — 0% coverage
+// =============================================================================
+
+// TestGetSubscriber_Found exercises the happy path: subscriber found on the
+// first page of results.
+// Coverage target: statuspages.go:182-207.
+func TestGetSubscriber_Found(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+
+		response := SubscriberPaginatedResponse{
+			Subscribers: []StatusPageSubscriber{
+				{
+					ID:        1,
+					Type:      "email",
+					Value:     "user@example.com",
+					Email:     stringPtr("user@example.com"),
+					CreatedAt: "2026-01-31T10:00:00Z",
+				},
+				{
+					ID:        2,
+					Type:      "sms",
+					Value:     "+1234567890",
+					Phone:     stringPtr("+1234567890"),
+					CreatedAt: "2026-01-31T11:00:00Z",
+				},
+			},
+			HasNextPage:    false,
+			Total:          2,
+			Page:           0,
+			ResultsPerPage: 20,
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	})
+	defer server.Close()
+
+	subscriber, err := client.GetSubscriber(context.Background(), "sp_abc123", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if subscriber.ID != 2 {
+		t.Errorf("expected subscriber ID=2, got %d", subscriber.ID)
+	}
+	if subscriber.Type != "sms" {
+		t.Errorf("expected type 'sms', got %q", subscriber.Type)
+	}
+}
+
+// TestGetSubscriber_FoundOnSecondPage exercises the pagination loop: subscriber
+// not on the first page but found on the second.
+// Coverage target: statuspages.go:190-205 (pagination loop body).
+func TestGetSubscriber_FoundOnSecondPage(t *testing.T) {
+	callCount := 0
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+
+		var response SubscriberPaginatedResponse
+		if callCount == 1 {
+			// First page: different subscriber, has next page.
+			response = SubscriberPaginatedResponse{
+				Subscribers: []StatusPageSubscriber{
+					{ID: 1, Type: "email", Value: "other@example.com"},
+				},
+				HasNextPage:    true,
+				Total:          2,
+				Page:           0,
+				ResultsPerPage: 1,
+			}
+		} else {
+			// Second page: target subscriber, no next page.
+			response = SubscriberPaginatedResponse{
+				Subscribers: []StatusPageSubscriber{
+					{ID: 42, Type: "email", Value: "target@example.com",
+						Email: stringPtr("target@example.com")},
+				},
+				HasNextPage:    false,
+				Total:          2,
+				Page:           1,
+				ResultsPerPage: 1,
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	})
+	defer server.Close()
+
+	subscriber, err := client.GetSubscriber(context.Background(), "sp_abc123", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if subscriber.ID != 42 {
+		t.Errorf("expected subscriber ID=42, got %d", subscriber.ID)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 page requests, got %d", callCount)
+	}
+}
+
+// TestGetSubscriber_NotFound exercises the not-found path where no more pages
+// exist but the subscriber was never found.
+// Coverage target: statuspages.go:202-207.
+func TestGetSubscriber_NotFound(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		response := SubscriberPaginatedResponse{
+			Subscribers: []StatusPageSubscriber{
+				{ID: 1, Type: "email", Value: "other@example.com"},
+			},
+			HasNextPage:    false,
+			Total:          1,
+			Page:           0,
+			ResultsPerPage: 20,
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	})
+	defer server.Close()
+
+	_, err := client.GetSubscriber(context.Background(), "sp_abc123", 999)
+	if err == nil {
+		t.Fatal("expected error for non-existent subscriber, got nil")
+	}
+	if !IsNotFound(err) {
+		t.Errorf("expected not-found error, got %v", err)
+	}
+}
+
+// TestGetSubscriber_InvalidStatuspageID exercises the ValidateResourceID check.
+// Coverage target: statuspages.go:183-185.
+func TestGetSubscriber_InvalidStatuspageID(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make request with invalid status page ID")
+	})
+	defer server.Close()
+
+	_, err := client.GetSubscriber(context.Background(), "", 1)
+	if err == nil {
+		t.Fatal("expected error for empty status page ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "GetSubscriber") {
+		t.Errorf("expected error to mention GetSubscriber, got %v", err)
+	}
+}
+
+// TestGetSubscriber_InvalidSubscriberID exercises the subscriber ID <= 0 check.
+// Coverage target: statuspages.go:186-188.
+func TestGetSubscriber_InvalidSubscriberID(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make request with non-positive subscriber ID")
+	})
+	defer server.Close()
+
+	_, err := client.GetSubscriber(context.Background(), "sp_abc123", 0)
+	if err == nil {
+		t.Fatal("expected error for subscriber ID=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "subscriber ID must be positive") {
+		t.Errorf("expected 'subscriber ID must be positive' error, got %v", err)
+	}
+
+	_, err = client.GetSubscriber(context.Background(), "sp_abc123", -5)
+	if err == nil {
+		t.Fatal("expected error for negative subscriber ID, got nil")
+	}
+}
+
+// TestGetSubscriber_ListSubscribersError exercises the error path when
+// ListSubscribers returns an error during pagination.
+// Coverage target: statuspages.go:192-194.
+func TestGetSubscriber_ListSubscribersError(t *testing.T) {
+	server, client := setupStatusPageTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	})
+	defer server.Close()
+
+	_, err := client.GetSubscriber(context.Background(), "sp_abc123", 1)
+	if err == nil {
+		t.Fatal("expected error from ListSubscribers failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to get subscriber") {
+		t.Errorf("expected 'failed to get subscriber' error, got %v", err)
+	}
+}

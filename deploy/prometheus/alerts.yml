@@ -36,17 +36,18 @@ groups:
             This may indicate a shared infrastructure issue. Check OPS-38 dashboard.
 
       - alert: HyperpingCoreMonitorDown
-        # Requires OPS-39 tier label via metric join
+        # Requires OPS-39 tier label via metric join.
+        # hyperping_monitor_escalation_tier has labels {uuid, name, tier}
+        # where tier="core" when the monitor's escalation policy is set.
         expr: |
-          hyperping_monitor_up * on(uuid, name) group_left(tier)
-            hyperping_monitor_escalation_tier{tier="core"} == 0
+          (hyperping_monitor_up == 0) * on(uuid) group_left(tier)
+            (hyperping_monitor_escalation_tier{tier="core"})
         for: 1m
         labels:
           severity: critical
-          tier: core
         annotations:
           summary: "CORE monitor {{ $labels.name }} is DOWN"
-          description: "Core (escalated) monitor {{ $labels.name }} is down. Escalation policy should trigger."
+          description: "Core (escalated) monitor {{ $labels.name }} ({{ $labels.uuid }}) is down. Escalation policy should trigger."
 
   - name: hyperping_monitor_ssl
     interval: 1h
@@ -163,7 +164,7 @@ groups:
             Metrics are stale. Check API key validity and network connectivity.
 
       - alert: HyperpingDataStale
-        # OPS-35 watchdog: alert when data hasn't refreshed in 2× the cache TTL (default 120s)
+        # 2× default cache-ttl (60s). Adjust if cache-ttl is changed.
         expr: hyperping_data_age_seconds > 120
         for: 2m
         labels:

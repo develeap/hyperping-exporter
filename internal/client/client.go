@@ -15,6 +15,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"runtime"
@@ -71,8 +72,8 @@ type Logger interface {
 // Metrics is an optional interface for collecting operational metrics.
 // This allows integration with Prometheus, CloudWatch, Datadog, etc.
 type Metrics interface {
-	// RecordAPICall records an API call with method, path, status code, and duration.
-	RecordAPICall(ctx context.Context, method, path string, statusCode int, durationMs int64)
+	// RecordAPICall records an API call with method, path, status code, and duration in seconds.
+	RecordAPICall(ctx context.Context, method, path string, statusCode int, durationSec float64)
 	// RecordRetry records a retry attempt.
 	RecordRetry(ctx context.Context, method, path string, attempt int)
 	// RecordCircuitBreakerState records circuit breaker state changes.
@@ -81,16 +82,19 @@ type Metrics interface {
 
 // Client is the Hyperping API client.
 type Client struct {
-	baseURL        string
-	httpClient     *http.Client
-	maxRetries     int
-	retryWaitMin   time.Duration
-	retryWaitMax   time.Duration
-	logger         Logger
-	metrics        Metrics
-	version        string
-	userAgent      string
-	circuitBreaker *gobreaker.CircuitBreaker
+	baseURL                string
+	setupErr               error
+	httpClient             *http.Client
+	maxRetries             int
+	retryWaitMin           time.Duration
+	retryWaitMax           time.Duration
+	logger                 Logger
+	metrics                Metrics
+	version                string
+	userAgent              string
+	circuitBreaker         *gobreaker.CircuitBreaker
+	circuitBreakerSettings *gobreaker.Settings
+	disableCircuitBreaker  bool
 }
 
 // Option is a functional option for configuring the Client.
@@ -129,8 +133,26 @@ func NewClient(apiKey string, opts ...Option) *Client {
 	}
 	c.httpClient.Transport = buildTransportChain([]byte(apiKey), baseTransport, c.baseURL)
 
-	// Initialize circuit breaker to prevent cascading failures
-	c.circuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+	// Initialize circuit breaker to prevent cascading failures unless disabled.
+	if !c.disableCircuitBreaker {
+		c.circuitBreaker = newCircuitBreaker(c)
+	}
+
+	// Build User-Agent after all options are applied
+	c.userAgent = buildUserAgent(c.version)
+
+	return c
+}
+
+// newCircuitBreaker creates and configures the gobreaker.CircuitBreaker for c.
+// Extracted from NewClient to keep that function under 50 lines.
+// If c.circuitBreakerSettings is non-nil (set via WithCircuitBreakerSettings),
+// those settings are used directly; otherwise the default settings apply.
+func newCircuitBreaker(c *Client) *gobreaker.CircuitBreaker {
+	if c.circuitBreakerSettings != nil {
+		return gobreaker.NewCircuitBreaker(*c.circuitBreakerSettings)
+	}
+	return gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        "hyperping-api",
 		MaxRequests: 3,                // Max concurrent requests in half-open state
 		Interval:    60 * time.Second, // Rolling window for failure counting
@@ -169,18 +191,37 @@ func NewClient(apiKey string, opts ...Option) *Client {
 			}
 		},
 	})
-
-	// Build User-Agent after all options are applied
-	c.userAgent = buildUserAgent(c.version)
-
-	return c
 }
 
 // WithBaseURL sets a custom base URL for the client.
+// The URL must use HTTPS or target localhost / 127.0.0.1; any other value
+// results in a deferred error returned on the first API call.
 func WithBaseURL(baseURL string) Option {
 	return func(c *Client) {
+		if err := validateBaseURL(baseURL); err != nil {
+			c.setupErr = fmt.Errorf("WithBaseURL: %w", err)
+			return
+		}
 		c.baseURL = baseURL
 	}
+}
+
+// validateBaseURL rejects URLs that are neither HTTPS nor localhost-only to
+// prevent SSRF attacks where user-supplied input redirects API calls to
+// internal services.
+func validateBaseURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid base URL %q: %w", rawURL, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return nil
+	}
+	return fmt.Errorf("base URL %q must use HTTPS or target localhost/127.0.0.1", rawURL)
 }
 
 // WithHTTPClient sets a custom HTTP client.
@@ -226,6 +267,25 @@ func WithVersion(version string) Option {
 	}
 }
 
+// WithNoCircuitBreaker disables the circuit breaker for this client.
+// Intended for use in tests to avoid the gobreaker state machine interfering
+// with request-level assertions.
+func WithNoCircuitBreaker() Option {
+	return func(c *Client) {
+		c.disableCircuitBreaker = true
+	}
+}
+
+// WithCircuitBreakerSettings replaces the default circuit breaker configuration.
+// Use this to tune thresholds (MaxRequests, Interval, Timeout, ReadyToTrip, etc.)
+// for environments with different failure characteristics.
+func WithCircuitBreakerSettings(settings gobreaker.Settings) Option {
+	return func(c *Client) {
+		s := settings // copy by value to prevent post-construction mutation via caller's variable
+		c.circuitBreakerSettings = &s
+	}
+}
+
 // resourceIDPattern validates Hyperping resource IDs.
 // Allowed formats: type_alphanumeric (e.g., mon_abc123, out_xyz789, inc_001)
 // Also allows plain alphanumeric IDs without prefix for forward compatibility.
@@ -264,10 +324,10 @@ func ValidateResourceID(id string) error {
 }
 
 // buildUserAgent constructs the User-Agent string for API requests.
-// Format: hyperping-exporter/VERSION (go/VERSION; OS/ARCH) [TF_APPEND_USER_AGENT]
+// Format: hyperping-exporter/VERSION (go/VERSION; OS/ARCH) [HYPERPING_APPEND_USER_AGENT]
 //
 // Example: hyperping-exporter/1.0.0 (go1.26.1; linux/amd64)
-// With TF_APPEND_USER_AGENT: hyperping-exporter/1.0.0 (go1.26.1; linux/amd64) custom-module/2.0
+// With HYPERPING_APPEND_USER_AGENT: hyperping-exporter/1.0.0 (go1.26.1; linux/amd64) custom-module/2.0
 func buildUserAgent(version string) string {
 	// Base User-Agent: hyperping-exporter/VERSION (go/VERSION; OS/ARCH)
 	userAgent := fmt.Sprintf("hyperping-exporter/%s (%s; %s/%s)",
@@ -277,10 +337,10 @@ func buildUserAgent(version string) string {
 		runtime.GOARCH,
 	)
 
-	// Support TF_APPEND_USER_AGENT environment variable (VULN-010).
+	// Support HYPERPING_APPEND_USER_AGENT environment variable (VULN-010).
 	// Sanitize to prevent HTTP header injection via CR/LF characters
 	// and control character smuggling.
-	if appendUA := os.Getenv("TF_APPEND_USER_AGENT"); appendUA != "" {
+	if appendUA := os.Getenv("HYPERPING_APPEND_USER_AGENT"); appendUA != "" {
 		sanitized := sanitizeUserAgent(appendUA)
 		if sanitized != "" {
 			userAgent = fmt.Sprintf("%s %s", userAgent, sanitized)
@@ -318,8 +378,12 @@ func (c *Client) logDebug(ctx context.Context, msg string, fields map[string]int
 
 // doRequest performs an HTTP request with retry logic wrapped in a circuit breaker.
 func (c *Client) doRequest(ctx context.Context, method, path string, body, result interface{}) error {
-	// Wrap request in circuit breaker to prevent cascading failures
-	// If circuit breaker is not initialized (e.g., in tests), execute directly
+	// Return deferred setup error (e.g. from WithBaseURL validation) before any I/O.
+	if c.setupErr != nil {
+		return c.setupErr
+	}
+	// Wrap request in circuit breaker to prevent cascading failures.
+	// If circuit breaker is nil (disabled via WithNoCircuitBreaker), execute directly.
 	if c.circuitBreaker != nil {
 		_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
 			return nil, c.doRequestWithRetry(ctx, method, path, body, result)
@@ -418,7 +482,7 @@ func (c *Client) processHTTPResponse(
 	})
 
 	if c.metrics != nil {
-		c.metrics.RecordAPICall(ctx, method, path, resp.StatusCode, duration.Milliseconds())
+		c.metrics.RecordAPICall(ctx, method, path, resp.StatusCode, duration.Seconds())
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -508,7 +572,7 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, bo
 		})
 
 		startTime := time.Now()
-		resp, err := c.httpClient.Do(req) //nolint:gosec // G704: baseURL is validated by isAllowedBaseURL in provider config, not user-tainted
+		resp, err := c.httpClient.Do(req) //nolint:gosec // G107: baseURL is validated by validateBaseURL (HTTPS or localhost-only), not user-tainted
 		duration := time.Since(startTime)
 
 		if err != nil {
