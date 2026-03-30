@@ -59,7 +59,6 @@ changelog:
 dockers:
   - image_templates:
       - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-amd64"
     use: buildx
     ids: [hyperping-exporter]
     goos: linux
@@ -74,7 +73,6 @@ dockers:
       - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
   - image_templates:
       - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-arm64"
     use: buildx
     ids: [hyperping-exporter]
     goos: linux
@@ -101,15 +99,4 @@ docker_manifests:
     image_templates:
       - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
       - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
-  - name_template: "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}"
-    image_templates:
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-amd64"
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-arm64"
-  - name_template: "khaledsalhabdeveleap/hyperping-exporter:latest"
-    image_templates:
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-amd64"
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-arm64"
-  - name_template: "khaledsalhabdeveleap/hyperping-exporter:v{{ .Major }}"
-    image_templates:
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-amd64"
-      - "khaledsalhabdeveleap/hyperping-exporter:{{ .Version }}-arm64"
+
