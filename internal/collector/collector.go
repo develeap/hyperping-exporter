@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 package collector
 
@@ -15,8 +15,6 @@ import (
 
 	"github.com/develeap/hyperping-exporter/internal/client"
 )
-
-const namespace = "hyperping"
 
 // reportPeriods defines the SLA/outage report windows fetched on each refresh.
 var reportPeriods = []string{"24h", "7d", "30d"}
@@ -66,8 +64,8 @@ type collectorDescs struct {
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
-func newCollectorDescs() collectorDescs {
-	fqn, ns := prometheus.BuildFQName, namespace
+func newCollectorDescs(ns string) collectorDescs {
+	fqn := prometheus.BuildFQName
 	ml := []string{"uuid", "name"}
 	mpl := []string{"uuid", "name", "period"}
 	return collectorDescs{
@@ -136,13 +134,13 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, cacheTTL time.Duration, logger *slog.Logger) *Collector {
+func NewCollector(api HyperpingAPI, cacheTTL time.Duration, logger *slog.Logger, namespace string) *Collector {
 	return &Collector{
 		api:             api,
 		cacheTTL:        cacheTTL,
 		logger:          logger,
 		reportsByPeriod: make(map[string][]client.MonitorReport),
-		collectorDescs:  newCollectorDescs(),
+		collectorDescs:  newCollectorDescs(namespace),
 	}
 }
 

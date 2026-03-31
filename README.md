@@ -3,8 +3,10 @@
 [![CI](https://github.com/develeap/hyperping-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/develeap/hyperping-exporter/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/develeap/hyperping-exporter)](https://github.com/develeap/hyperping-exporter/releases/latest)
 [![Go Report Card](https://goreportcard.com/badge/github.com/develeap/hyperping-exporter)](https://goreportcard.com/report/github.com/develeap/hyperping-exporter)
-[![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/ghcr.io-develeap%2Fhyperping--exporter-blue?logo=docker)](https://github.com/develeap/hyperping-exporter/pkgs/container/hyperping-exporter)
+
+> Get Hyperping monitor metrics into Prometheus in 30 seconds.
 
 A standalone [Prometheus](https://prometheus.io/) exporter for [Hyperping](https://hyperping.io/) monitoring. Exposes monitor status, healthchecks, SLA ratios, outage metrics, and tenant health scores as Prometheus gauges.
 
@@ -14,13 +16,23 @@ Extracted from [develeap/terraform-provider-hyperping](https://github.com/devele
 
 ## Quick start
 
-**Docker**
+> [!NOTE]
+> **Get your API key first:** Log in to [Hyperping](https://hyperping.io) →
+> Account Settings → API → Create API Key.
 
 ```bash
 docker run -p 9312:9312 \
   -e HYPERPING_API_KEY=your_key \
   ghcr.io/develeap/hyperping-exporter:latest
 ```
+
+```bash
+curl -s http://localhost:9312/metrics | grep hyperping_monitor_up
+```
+
+If you see output, you're done.
+
+<details><summary>Other installation methods</summary>
 
 **Binary download** — grab the latest release from the [Releases](https://github.com/develeap/hyperping-exporter/releases) page. Each archive includes an SBOM (`*.sbom.json`) for supply-chain verification. Then:
 
@@ -35,27 +47,29 @@ go install github.com/develeap/hyperping-exporter@latest
 HYPERPING_API_KEY=your_key hyperping-exporter
 ```
 
+</details>
+
 Metrics are served at `http://localhost:9312/metrics`.
 
 ---
 
 ## Configuration
 
-### Getting Your API Key
-1. Log in to [Hyperping](https://hyperping.io) → **Account Settings** → **API**
-2. Click **Create API Key** — the key needs read access to monitors, healthchecks, outages, and reports
-3. Export it: `export HYPERPING_API_KEY=sk_your_key_here`
-
 All flags can also be set via environment variables.
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
 | `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key |
-| `--listen-address` | — | `:9312` | Address to listen on |
-| `--metrics-path` | — | `/metrics` | Path to expose metrics on |
-| `--cache-ttl` | — | `60s` | How often to refresh data from the API |
-| `--log-level` | — | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `--log-format` | — | `text` | Log format: `text` or `json` |
+| `--listen-address` | `(flag only)` | `:9312` | Address to listen on |
+| `--metrics-path` | `(flag only)` | `/metrics` | Path to expose metrics on |
+| `--cache-ttl` | `(flag only)` | `60s` | How often to refresh data from the API |
+| `--log-level` | `(flag only)` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `--log-format` | `(flag only)` | `text` | Log format: `text` or `json` |
+| `--namespace` | `HYPERPING_EXPORTER_NAMESPACE` | `hyperping` | Metric name prefix. Must match `[a-zA-Z_][a-zA-Z0-9_]{0,63}`. **Changing from the default requires updating any alert rules and Grafana dashboards that reference hardcoded `hyperping_*` metric names.** |
+
+> Only `HYPERPING_API_KEY` is read from the environment by default;
+> all other options use CLI flags, which map cleanly to Docker `command:`
+> entries. Use `HYPERPING_EXPORTER_NAMESPACE` for the namespace flag.
 
 ### Performance Tuning
 | Concern | Recommendation |
@@ -234,13 +248,45 @@ Includes a PodDisruptionBudget template (disabled by default; enable with `--set
 
 ## Docker Compose full stack
 
+### Exporter only (bring-your-own Prometheus)
+
+If you already run Prometheus, add just the exporter:
+
+```yaml
+services:
+  hyperping-exporter:
+    image: ghcr.io/develeap/hyperping-exporter:latest
+    environment:
+      HYPERPING_API_KEY: "${HYPERPING_API_KEY}"
+    ports:
+      - "127.0.0.1:9312:9312"
+    restart: unless-stopped
+```
+
+Then add this scrape config to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: hyperping
+    static_configs:
+      - targets: ['localhost:9312']
+    scrape_interval: 60s
+```
+
+### Full stack
+
 Starts the exporter, Prometheus (with alert + recording rules), and Grafana:
 
 ```bash
-HYPERPING_API_KEY=your_key GRAFANA_ADMIN_PASSWORD=your_password make compose-up
+# One-time setup: copy the example and fill in your credentials
+cp deploy/.env.example deploy/.env
+$EDITOR deploy/.env
+
+# Then start the stack
+make compose-up
 ```
 
-`GRAFANA_ADMIN_PASSWORD` is required — the stack will fail loudly if it is not set. All services bind to `127.0.0.1` only for local dev safety.
+`deploy/.env` is gitignored — never commit it. `GRAFANA_ADMIN_PASSWORD` is required; the stack will fail loudly if it is not set. All services bind to `127.0.0.1` only for local dev safety.
 
 | Service | URL |
 |---------|-----|
@@ -310,4 +356,4 @@ If you use both projects, a cleanup PR to remove the basic exporter from the pro
 
 ## License
 
-MPL-2.0. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

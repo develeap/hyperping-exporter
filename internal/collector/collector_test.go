@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 package collector
 
@@ -54,14 +54,14 @@ func newTestLogger() *slog.Logger {
 }
 
 func TestNewCollector(t *testing.T) {
-	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger())
+	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
 
 	assert.NotNil(t, c)
 	assert.False(t, c.IsReady())
 }
 
 func TestDescribe(t *testing.T) {
-	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger())
+	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
 
 	ch := make(chan *prometheus.Desc, 30)
 	c.Describe(ch)
@@ -96,7 +96,7 @@ func TestRefresh_Success(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.True(t, c.IsReady())
@@ -108,7 +108,7 @@ func TestRefresh_MonitorError(t *testing.T) {
 		healthchecks: []client.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.False(t, c.IsReady())
@@ -120,7 +120,7 @@ func TestRefresh_HealthcheckError(t *testing.T) {
 		healthchecksErr: errors.New("api error"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.False(t, c.IsReady())
@@ -134,7 +134,7 @@ func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 		outagesErr:   errors.New("outage api error"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.True(t, c.IsReady())
@@ -146,7 +146,7 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 		healthchecks: []client.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -196,7 +196,7 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// mon_1: up + paused + interval + info + ssl + outage_active + status_code + tier = 8
@@ -210,7 +210,7 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 }
 
 func TestCollect_EmptyCache(t *testing.T) {
-	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger())
+	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
 
 	// No refresh: 4 summary + 2 tenant (up_ratio + active_outages; no data_age, no health_score) = 6
 	count := testutil.CollectAndCount(c)
@@ -232,7 +232,7 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 		healthchecks: []client.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// Monitor: up + paused + interval + info + outage_active + status_code + tier = 7
@@ -253,7 +253,7 @@ func TestCollect_SummaryMetricValues(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -294,7 +294,7 @@ func TestCollect_MonitorMetricValues(t *testing.T) {
 		healthchecks: []client.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -329,7 +329,7 @@ func TestCollect_HealthcheckMetricValues(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -359,7 +359,7 @@ func TestCollect_ScrapeFailureMetric(t *testing.T) {
 		monitorsErr: errors.New("network error"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -405,7 +405,7 @@ func TestCollect_ActiveOutageMetrics(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -435,7 +435,7 @@ func TestCollect_EscalationTierMetrics(t *testing.T) {
 		healthchecks: []client.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -472,7 +472,7 @@ func TestCollect_SLAReportMetrics(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// Reports are fetched for 3 periods; each period returns the same mock data.
@@ -502,7 +502,7 @@ func TestCollect_TenantHealthMetrics(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// 2 monitors up, 0 active outages → up_ratio=1.0
@@ -547,7 +547,7 @@ func TestCollect_Lint(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	problems, err := testutil.CollectAndLint(c)
@@ -629,7 +629,7 @@ func TestStart_BlocksUntilContextDone(t *testing.T) {
 		monitors:     []client.Monitor{},
 		healthchecks: []client.Healthcheck{},
 	}
-	c := NewCollector(api, 10*time.Second, newTestLogger())
+	c := NewCollector(api, 10*time.Second, newTestLogger(), "hyperping")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -658,7 +658,7 @@ func TestStart_PeriodicRefreshOnTick(t *testing.T) {
 	}
 
 	// 20ms TTL; run for 100ms → expect 1 immediate + ≥3 ticks
-	c := NewCollector(api, 20*time.Millisecond, newTestLogger())
+	c := NewCollector(api, 20*time.Millisecond, newTestLogger(), "hyperping")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -673,7 +673,7 @@ func TestRefresh_ReportErrorPreservesStaleData(t *testing.T) {
 		reports:      []client.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -695,7 +695,7 @@ func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 		reportsErr:   errors.New("reports unavailable"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger())
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.True(t, c.IsReady(), "report failure must not fail the scrape")
@@ -710,4 +710,148 @@ func TestComputeHealthScore_CapAtMax(t *testing.T) {
 	// upRatio > 1.0 is not realistic but exercises the base > 100 cap.
 	score := computeHealthScore(2.0, 1.0, 0, 10)
 	assert.Equal(t, 100.0, score)
+}
+
+func TestNewCollector_CustomNamespace(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []client.Healthcheck{},
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "testns")
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	// Gather metrics and verify all names use the custom namespace.
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	foundCustom := false
+	foundDefault := false
+	for _, mf := range mfs {
+		if strings.HasPrefix(mf.GetName(), "testns_") {
+			foundCustom = true
+		}
+		if strings.HasPrefix(mf.GetName(), "hyperping_") {
+			foundDefault = true
+		}
+	}
+	assert.True(t, foundCustom, "expected at least one metric with prefix 'testns_'")
+	assert.False(t, foundDefault, "no metric should retain the default 'hyperping_' prefix when namespace is 'testns'")
+}
+
+func TestSanitizeURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"plain URL", "https://example.com/path", "https://example.com/path"},
+		{"strips query params", "https://example.com/path?token=secret&session=abc", "https://example.com/path"},
+		{"strips fragment", "https://example.com/path#section", "https://example.com/path"},
+		{"strips query and fragment", "https://example.com/?q=1#top", "https://example.com/"},
+		// Fallback path: url.Parse fails on invalid percent-encoding.
+		{"fallback: error with query", "http://example.com/%ZZ?token=secret", "http://example.com/%ZZ"},
+		{"fallback: error with fragment", "http://example.com/%ZZ#frag", "http://example.com/%ZZ"},
+		{"fallback: error no delimiter", "http://example.com/%ZZ", "http://example.com/%ZZ"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, sanitizeURL(tt.input))
+		})
+	}
+}
+
+func TestNewClientMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewClientMetrics(reg, "hyperping")
+	require.NotNil(t, m)
+
+	// Seed an observation so the histogram appears in Gather output.
+	m.RecordAPICall(context.Background(), "GET", "/test", 200, 0.01)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	assert.NotEmpty(t, mfs)
+}
+
+func TestClientMetrics_RecordAPICall(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewClientMetrics(reg, "hyperping")
+
+	m.RecordAPICall(context.Background(), "GET", "/monitors", 200, 0.05)
+	m.RecordAPICall(context.Background(), "GET", "/monitors", 200, 0.10)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "hyperping_client_api_call_duration_seconds" {
+			found = true
+			for _, metric := range mf.GetMetric() {
+				h := metric.GetHistogram()
+				if h != nil {
+					assert.Equal(t, uint64(2), h.GetSampleCount(), "expected 2 observations")
+					assert.InDelta(t, 0.15, h.GetSampleSum(), 0.001, "expected sum ~0.15")
+				}
+			}
+		}
+	}
+	assert.True(t, found, "expected hyperping_client_api_call_duration_seconds metric family")
+}
+
+func TestClientMetrics_RecordRetry(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewClientMetrics(reg, "hyperping")
+
+	m.RecordRetry(context.Background(), "GET", "/monitors", 1)
+	m.RecordRetry(context.Background(), "GET", "/monitors", 1)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "hyperping_client_retry_total" {
+			found = true
+			for _, metric := range mf.GetMetric() {
+				assert.Equal(t, float64(2), metric.GetCounter().GetValue(), "expected counter value 2 after two retries with same labels")
+			}
+		}
+	}
+	assert.True(t, found, "expected hyperping_client_retry_total metric family")
+}
+
+func TestClientMetrics_RecordCircuitBreakerState(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewClientMetrics(reg, "hyperping")
+
+	// Cycle through all states to exercise the reset loop; last state is "half-open".
+	for _, state := range []string{"closed", "open", "half-open"} {
+		m.RecordCircuitBreakerState(context.Background(), state)
+	}
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	found := false
+	stateValues := map[string]float64{}
+	for _, mf := range mfs {
+		if mf.GetName() == "hyperping_client_circuit_breaker_state" {
+			found = true
+			for _, metric := range mf.GetMetric() {
+				for _, lp := range metric.GetLabel() {
+					if lp.GetName() == "state" {
+						stateValues[lp.GetValue()] = metric.GetGauge().GetValue()
+					}
+				}
+			}
+		}
+	}
+	assert.True(t, found, "expected hyperping_client_circuit_breaker_state metric family")
+	assert.Equal(t, float64(1), stateValues["half-open"], "last state set should be 1")
+	assert.Equal(t, float64(0), stateValues["closed"], "closed gauge should be 0 after transitioning away")
+	assert.Equal(t, float64(0), stateValues["open"], "open gauge should be 0 after transitioning away")
 }
