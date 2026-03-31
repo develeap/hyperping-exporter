@@ -264,7 +264,6 @@ func TestBuildUserAgent_EmptyAppendUserAgent(t *testing.T) {
 	}
 }
 
-
 func TestWithVersion_Option(t *testing.T) {
 	c := NewClient("test_key", WithVersion("5.4.3"))
 
