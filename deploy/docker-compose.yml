@@ -1,6 +1,6 @@
 services:
   hyperping-exporter:
-    image: ghcr.io/develeap/hyperping-exporter:latest
+    image: khaledsalhabdeveleap/hyperping-exporter:latest
     build:
       context: ..
       dockerfile: Dockerfile
