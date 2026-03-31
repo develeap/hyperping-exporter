@@ -59,7 +59,7 @@ All flags can also be set via environment variables.
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
-| `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key. Also accepts `HYPERPING_TOKEN` (compatibility alias) |
+| `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key |
 | `--listen-address` | `(flag only)` | `:9312` | Address to listen on |
 | `--metrics-path` | `(flag only)` | `/metrics` | Path to expose metrics on |
 | `--cache-ttl` | `(flag only)` | `60s` | How often to refresh data from the API |

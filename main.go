@@ -59,12 +59,6 @@ func parseConfig() (config, bool) {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
 	if cfg.apiKey == "" {
-		if v := os.Getenv("HYPERPING_TOKEN"); v != "" {
-			cfg.apiKey = v
-			slog.Warn("HYPERPING_TOKEN is a compatibility alias; prefer HYPERPING_API_KEY")
-		}
-	}
-	if cfg.apiKey == "" {
 		fmt.Fprintln(os.Stderr, "error: API key required (use --api-key or HYPERPING_API_KEY)")
 		return cfg, false
 	}

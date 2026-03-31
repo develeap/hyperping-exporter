@@ -165,7 +165,6 @@ func TestParseConfig_MissingAPIKey(t *testing.T) {
 	resetFlags(t, []string{"test"})
 	t.Setenv("HYPERPING_API_KEY", "")
 	os.Unsetenv("HYPERPING_API_KEY")
-	os.Unsetenv("HYPERPING_TOKEN")
 
 	_, ok := parseConfig()
 	assert.False(t, ok)
@@ -174,23 +173,12 @@ func TestParseConfig_MissingAPIKey(t *testing.T) {
 func TestParseConfig_APIKeyFromEnv(t *testing.T) {
 	resetFlags(t, []string{"test"})
 	t.Setenv("HYPERPING_API_KEY", "testkey123")
-	os.Unsetenv("HYPERPING_TOKEN")
 
 	cfg, ok := parseConfig()
 	require.True(t, ok)
 	assert.Equal(t, "testkey123", cfg.apiKey)
 	assert.Equal(t, ":9312", cfg.listenAddr)
 	assert.Equal(t, "hyperping", cfg.namespace)
-}
-
-func TestParseConfig_LegacyToken(t *testing.T) {
-	resetFlags(t, []string{"test"})
-	os.Unsetenv("HYPERPING_API_KEY")
-	t.Setenv("HYPERPING_TOKEN", "legacytoken")
-
-	cfg, ok := parseConfig()
-	require.True(t, ok)
-	assert.Equal(t, "legacytoken", cfg.apiKey)
 }
 
 func TestParseConfig_NamespaceFromEnv(t *testing.T) {
