@@ -9,7 +9,7 @@ COMPOSE    := docker compose -f deploy/docker-compose.yml
 .PHONY: build test lint docker-build docker-run compose-up compose-down clean fmt vet coverage govulncheck release-dry-run all
 
 build:
-	go build -ldflags="-X main.version=$(VERSION) -X main.revision=$(REVISION)" -o $(BINARY) .
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X main.revision=$(REVISION)" -o $(BINARY) .
 
 test:
 	go test -race -coverprofile=coverage.out ./...
