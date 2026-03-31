@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-
-	
 )
 
 // TestLiveContract_Monitor_CRUD tests monitor create, read, delete operations.

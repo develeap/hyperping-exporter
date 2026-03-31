@@ -151,14 +151,11 @@ func TestCreateStatusPage_GroupServicePayload(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-
 		var readErr error
 		capturedBody, readErr = io.ReadAll(r.Body)
 		if readErr != nil {
 			t.Errorf("failed to read request body: %v", readErr)
 		}
-
-		// Return a minimal 201 response with a generated status page
 		response := map[string]interface{}{
 			"message": "Status page created",
 			"statuspage": map[string]interface{}{
@@ -174,7 +171,6 @@ func TestCreateStatusPage_GroupServicePayload(t *testing.T) {
 				},
 			},
 		}
-
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -198,14 +194,8 @@ func TestCreateStatusPage_GroupServicePayload(t *testing.T) {
 						IsGroup:   boolPtr(true),
 						NameShown: stringPtr("Payment Processing"),
 						Services: []CreateStatusPageService{
-							{
-								UUID: stringPtr("child_uuid_1"),
-								Name: map[string]string{"en": "Child 1"},
-							},
-							{
-								UUID: stringPtr("child_uuid_2"),
-								Name: map[string]string{"en": "Child 2"},
-							},
+							{UUID: stringPtr("child_uuid_1"), Name: map[string]string{"en": "Child 1"}},
+							{UUID: stringPtr("child_uuid_2"), Name: map[string]string{"en": "Child 2"}},
 						},
 					},
 				},
@@ -217,53 +207,55 @@ func TestCreateStatusPage_GroupServicePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if result.UUID != "sp_generated_001" {
 		t.Errorf("expected UUID %q, got %q", "sp_generated_001", result.UUID)
 	}
 
-	// Parse the captured request body and verify the payload shape
 	if capturedBody == nil {
 		t.Fatal("captured request body is nil; cannot verify payload")
 	}
-
 	var payload map[string]interface{}
 	if err := json.Unmarshal(capturedBody, &payload); err != nil {
 		t.Fatalf("failed to parse captured request body: %v", err)
 	}
 
+	groupSvc := requireGroupServiceFromPayload(t, payload)
+	assertGroupServiceShape(t, groupSvc)
+}
+
+// requireGroupServiceFromPayload navigates payload → sections[0] → services[0] and
+// returns the group service object, failing the test if the structure is missing.
+func requireGroupServiceFromPayload(t *testing.T, payload map[string]interface{}) map[string]interface{} {
+	t.Helper()
 	sections, ok := payload["sections"].([]interface{})
 	if !ok || len(sections) == 0 {
 		t.Fatal("expected sections array in payload")
 	}
-
 	section, ok := sections[0].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected section to be an object")
 	}
-
 	services, ok := section["services"].([]interface{})
 	if !ok || len(services) == 0 {
 		t.Fatal("expected services array in section")
 	}
-
 	groupSvc, ok := services[0].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected group service to be an object")
 	}
+	return groupSvc
+}
 
-	// Assert is_group == true
+// assertGroupServiceShape verifies is_group, absence of monitor_uuid, and all child services.
+func assertGroupServiceShape(t *testing.T, groupSvc map[string]interface{}) {
+	t.Helper()
 	isGroup, _ := groupSvc["is_group"].(bool)
 	if !isGroup {
 		t.Errorf("expected group service to have is_group=true, got %v", groupSvc["is_group"])
 	}
-
-	// Assert monitor_uuid is absent or null
 	if monUUID, exists := groupSvc["monitor_uuid"]; exists && monUUID != nil {
 		t.Errorf("expected group service to have no monitor_uuid, got %v", monUUID)
 	}
-
-	// Assert services array with 2 children
 	children, ok := groupSvc["services"].([]interface{})
 	if !ok {
 		t.Fatal("expected group service to have a services array")
@@ -271,44 +263,36 @@ func TestCreateStatusPage_GroupServicePayload(t *testing.T) {
 	if len(children) != 2 {
 		t.Fatalf("expected 2 children in group service, got %d", len(children))
 	}
-
-	// Assert each child has "uuid" key and "name" map
-	expectedChildUUIDs := []string{"child_uuid_1", "child_uuid_2"}
-	expectedChildNames := []string{"Child 1", "Child 2"}
-
+	wantUUIDs := []string{"child_uuid_1", "child_uuid_2"}
+	wantNames := []string{"Child 1", "Child 2"}
 	for i, rawChild := range children {
-		child, ok := rawChild.(map[string]interface{})
-		if !ok {
-			t.Fatalf("child[%d] is not an object", i)
-		}
+		assertStatusPageChild(t, i, rawChild, wantUUIDs[i], wantNames[i])
+	}
+}
 
-		// "uuid" key must be present (not "monitor_uuid")
-		childUUID, uuidOk := child["uuid"].(string)
-		if !uuidOk {
-			t.Errorf("child[%d] expected uuid key (string), got %T", i, child["uuid"])
-		} else if childUUID != expectedChildUUIDs[i] {
-			t.Errorf("child[%d] expected uuid %q, got %q", i, expectedChildUUIDs[i], childUUID)
-		}
-
-		// "monitor_uuid" must not be present on nested children
-		if monUUID, exists := child["monitor_uuid"]; exists && monUUID != nil {
-			t.Errorf("child[%d] should not have monitor_uuid, got %v", i, monUUID)
-		}
-
-		// "name" must be a map (localized), not a string
-		nameMap, nameOk := child["name"].(map[string]interface{})
-		if !nameOk {
-			t.Errorf("child[%d] expected name to be a map, got %T", i, child["name"])
-		} else {
-			enName, _ := nameMap["en"].(string)
-			if enName != expectedChildNames[i] {
-				t.Errorf("child[%d] expected name[en]=%q, got %q", i, expectedChildNames[i], enName)
-			}
-		}
-
-		// "name_shown" must not be present on nested children
-		if nameShown, exists := child["name_shown"]; exists && nameShown != nil {
-			t.Errorf("child[%d] should not have name_shown, got %v", i, nameShown)
-		}
+// assertStatusPageChild verifies uuid, name localisation, and absence of monitor_uuid / name_shown.
+func assertStatusPageChild(t *testing.T, i int, raw interface{}, wantUUID, wantName string) {
+	t.Helper()
+	child, ok := raw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("child[%d] is not an object", i)
+	}
+	childUUID, uuidOk := child["uuid"].(string)
+	if !uuidOk {
+		t.Errorf("child[%d] expected uuid key (string), got %T", i, child["uuid"])
+	} else if childUUID != wantUUID {
+		t.Errorf("child[%d] expected uuid %q, got %q", i, wantUUID, childUUID)
+	}
+	if monUUID, exists := child["monitor_uuid"]; exists && monUUID != nil {
+		t.Errorf("child[%d] should not have monitor_uuid, got %v", i, monUUID)
+	}
+	nameMap, nameOk := child["name"].(map[string]interface{})
+	if !nameOk {
+		t.Errorf("child[%d] expected name to be a map, got %T", i, child["name"])
+	} else if enName, _ := nameMap["en"].(string); enName != wantName {
+		t.Errorf("child[%d] expected name[en]=%q, got %q", i, wantName, enName)
+	}
+	if nameShown, exists := child["name_shown"]; exists && nameShown != nil {
+		t.Errorf("child[%d] should not have name_shown, got %v", i, nameShown)
 	}
 }

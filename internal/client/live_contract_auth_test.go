@@ -8,8 +8,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-
-	
 )
 
 // TestLiveContract_Auth_Unauthorized tests access with invalid API key.

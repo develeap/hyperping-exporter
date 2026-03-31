@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-
-	
 )
 
 // =============================================================================
@@ -21,7 +19,7 @@ func newOutageVCRClient(t *testing.T, cassetteName string) (*Client, func()) {
 	t.Helper()
 	r, httpClient := newVCRRecorder(t, vcrConfig{
 		CassetteName: cassetteName,
-		Mode: modeAuto,
+		Mode:         modeAuto,
 		CassetteDir:  "testdata/cassettes",
 	})
 	apiKey := os.Getenv("HYPERPING_API_KEY")
