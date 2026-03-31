@@ -67,56 +67,25 @@ changelog:
       - Merge pull request
       - Merge branch
 
-dockers:
-  - image_templates:
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
-    use: buildx
-    ids: [hyperping-exporter]
-    goos: linux
-    goarch: amd64
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--push"
-      - "--provenance=mode=max"
-      - "--sbom=true"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
-  - image_templates:
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
-    use: buildx
-    ids: [hyperping-exporter]
-    goos: linux
-    goarch: arm64
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--push"
-      - "--provenance=mode=max"
-      - "--sbom=true"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
-
-docker_manifests:
-  - use: buildx
-    name_template: "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}"
-    image_templates:
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
-  - use: buildx
-    name_template: "{{ .Env.DOCKER_IMAGE }}:latest"
-    image_templates:
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
-  - use: buildx
-    name_template: "{{ .Env.DOCKER_IMAGE }}:v{{ .Major }}"
-    image_templates:
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
-      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
+dockers_v2:
+  - dockerfile: Dockerfile.goreleaser
+    ids:
+      - hyperping-exporter
+    images:
+      - "{{ .Env.DOCKER_IMAGE }}"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+      - "v{{ .Major }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    sbom: true
+    labels:
+      "org.opencontainers.image.title":       "{{ .ProjectName }}"
+      "org.opencontainers.image.version":     "{{ .Version }}"
+      "org.opencontainers.image.source":      "{{ .GitURL }}"
+      "org.opencontainers.image.created":     "{{ .Date }}"
+      "org.opencontainers.image.revision":    "{{ .FullCommit }}"
+      "org.opencontainers.image.description": "Prometheus exporter for Hyperping monitoring"
 
