@@ -198,3 +198,13 @@ func TestParseConfig_InvalidNamespace(t *testing.T) {
 	_, ok := parseConfig()
 	assert.False(t, ok)
 }
+
+func TestParseConfig_FlagBeatsEnvVar(t *testing.T) {
+	resetFlags(t, []string{"test", "--namespace", "hyperping"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+	t.Setenv("HYPERPING_EXPORTER_NAMESPACE", "acme")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "hyperping", cfg.namespace, "explicit flag must beat env var")
+}

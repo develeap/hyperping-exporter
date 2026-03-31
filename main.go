@@ -52,7 +52,7 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&cfg.webConfigFile, "web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
-	flag.StringVar(&cfg.namespace, "namespace", "hyperping", "Metric name prefix (env: HYPERPING_EXPORTER_NAMESPACE)")
+	flag.StringVar(&cfg.namespace, "namespace", "", `Metric name prefix (env: HYPERPING_EXPORTER_NAMESPACE, default: "hyperping")`)
 	flag.Parse()
 
 	if cfg.apiKey == "" {
@@ -62,10 +62,11 @@ func parseConfig() (config, bool) {
 		fmt.Fprintln(os.Stderr, "error: API key required (use --api-key or HYPERPING_API_KEY)")
 		return cfg, false
 	}
-	if cfg.namespace == "hyperping" {
-		if v := os.Getenv("HYPERPING_EXPORTER_NAMESPACE"); v != "" {
-			cfg.namespace = v
-		}
+	if cfg.namespace == "" {
+		cfg.namespace = os.Getenv("HYPERPING_EXPORTER_NAMESPACE")
+	}
+	if cfg.namespace == "" {
+		cfg.namespace = "hyperping"
 	}
 	if err := validateNamespace(cfg.namespace); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid namespace: %v\n", err)
