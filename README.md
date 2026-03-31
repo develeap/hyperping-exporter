@@ -12,6 +12,8 @@ A standalone [Prometheus](https://prometheus.io/) exporter for [Hyperping](https
 
 Extracted from [develeap/terraform-provider-hyperping](https://github.com/develeap/terraform-provider-hyperping) to serve as a standalone, reusable exporter. The same battle-tested API client (with circuit breaker, retry, and rate-limit handling) is embedded here with zero runtime dependency on the provider.
 
+Maintained by [Develeap](https://develeap.com).
+
 ---
 
 ## Quick start
