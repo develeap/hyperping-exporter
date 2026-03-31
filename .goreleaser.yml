@@ -76,6 +76,7 @@ dockers:
     goarch: amd64
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--push"
       - "--provenance=mode=max"
       - "--sbom=true"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
@@ -92,6 +93,7 @@ dockers:
     goarch: arm64
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--push"
       - "--provenance=mode=max"
       - "--sbom=true"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
@@ -102,15 +104,18 @@ dockers:
       - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
 
 docker_manifests:
-  - name_template: "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}"
+  - use: buildx
+    name_template: "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}"
     image_templates:
       - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
       - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
-  - name_template: "{{ .Env.DOCKER_IMAGE }}:latest"
+  - use: buildx
+    name_template: "{{ .Env.DOCKER_IMAGE }}:latest"
     image_templates:
       - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
       - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
-  - name_template: "{{ .Env.DOCKER_IMAGE }}:v{{ .Major }}"
+  - use: buildx
+    name_template: "{{ .Env.DOCKER_IMAGE }}:v{{ .Major }}"
     image_templates:
       - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
       - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
