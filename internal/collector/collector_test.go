@@ -722,19 +722,23 @@ func TestNewCollector_CustomNamespace(t *testing.T) {
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
-	// Gather metrics and verify at least one name starts with "testns_".
+	// Gather metrics and verify all names use the custom namespace.
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
-	found := false
+	foundCustom := false
+	foundDefault := false
 	for _, mf := range mfs {
 		if strings.HasPrefix(mf.GetName(), "testns_") {
-			found = true
-			break
+			foundCustom = true
+		}
+		if strings.HasPrefix(mf.GetName(), "hyperping_") {
+			foundDefault = true
 		}
 	}
-	assert.True(t, found, "expected at least one metric with prefix 'testns_'")
+	assert.True(t, foundCustom, "expected at least one metric with prefix 'testns_'")
+	assert.False(t, foundDefault, "no metric should retain the default 'hyperping_' prefix when namespace is 'testns'")
 }
 
 func TestSanitizeURL(t *testing.T) {
@@ -777,17 +781,25 @@ func TestClientMetrics_RecordAPICall(t *testing.T) {
 	m := NewClientMetrics(reg, "hyperping")
 
 	m.RecordAPICall(context.Background(), "GET", "/monitors", 200, 0.05)
-	m.RecordAPICall(context.Background(), "GET", "/monitors", 429, 0.10)
+	m.RecordAPICall(context.Background(), "GET", "/monitors", 200, 0.10)
 
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
+
 	found := false
 	for _, mf := range mfs {
-		if strings.Contains(mf.GetName(), "api_call_duration") {
+		if mf.GetName() == "hyperping_client_api_call_duration_seconds" {
 			found = true
+			for _, metric := range mf.GetMetric() {
+				h := metric.GetHistogram()
+				if h != nil {
+					assert.Equal(t, uint64(2), h.GetSampleCount(), "expected 2 observations")
+					assert.InDelta(t, 0.15, h.GetSampleSum(), 0.001, "expected sum ~0.15")
+				}
+			}
 		}
 	}
-	assert.True(t, found)
+	assert.True(t, found, "expected hyperping_client_api_call_duration_seconds metric family")
 }
 
 func TestClientMetrics_RecordRetry(t *testing.T) {
@@ -795,35 +807,51 @@ func TestClientMetrics_RecordRetry(t *testing.T) {
 	m := NewClientMetrics(reg, "hyperping")
 
 	m.RecordRetry(context.Background(), "GET", "/monitors", 1)
-	m.RecordRetry(context.Background(), "GET", "/monitors", 2)
+	m.RecordRetry(context.Background(), "GET", "/monitors", 1)
 
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
+
 	found := false
 	for _, mf := range mfs {
-		if strings.Contains(mf.GetName(), "retry_total") {
+		if mf.GetName() == "hyperping_client_retry_total" {
 			found = true
+			for _, metric := range mf.GetMetric() {
+				assert.Equal(t, float64(2), metric.GetCounter().GetValue(), "expected counter value 2 after two retries with same labels")
+			}
 		}
 	}
-	assert.True(t, found)
+	assert.True(t, found, "expected hyperping_client_retry_total metric family")
 }
 
 func TestClientMetrics_RecordCircuitBreakerState(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewClientMetrics(reg, "hyperping")
 
-	// Cycle through all states to exercise the reset loop.
+	// Cycle through all states to exercise the reset loop; last state is "half-open".
 	for _, state := range []string{"closed", "open", "half-open"} {
 		m.RecordCircuitBreakerState(context.Background(), state)
 	}
 
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
+
 	found := false
+	stateValues := map[string]float64{}
 	for _, mf := range mfs {
-		if strings.Contains(mf.GetName(), "circuit_breaker_state") {
+		if mf.GetName() == "hyperping_client_circuit_breaker_state" {
 			found = true
+			for _, metric := range mf.GetMetric() {
+				for _, lp := range metric.GetLabel() {
+					if lp.GetName() == "state" {
+						stateValues[lp.GetValue()] = metric.GetGauge().GetValue()
+					}
+				}
+			}
 		}
 	}
-	assert.True(t, found)
+	assert.True(t, found, "expected hyperping_client_circuit_breaker_state metric family")
+	assert.Equal(t, float64(1), stateValues["half-open"], "last state set should be 1")
+	assert.Equal(t, float64(0), stateValues["closed"], "closed gauge should be 0 after transitioning away")
+	assert.Equal(t, float64(0), stateValues["open"], "open gauge should be 0 after transitioning away")
 }
