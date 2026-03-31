@@ -27,3 +27,6 @@ deploy/k8s/secret.yaml
 # Env files with real credentials (use *.example templates)
 .env
 deploy/.env
+
+# Local flow files
+samber-parity.flow.yaml
