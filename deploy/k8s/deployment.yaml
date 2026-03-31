@@ -22,7 +22,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: hyperping-exporter
-          image: ghcr.io/develeap/hyperping-exporter:latest
+          image: khaledsalhabdeveleap/hyperping-exporter:latest
           args:
             - "--cache-ttl=60s"
             - "--log-format=json"

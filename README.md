@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/develeap/hyperping-exporter)](https://github.com/develeap/hyperping-exporter/releases/latest)
 [![Go Report Card](https://goreportcard.com/badge/github.com/develeap/hyperping-exporter)](https://goreportcard.com/report/github.com/develeap/hyperping-exporter)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Docker](https://img.shields.io/badge/ghcr.io-develeap%2Fhyperping--exporter-blue?logo=docker)](https://github.com/develeap/hyperping-exporter/pkgs/container/hyperping-exporter)
+[![Docker](https://img.shields.io/docker/v/khaledsalhabdeveleap/hyperping-exporter/latest?logo=docker&label=docker%20hub)](https://hub.docker.com/r/khaledsalhabdeveleap/hyperping-exporter)
 
 > Get Hyperping monitor metrics into Prometheus in 30 seconds.
 
@@ -23,7 +23,7 @@ Extracted from [develeap/terraform-provider-hyperping](https://github.com/devele
 ```bash
 docker run -p 9312:9312 \
   -e HYPERPING_API_KEY=your_key \
-  ghcr.io/develeap/hyperping-exporter:latest
+  khaledsalhabdeveleap/hyperping-exporter:latest
 ```
 
 ```bash
@@ -255,7 +255,7 @@ If you already run Prometheus, add just the exporter:
 ```yaml
 services:
   hyperping-exporter:
-    image: ghcr.io/develeap/hyperping-exporter:latest
+    image: khaledsalhabdeveleap/hyperping-exporter:latest
     environment:
       HYPERPING_API_KEY: "${HYPERPING_API_KEY}"
     ports:

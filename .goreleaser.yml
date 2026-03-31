@@ -69,7 +69,7 @@ changelog:
 
 dockers:
   - image_templates:
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
     use: buildx
     ids: [hyperping-exporter]
     goos: linux
@@ -83,7 +83,7 @@ dockers:
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
   - image_templates:
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
     use: buildx
     ids: [hyperping-exporter]
     goos: linux
@@ -98,16 +98,16 @@ dockers:
       - "--label=org.opencontainers.image.description=Prometheus exporter for Hyperping monitoring"
 
 docker_manifests:
-  - name_template: "ghcr.io/develeap/hyperping-exporter:{{ .Version }}"
+  - name_template: "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}"
     image_templates:
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/develeap/hyperping-exporter:latest"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
+  - name_template: "{{ .Env.DOCKER_IMAGE }}:latest"
     image_templates:
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/develeap/hyperping-exporter:v{{ .Major }}"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
+  - name_template: "{{ .Env.DOCKER_IMAGE }}:v{{ .Major }}"
     image_templates:
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-amd64"
-      - "ghcr.io/develeap/hyperping-exporter:{{ .Version }}-arm64"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-amd64"
+      - "{{ .Env.DOCKER_IMAGE }}:{{ .Version }}-arm64"
 
