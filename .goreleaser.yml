@@ -76,6 +76,8 @@ dockers:
     goarch: amd64
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--provenance=mode=max"
+      - "--sbom=true"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.source={{ .GitURL }}"
@@ -90,6 +92,8 @@ dockers:
     goarch: arm64
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--provenance=mode=max"
+      - "--sbom=true"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.source={{ .GitURL }}"
