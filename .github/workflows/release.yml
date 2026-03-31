@@ -34,6 +34,15 @@ jobs:
 
       - uses: anchore/sbom-action/download-syft@v0
 
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKER_IMAGE }}
+          short-description: "Prometheus exporter for Hyperping — monitor status, SLA, outages, and health metrics"
+          readme-filepath: ./README.docker.md
+
       - uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7
         with:
           distribution: goreleaser
