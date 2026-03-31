@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-
-	
 )
 
 // TestLiveContract_Incident_List tests listing all incidents.

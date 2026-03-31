@@ -9,8 +9,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	
 )
 
 // TestLiveContract_Maintenance_CRUD tests maintenance create, read, update, delete operations.

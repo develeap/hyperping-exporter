@@ -10,8 +10,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	
 )
 
 // TestLiveContract_StatusPage_Update tests updating a status page.

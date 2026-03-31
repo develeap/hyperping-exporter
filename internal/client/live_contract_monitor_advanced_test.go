@@ -9,8 +9,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-
-	
 )
 
 // TestLiveContract_Monitor_Update tests updating a monitor.

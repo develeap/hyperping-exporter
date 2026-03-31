@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-
-	
 )
 
 // =============================================================================
@@ -21,7 +19,7 @@ import (
 func TestContract_Incident_CRUD_ResponseStructure(t *testing.T) {
 	r, httpClient := newVCRRecorder(t, vcrConfig{
 		CassetteName: "incident_crud",
-		Mode: modeAuto,
+		Mode:         modeAuto,
 		CassetteDir:  "testdata/cassettes",
 	})
 	defer func() {
@@ -86,7 +84,7 @@ func TestContract_Incident_CRUD_ResponseStructure(t *testing.T) {
 func TestContract_Incident_List_ResponseStructure(t *testing.T) {
 	r, httpClient := newVCRRecorder(t, vcrConfig{
 		CassetteName: "incident_list",
-		Mode: modeAuto,
+		Mode:         modeAuto,
 		CassetteDir:  "testdata/cassettes",
 	})
 	defer func() {
@@ -120,7 +118,7 @@ func TestContract_Incident_List_ResponseStructure(t *testing.T) {
 func TestContract_Incident_NotFound(t *testing.T) {
 	r, httpClient := newVCRRecorder(t, vcrConfig{
 		CassetteName: "incident_crud",
-		Mode: modeAuto,
+		Mode:         modeAuto,
 		CassetteDir:  "testdata/cassettes",
 	})
 	defer func() {

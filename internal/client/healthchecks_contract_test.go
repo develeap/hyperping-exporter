@@ -7,8 +7,6 @@ import (
 	"context"
 	"os"
 	"testing"
-
-	
 )
 
 // healthcheckField holds a field name and the value to check for being non-empty or positive.
@@ -65,7 +63,7 @@ func newHealthcheckVCRClient(t *testing.T, cassetteName string) (*Client, func()
 	t.Helper()
 	r, httpClient := newVCRRecorder(t, vcrConfig{
 		CassetteName: cassetteName,
-		Mode: modeAuto,
+		Mode:         modeAuto,
 		CassetteDir:  "testdata/cassettes",
 	})
 	apiKey := os.Getenv("HYPERPING_API_KEY")
