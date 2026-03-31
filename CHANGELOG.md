@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `deploy/.env.example` — template for Docker Compose credentials (`HYPERPING_API_KEY`, `GRAFANA_ADMIN_PASSWORD`); `deploy/.env` is gitignored
 - Binary releases now include Windows (386, amd64), Linux 386, and Linux arm (v6, v7) targets
 - Cross-compile CI job validates all 5 new target platforms on every PR
 - `--namespace` flag (env: `HYPERPING_EXPORTER_NAMESPACE`, default: `hyperping`) to customise the Prometheus metric prefix

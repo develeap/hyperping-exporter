@@ -278,10 +278,15 @@ scrape_configs:
 Starts the exporter, Prometheus (with alert + recording rules), and Grafana:
 
 ```bash
-HYPERPING_API_KEY=your_key GRAFANA_ADMIN_PASSWORD=your_password make compose-up
+# One-time setup: copy the example and fill in your credentials
+cp deploy/.env.example deploy/.env
+$EDITOR deploy/.env
+
+# Then start the stack
+make compose-up
 ```
 
-`GRAFANA_ADMIN_PASSWORD` is required — the stack will fail loudly if it is not set. All services bind to `127.0.0.1` only for local dev safety.
+`deploy/.env` is gitignored — never commit it. `GRAFANA_ADMIN_PASSWORD` is required; the stack will fail loudly if it is not set. All services bind to `127.0.0.1` only for local dev safety.
 
 | Service | URL |
 |---------|-----|
