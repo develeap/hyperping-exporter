@@ -7,7 +7,6 @@ services:
     environment:
       HYPERPING_API_KEY: "${HYPERPING_API_KEY}"
     command:
-      - "--cache-ttl=60s"
       - "--log-format=json"
     ports:
       - "127.0.0.1:9312:9312"

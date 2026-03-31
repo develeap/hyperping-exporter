@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 // Package client provides a Go client for the Hyperping API.
 // This package is intentionally separate from the Terraform provider

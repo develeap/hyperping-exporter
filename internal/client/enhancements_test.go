@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 package client
 
@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sony/gobreaker"
 )
 
 // TestClient_RequestDurationLogging verifies that request duration is logged
@@ -321,5 +323,25 @@ func TestAPIError_EnhancedMessage_Integration(t *testing.T) {
 		if !strings.Contains(errorString, expected) {
 			t.Errorf("Error message %q should contain %q", errorString, expected)
 		}
+	}
+}
+
+func TestWithCircuitBreakerSettings(t *testing.T) {
+	settings := gobreaker.Settings{
+		Name:        "test-breaker",
+		MaxRequests: 5,
+	}
+	c := NewClient("key", WithCircuitBreakerSettings(settings))
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+	if c.circuitBreakerSettings == nil {
+		t.Fatal("expected circuitBreakerSettings to be set")
+	}
+	if c.circuitBreakerSettings.Name != "test-breaker" {
+		t.Errorf("expected Name %q, got %q", "test-breaker", c.circuitBreakerSettings.Name)
+	}
+	if c.circuitBreakerSettings.MaxRequests != 5 {
+		t.Errorf("expected MaxRequests 5, got %d", c.circuitBreakerSettings.MaxRequests)
 	}
 }

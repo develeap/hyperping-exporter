@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 package collector
 
@@ -19,23 +19,24 @@ type prometheusClientMetrics struct {
 }
 
 // NewClientMetrics creates and registers all client operational metrics.
-func NewClientMetrics(registry *prometheus.Registry) *prometheusClientMetrics {
+func NewClientMetrics(registry *prometheus.Registry, namespace string) *prometheusClientMetrics {
+	clientNS := namespace + "_client"
 	m := &prometheusClientMetrics{
 		apiCallDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: "hyperping_client",
+			Namespace: clientNS,
 			Name:      "api_call_duration_seconds",
 			Help:      "Duration of Hyperping API calls in seconds.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"method", "path", "status_code"}),
 
 		retryTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "hyperping_client",
+			Namespace: clientNS,
 			Name:      "retry_total",
 			Help:      "Total number of Hyperping API call retries.",
 		}, []string{"method", "path", "attempt"}),
 
 		circuitBreakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: "hyperping_client",
+			Namespace: clientNS,
 			Name:      "circuit_breaker_state",
 			Help:      "Current circuit breaker state (1 = active). Labels: state={closed,open,half-open}.",
 		}, []string{"state"}),

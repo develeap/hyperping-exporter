@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 // NOTE: VCR cassettes for nested service groups are not yet recorded.
 // Recording requires a real Hyperping API instance with grouped status pages.

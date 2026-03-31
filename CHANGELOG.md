@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Binary releases now include Windows (386, amd64), Linux 386, and Linux arm (v6, v7) targets
+- Cross-compile CI job validates all 5 new target platforms on every PR
+- `--namespace` flag (env: `HYPERPING_EXPORTER_NAMESPACE`, default: `hyperping`) to customise the Prometheus metric prefix
 - Client observability metrics: `hyperping_client_api_call_duration_seconds`, `hyperping_client_retry_total`, `hyperping_client_circuit_breaker_state` expose API call latency, retry counts, and circuit breaker state
 - `WithCircuitBreakerSettings(gobreaker.Settings)` and `WithNoCircuitBreaker()` client options
 - `deploy/k8s/secret.yaml.example` — Secret manifest template for Kubernetes deployments
@@ -14,6 +17,11 @@ All notable changes to this project will be documented in this file.
 - HTTP server `ReadTimeout` and `WriteTimeout` (30s each)
 
 ### Changed
+- README quick-start restructured: API key note, verification step, and 30-second framing added
+- Exporter-only Docker Compose snippet added for users with existing Prometheus
+- Removed redundant `--cache-ttl=60s` from docker-compose.yml (equals compiled default)
+- Configuration table clarifies which options are flag-only vs env-var
+- Relicensed from MPL-2.0 to MIT
 - `IsReady()` readiness probe now latches on first successful scrape — pod stays ready through transient API outages
 - `make compose-up` now pre-builds the Go binary before running `docker compose up --build`
 - Docker Compose port bindings changed to `127.0.0.1:PORT:PORT` for local dev safety

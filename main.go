@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Develeap
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MIT
 
 package main
 
@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"syscall"
 	"time"
@@ -39,6 +40,7 @@ type config struct {
 	logLevel      string
 	logFormat     string
 	webConfigFile string
+	namespace     string
 }
 
 func parseConfig() (config, bool) {
@@ -50,28 +52,59 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&cfg.webConfigFile, "web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
+	flag.StringVar(&cfg.namespace, "namespace", "hyperping", "Metric name prefix (env: HYPERPING_EXPORTER_NAMESPACE)")
 	flag.Parse()
 
 	if cfg.apiKey == "" {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
 	if cfg.apiKey == "" {
+		if v := os.Getenv("HYPERPING_TOKEN"); v != "" {
+			cfg.apiKey = v
+			slog.Warn("HYPERPING_TOKEN is a compatibility alias; prefer HYPERPING_API_KEY")
+		}
+	}
+	if cfg.apiKey == "" {
 		fmt.Fprintln(os.Stderr, "error: API key required (use --api-key or HYPERPING_API_KEY)")
+		return cfg, false
+	}
+	if cfg.namespace == "hyperping" {
+		if v := os.Getenv("HYPERPING_EXPORTER_NAMESPACE"); v != "" {
+			cfg.namespace = v
+		}
+	}
+	if err := validateNamespace(cfg.namespace); err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid namespace: %v\n", err)
 		return cfg, false
 	}
 	return cfg, true
 }
 
+var reNamespace = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+func validateNamespace(ns string) error {
+	if ns == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if len(ns) > 64 {
+		return fmt.Errorf("must be 64 characters or fewer (got %d)", len(ns))
+	}
+	if !reNamespace.MatchString(ns) {
+		return fmt.Errorf("%q must match [a-zA-Z_][a-zA-Z0-9_]*", ns)
+	}
+	return nil
+}
+
 // newBaseRegistry creates a Prometheus registry pre-loaded with the standard
 // process/Go/build-info collectors. The caller is responsible for registering
 // any additional collectors (e.g. the Hyperping collector, client metrics).
-func newBaseRegistry() *prometheus.Registry {
+func newBaseRegistry(namespace string) *prometheus.Registry {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registry.MustRegister(collectors.NewGoCollector())
 
 	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "hyperping",
+		Namespace: namespace,
 		Name:      "build_info",
 		Help:      "A metric with constant value 1 labeled with build metadata.",
 	}, []string{"version", "revision", "goversion"})
@@ -120,10 +153,10 @@ func run() int {
 	}
 
 	logger := setupLogger(cfg.logLevel, cfg.logFormat)
-	registry := newBaseRegistry()
-	clientMetrics := collector.NewClientMetrics(registry)
+	registry := newBaseRegistry(cfg.namespace)
+	clientMetrics := collector.NewClientMetrics(registry, cfg.namespace)
 	apiClient := client.NewClient(cfg.apiKey, client.WithMaxRetries(2), client.WithMetrics(clientMetrics))
-	c := collector.NewCollector(apiClient, cfg.cacheTTL, logger)
+	c := collector.NewCollector(apiClient, cfg.cacheTTL, logger, cfg.namespace)
 	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)
 	if err != nil {
@@ -163,6 +196,7 @@ func run() int {
 		"address", cfg.listenAddr,
 		"metrics_path", cfg.metricsPath,
 		"cache_ttl", cfg.cacheTTL,
+		"namespace", cfg.namespace,
 	)
 	if err := web.ListenAndServe(srv, webFlags, logger); err != nil && err != http.ErrServerClosed {
 		logger.Error("server error", "error", err)
