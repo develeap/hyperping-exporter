@@ -20,9 +20,16 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: hyperping-exporter
-          image: khaledsalhabdeveleap/hyperping-exporter:latest
+          image: khaledsalhabdeveleap/hyperping-exporter:latest  # Pin to a specific tag for production use
           args:
             - "--cache-ttl=60s"
             - "--log-format=json"
@@ -60,10 +67,9 @@ spec:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 65534
+            runAsGroup: 65534
             capabilities:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-      securityContext:
-        fsGroup: 65534
       terminationGracePeriodSeconds: 15

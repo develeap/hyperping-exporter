@@ -1,6 +1,6 @@
 services:
   hyperping-exporter:
-    image: khaledsalhabdeveleap/hyperping-exporter:latest
+    image: khaledsalhabdeveleap/hyperping-exporter:latest  # Pin to a specific tag for production use
     build:
       context: ..
       dockerfile: Dockerfile
@@ -11,6 +11,16 @@ services:
     ports:
       - "127.0.0.1:9312:9312"
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9312/readyz"]
       interval: 30s
@@ -34,11 +44,20 @@ services:
     depends_on:
       - hyperping-exporter
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 2G
 
   grafana:
     image: grafana/grafana:11.3.0
     environment:
-      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_FEATURE_TOGGLES_ENABLE: "publicDashboards"
@@ -51,6 +70,15 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
 
 volumes:
   prometheus-data:

@@ -75,7 +75,6 @@ dockers_v2:
       - "{{ .Env.DOCKER_IMAGE }}"
     tags:
       - "{{ .Version }}"
-      - "latest"
       - "v{{ .Major }}"
     platforms:
       - linux/amd64
