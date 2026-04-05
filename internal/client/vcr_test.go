@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -70,6 +71,7 @@ func newVCRRecorder(t *testing.T, cfg vcrConfig) (*recorder.Recorder, *http.Clie
 	}
 
 	r.AddHook(func(i *cassette.Interaction) error {
+		// Request sanitization.
 		if auth := i.Request.Headers.Get("Authorization"); auth != "" {
 			i.Request.Headers.Set("Authorization", "Bearer [MASKED]")
 		}
@@ -79,6 +81,14 @@ func newVCRRecorder(t *testing.T, cfg vcrConfig) (*recorder.Recorder, *http.Clie
 		if cookie := i.Response.Headers.Get("Set-Cookie"); cookie != "" {
 			i.Response.Headers.Set("Set-Cookie", "[MASKED]")
 		}
+
+		// Strip infrastructure metadata headers from responses.
+		for _, h := range []string{"Cf-Ray", "Nel", "Report-To", "Ratelimit-Policy", "Ratelimit"} {
+			i.Response.Headers.Del(h)
+		}
+
+		// Redact PII and auth tokens from response bodies.
+		i.Response.Body = sanitizeCassetteBody(i.Response.Body)
 		return nil
 	}, recorder.AfterCaptureHook)
 
@@ -87,6 +97,27 @@ func newVCRRecorder(t *testing.T, cfg vcrConfig) (*recorder.Recorder, *http.Clie
 	}
 
 	return r, client
+}
+
+// piiFieldPattern matches JSON fields that contain PII or account metadata.
+var piiFieldPattern = regexp.MustCompile(
+	`"(createdBy|createdBySsoPictureUrl|createdByProfilePictureUrl)"\s*:\s*"[^"]*"`,
+)
+
+// sensitiveHeaderValuePattern matches request_headers entries where the header
+// name contains token/auth/secret/key (case-insensitive) and redacts the value.
+var sensitiveHeaderValuePattern = regexp.MustCompile(
+	`("name"\s*:\s*"[^"]*(?i:token|auth|secret|key)[^"]*"\s*,\s*"value"\s*:\s*)"[^"]*"`,
+)
+
+// sanitizeCassetteBody redacts PII and sensitive values from a VCR response body.
+func sanitizeCassetteBody(body string) string {
+	body = piiFieldPattern.ReplaceAllStringFunc(body, func(m string) string {
+		idx := strings.Index(m, ":")
+		return m[:idx+1] + `"[REDACTED]"`
+	})
+	body = sensitiveHeaderValuePattern.ReplaceAllString(body, `${1}"[REDACTED]"`)
+	return body
 }
 
 // getRecordMode returns the VCR mode based on environment variables.

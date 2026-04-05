@@ -49,8 +49,6 @@ interactions:
                 - no-cache
             Cf-Cache-Status:
                 - DYNAMIC
-            Cf-Ray:
-                - 9cbb095e4a88c231-TLV
             Content-Length:
                 - "463"
             Content-Type:
@@ -59,14 +57,6 @@ interactions:
                 - Tue, 10 Feb 2026 10:48:53 GMT
             Etag:
                 - W/"1cf-uZFcwqz/+ZV3fTqpwr/xvdeWNDE"
-            Nel:
-                - '{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'
-            Ratelimit:
-                - '"800-in-1hr"; r=770; t=3583'
-            Ratelimit-Policy:
-                - '"800-in-1hr"; q=800; w=3600; pk=:MGMzN2I2ZTVmZGY2:'
-            Report-To:
-                - '{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=y1Nzysx89uT6RRbjO3UH4fgB4ssiggV%2Fw%2BDScZ3RauvXDm5IarmmTd%2BKND8GHt5XG8Rze5byVZsmAgVibgABV937MsE%2FicO8U6etv0z%2FXAI%3D"}]}'
             Server:
                 - cloudflare
             Vary:
@@ -122,22 +112,12 @@ interactions:
                 - no-cache
             Cf-Cache-Status:
                 - DYNAMIC
-            Cf-Ray:
-                - 9cbb096459fcc231-TLV
             Content-Type:
                 - application/json; charset=utf-8
             Date:
                 - Tue, 10 Feb 2026 10:48:54 GMT
             Etag:
                 - W/"1dd-HfLNnhB7tsP2GWqBJJoV/Ztd2Q4"
-            Nel:
-                - '{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'
-            Ratelimit:
-                - '"800-in-1hr"; r=769; t=3582'
-            Ratelimit-Policy:
-                - '"800-in-1hr"; q=800; w=3600; pk=:MGMzN2I2ZTVmZGY2:'
-            Report-To:
-                - '{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=n2mwhV9y66xuoyys7Loj3gFDsPpdrjF%2BBL5vB%2BFGxH5CM5W0cCGOBFK%2BU9eBfs3PvMXrEFlgB%2FKmLQxlYmPdDxNZZgZZYfwvdjvN82Nvs48%3D"}]}'
             Server:
                 - cloudflare
             Vary:
@@ -193,20 +173,10 @@ interactions:
                 - no-cache
             Cf-Cache-Status:
                 - DYNAMIC
-            Cf-Ray:
-                - 9cbb096aaa3cc231-TLV
             Date:
                 - Tue, 10 Feb 2026 10:48:54 GMT
             Etag:
                 - W/"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"
-            Nel:
-                - '{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'
-            Ratelimit:
-                - '"800-in-1hr"; r=768; t=3581'
-            Ratelimit-Policy:
-                - '"800-in-1hr"; q=800; w=3600; pk=:MGMzN2I2ZTVmZGY2:'
-            Report-To:
-                - '{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=v6z4JLFIakMcYnQ8WoREpNT%2Bx8GmT84Ie%2B%2BdyEfWvP5dzyuUZiDL62Fqwh6Fp3L5dk3ewr9LOoEALhp5uAj4bRnDSDpWZ8gKd1j0DRrNIUs%3D"}]}'
             Server:
                 - cloudflare
         status: 204 No Content

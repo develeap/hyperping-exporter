@@ -49,18 +49,12 @@ interactions:
                 - no-cache
             Cf-Cache-Status:
                 - DYNAMIC
-            Cf-Ray:
-                - 9cbb09470903c231-TLV
             Content-Type:
                 - text/plain; charset=utf-8
             Date:
                 - Tue, 10 Feb 2026 10:48:48 GMT
             Etag:
                 - W/"9-PatfYBLj4Um1qTm5zrukoLhNyPU"
-            Nel:
-                - '{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'
-            Report-To:
-                - '{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=lvWzQAkxZ%2BJ4sPHobxB4X8L%2BWLTcUFeMscg48poutuJnu9Lq7dOGymwIkLHoqmcxPijOagYhoLOBfVBh3W%2FXvGzUvnDHLfoGdQqvDyRAzHI%3D"}]}'
             Server:
                 - cloudflare
             Vary:
