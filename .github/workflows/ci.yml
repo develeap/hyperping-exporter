@@ -21,6 +21,9 @@ on:
       - 'LICENSE'
       - 'CHANGELOG.md'
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: Verify module
@@ -88,6 +91,20 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           govulncheck ./...
+      - name: License compliance
+        run: |
+          go mod download
+          FAIL=0
+          for dir in $(go list -m -f '{{.Dir}}' all 2>/dev/null | grep -v '^$'); do
+            for f in "$dir/LICENSE" "$dir/LICENSE.md" "$dir/LICENSE.txt" "$dir/COPYING"; do
+              if [ -f "$f" ] && grep -qliE 'GNU GENERAL PUBLIC LICENSE.*Version 3|GNU AFFERO|SSPL|EUPL' "$f" 2>/dev/null; then
+                echo "FAIL: copyleft license detected in $f"
+                FAIL=1
+              fi
+            done
+          done
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "PASS: no copyleft licenses in dependencies"
 
   cross-compile:
     name: Cross-compile check
@@ -116,7 +133,7 @@ jobs:
         run: go build -trimpath -ldflags="-s -w" -o /dev/null .
 
   docker:
-    name: Docker build
+    name: Docker build & scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -127,3 +144,10 @@ jobs:
       - name: Build binary
         run: CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o hyperping-exporter .
       - run: docker build -t hyperping-exporter:ci .
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: hyperping-exporter:ci
+          exit-code: 1
+          severity: CRITICAL,HIGH
+          format: table
