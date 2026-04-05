@@ -71,5 +71,6 @@ jobs:
         run: |
           VERSION="${VERSION#v}"
           for IMAGE in "${{ env.DOCKER_IMAGE }}" "${{ env.GHCR_IMAGE }}"; do
-            cosign sign --yes "${IMAGE}:${VERSION}"
+            DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r '.digest')
+            cosign sign --yes "${IMAGE}@${DIGEST}"
           done

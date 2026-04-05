@@ -1,6 +1,6 @@
 services:
   hyperping-exporter:
-    image: khaledsalhabdeveleap/hyperping-exporter:latest  # Pin to a specific tag for production use
+    image: khaledsalhabdeveleap/hyperping-exporter:${EXPORTER_VERSION:-latest}
     build:
       context: ..
       dockerfile: Dockerfile

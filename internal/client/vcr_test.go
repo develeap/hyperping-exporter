@@ -76,7 +76,7 @@ func newVCRRecorder(t *testing.T, cfg vcrConfig) (*recorder.Recorder, *http.Clie
 			i.Request.Headers.Set("Authorization", "Bearer [MASKED]")
 		}
 		if strings.Contains(i.Request.URL, "api_key=") {
-			i.Request.URL = strings.ReplaceAll(i.Request.URL, "api_key=", "api_key=[MASKED]")
+			i.Request.URL = apiKeyURLPattern.ReplaceAllString(i.Request.URL, "api_key=[MASKED]")
 		}
 		if cookie := i.Response.Headers.Get("Set-Cookie"); cookie != "" {
 			i.Response.Headers.Set("Set-Cookie", "[MASKED]")
@@ -98,6 +98,9 @@ func newVCRRecorder(t *testing.T, cfg vcrConfig) (*recorder.Recorder, *http.Clie
 
 	return r, client
 }
+
+// apiKeyURLPattern matches api_key query parameters and their values.
+var apiKeyURLPattern = regexp.MustCompile(`api_key=[^&]*`)
 
 // piiFieldPattern matches JSON fields that contain PII or account metadata.
 var piiFieldPattern = regexp.MustCompile(

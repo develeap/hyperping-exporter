@@ -96,7 +96,7 @@ jobs:
           go mod download
           FAIL=0
           for dir in $(go list -m -f '{{.Dir}}' all 2>/dev/null | grep -v '^$'); do
-            for f in "$dir/LICENSE" "$dir/LICENSE.md" "$dir/LICENSE.txt" "$dir/COPYING"; do
+            for f in "$dir/LICENSE" "$dir/LICENCE" "$dir/LICENSE.md" "$dir/LICENCE.md" "$dir/LICENSE.txt" "$dir/COPYING"; do
               if [ -f "$f" ] && grep -qliE 'GNU GENERAL PUBLIC LICENSE.*Version 3|GNU AFFERO|SSPL|EUPL' "$f" 2>/dev/null; then
                 echo "FAIL: copyleft license detected in $f"
                 FAIL=1
