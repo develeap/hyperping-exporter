@@ -45,7 +45,7 @@ coverage: test
 	@echo "Coverage report: coverage.html"
 
 govulncheck:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
 release-dry-run:
 	goreleaser release --snapshot --clean

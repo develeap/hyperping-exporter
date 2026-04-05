@@ -49,22 +49,12 @@ interactions:
                 - no-cache
             Cf-Cache-Status:
                 - DYNAMIC
-            Cf-Ray:
-                - 9cbb09acdd01c231-TLV
             Content-Type:
                 - application/json; charset=utf-8
             Date:
                 - Tue, 10 Feb 2026 10:49:04 GMT
             Etag:
                 - W/"536-q1wq6JFjxb89L6LEsN1q2+nqIb0"
-            Nel:
-                - '{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'
-            Ratelimit:
-                - '"800-in-1hr"; r=745; t=3570'
-            Ratelimit-Policy:
-                - '"800-in-1hr"; q=800; w=3600; pk=:MGMzN2I2ZTVmZGY2:'
-            Report-To:
-                - '{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=ZcHbQpBilGcsVt02crq6VXs1xn2RGN3WgvGbmYy6l8W6rSPMGmWFjfetg5%2BIuLU8ipgW%2FUppnf3KPTXcuzQ5F1ezXt3h0IWTQnTT2seGfB8%3D"}]}'
             Server:
                 - cloudflare
             Vary:

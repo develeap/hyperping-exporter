@@ -53,6 +53,8 @@ checksum:
 
 sboms:
   - artifacts: archive
+    cmd: syft
+    args: ["$artifact", "--output", "spdx-json=$document"]
     documents:
       - "${artifact}.sbom.json"
 
@@ -73,9 +75,9 @@ dockers_v2:
       - hyperping-exporter
     images:
       - "{{ .Env.DOCKER_IMAGE }}"
+      - "{{ .Env.GHCR_IMAGE }}"
     tags:
       - "{{ .Version }}"
-      - "latest"
       - "v{{ .Major }}"
     platforms:
       - linux/amd64
@@ -88,4 +90,3 @@ dockers_v2:
       "org.opencontainers.image.created":     "{{ .Date }}"
       "org.opencontainers.image.revision":    "{{ .FullCommit }}"
       "org.opencontainers.image.description": "Prometheus exporter for Hyperping monitoring"
-
