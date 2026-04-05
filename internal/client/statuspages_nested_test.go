@@ -99,12 +99,11 @@ func TestGetStatusPage_WithNestedGroups(t *testing.T) {
 	// --- Flat service assertions ---
 	flatSvc := section.Services[0]
 
-	flatID, ok := flatSvc.ID.(string)
-	if !ok {
-		t.Fatalf("expected flat service ID to be string, got %T", flatSvc.ID)
+	if flatSvc.ID == nil {
+		t.Fatal("expected flat service ID to be non-nil")
 	}
-	if flatID != "mon_abc123" {
-		t.Errorf("expected flat service ID %q, got %q", "mon_abc123", flatID)
+	if flatSvc.ID.String() != "mon_abc123" {
+		t.Errorf("expected flat service ID %q, got %q", "mon_abc123", flatSvc.ID.String())
 	}
 	if flatSvc.IsGroup {
 		t.Error("expected flat service IsGroup=false")
@@ -120,14 +119,13 @@ func TestGetStatusPage_WithNestedGroups(t *testing.T) {
 		t.Fatalf("expected 2 child services in group, got %d", len(groupSvc.Services))
 	}
 
-	// Child 1: ID should unmarshal as float64 (JSON number → interface{} = float64)
+	// Child 1: ID should unmarshal as "117122" (JSON number normalised to string via FlexibleString)
 	child1 := groupSvc.Services[0]
-	child1ID, ok := child1.ID.(float64)
-	if !ok {
-		t.Fatalf("expected child service ID to be float64 (JSON number), got %T", child1.ID)
+	if child1.ID == nil {
+		t.Fatal("expected child service ID to be non-nil")
 	}
-	if child1ID != 117122 {
-		t.Errorf("expected child1 ID 117122, got %v", child1ID)
+	if child1.ID.String() != "117122" {
+		t.Errorf("expected child1 ID %q, got %q", "117122", child1.ID.String())
 	}
 	if child1.UUID != "child_uuid_1" {
 		t.Errorf("expected child1 UUID %q, got %q", "child_uuid_1", child1.UUID)

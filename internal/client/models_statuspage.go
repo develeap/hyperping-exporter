@@ -68,17 +68,15 @@ type StatusPageSection struct {
 }
 
 // StatusPageService represents a service (monitor or component) in a section.
-// The ID field uses interface{} because the Hyperping v2 API returns different
+// The ID field uses FlexibleString because the Hyperping v2 API returns different
 // types depending on how the service was created:
 //   - a string UUID (e.g. "mon_abc123") when set via v2 API with UUID strings
 //   - an integer (e.g. 117122) when set via v1 admin UI or numeric ID workaround
 //   - absent entirely for group header entries (which have no top-level monitor)
 //
-// The provider translates mon_xxx UUIDs to numeric IDs on write (the uptime
-// renderer requires numeric IDs) and translates back to mon_xxx on read so
-// that Terraform state matches config. See statuspage_id_translation.go.
+// FlexibleString handles both JSON strings and numbers, normalising to a string.
 type StatusPageService struct {
-	ID                interface{}         `json:"id,omitempty"`
+	ID                *FlexibleString     `json:"id,omitempty"`
 	UUID              string              `json:"uuid,omitempty"`
 	Name              map[string]string   `json:"name"` // language -> text
 	IsGroup           bool                `json:"is_group"`

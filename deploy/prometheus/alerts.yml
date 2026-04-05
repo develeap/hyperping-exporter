@@ -164,7 +164,9 @@ groups:
             Metrics are stale. Check API key validity and network connectivity.
 
       - alert: HyperpingDataStale
-        # 2× default cache-ttl (60s). Adjust if cache-ttl is changed.
+        # Threshold = 2 × cache-ttl. Default cache-ttl is 60s, so threshold = 120s.
+        # If you change --cache-ttl, update this value: threshold = 2 × new_ttl.
+        # Example: --cache-ttl=120s  =>  threshold = 240
         expr: hyperping_data_age_seconds > 120
         for: 2m
         labels:
