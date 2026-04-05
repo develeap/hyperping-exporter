@@ -106,6 +106,15 @@ func (c *Client) ListOutages(ctx context.Context) ([]Outage, error) {
 		if !result.HasNextPage {
 			break
 		}
+
+		// Warn when the page cap truncates results: active outages beyond
+		// this point are silently dropped from the response.
+		if page == maxOutagePaginationPages-1 {
+			c.logDebug(ctx, "outage pagination truncated: more pages available but max page limit reached", map[string]interface{}{
+				"max_pages":      maxOutagePaginationPages,
+				"outages_so_far": len(allOutages),
+			})
+		}
 	}
 
 	if allOutages == nil {

@@ -25,9 +25,11 @@ spec:
         - protocol: TCP
           port: 9312
   egress:
-    # Allow DNS resolution.
+    # Allow DNS resolution (scoped to kube-system).
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
           podSelector:
             matchLabels:
               k8s-app: kube-dns
@@ -36,7 +38,15 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Allow HTTPS to Hyperping API.
-    - ports:
+    # Allow HTTPS to external endpoints (Hyperping API).
+    # Blocks RFC1918 ranges to prevent cluster-internal lateral movement.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
         - protocol: TCP
           port: 443

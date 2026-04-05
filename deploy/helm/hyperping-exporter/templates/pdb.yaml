@@ -3,10 +3,11 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "hyperping-exporter.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hyperping-exporter.labels" . | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | default 1 }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable | default 1 }}
   selector:
     matchLabels:
       {{- include "hyperping-exporter.selectorLabels" . | nindent 6 }}

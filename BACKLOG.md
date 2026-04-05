@@ -21,7 +21,7 @@ Issues identified during code review and PR #6 (`fix/code-review-issues`) review
 - [x] **H4** `.github/workflows/ci.yml` - `govulncheck` pinned to `@v1.1.4`
 - [x] **H5** `internal/collector/collector.go` - `NewCollector`, `Collect`, `Refresh` all refactored under 50-line limit
 - [x] **H6** `internal/client/client.go` - `NewClient` refactored to 42 lines; circuit breaker init extracted to `newCircuitBreaker`
-- [x] **H7** `main.go` - `http.Server` now has `ReadHeaderTimeout`, `ReadTimeout`, and `WriteTimeout` (30s each)
+- [x] **H7** `main.go` - `http.Server` now has `ReadHeaderTimeout` (10s), `ReadTimeout` (30s), and `WriteTimeout` (30s)
 - [x] **H8** `deploy/prometheus/alerts.yml` - `HyperpingCoreMonitorDown` alert references `hyperping_monitor_escalation_tier{tier="core"}` which the exporter now emits via `monitorTier` descriptor
 - [x] **H9** `main.go` - Client `Metrics` interface wired via `collector.NewClientMetrics` and `client.WithMetrics`
 - [x] **H10** `internal/collector/collector.go` - Dead field `lastScrapeTime` removed; replaced by `lastSuccessTime` which is read in `takeSnapshot()`

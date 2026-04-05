@@ -75,6 +75,7 @@ type StatusPageSection struct {
 //   - absent entirely for group header entries (which have no top-level monitor)
 //
 // FlexibleString handles both JSON strings and numbers, normalising to a string.
+// Callers must nil-check ID before dereferencing: group header entries have no ID.
 type StatusPageService struct {
 	ID                *FlexibleString     `json:"id,omitempty"`
 	UUID              string              `json:"uuid,omitempty"`

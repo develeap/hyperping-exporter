@@ -10,9 +10,12 @@ nameOverride: ""
 fullnameOverride: ""
 
 config:
-  # Required: Hyperping API key. Set apiKey or reference an existingSecret.
+  # DEVELOPMENT ONLY: Hyperping API key passed inline.
+  # WARNING: This value is stored in plaintext in Helm release metadata and
+  # visible via `helm get values`. For production, use existingSecret with an
+  # externally managed Secret (Sealed Secrets, External Secrets Operator, etc.).
   apiKey: ""
-  # Name of an existing Secret with key 'api-key' (takes precedence over apiKey)
+  # Name of an existing Secret with key 'api-key' (recommended for production).
   existingSecret: ""
   cacheTTL: "60s"
   metricsPath: "/metrics"
@@ -50,13 +53,19 @@ securityContext:
   allowPrivilegeEscalation: false
   runAsNonRoot: true
   runAsUser: 65534
+  runAsGroup: 65534
   capabilities:
     drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
 
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65534
+  runAsGroup: 65534
   fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
 
 podAnnotations: {}
 podLabels: {}
@@ -80,12 +89,22 @@ readinessProbe:
 
 podDisruptionBudget:
   enabled: false
-  minAvailable: 1
+  # maxUnavailable is safer than minAvailable when replicaCount=1:
+  # minAvailable=1 with 1 replica blocks all voluntary disruptions (node drains).
+  maxUnavailable: 1
 
 networkPolicy:
   enabled: false
   # Selectors for pods allowed to scrape metrics (e.g. Prometheus).
-  # Override to match your Prometheus labels.
+  # The default assumes Prometheus is in the SAME namespace as this chart.
+  # For cross-namespace scraping, add a namespaceSelector to the entry:
+  #   ingressFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  #       podSelector:
+  #         matchLabels:
+  #           app.kubernetes.io/name: prometheus
   ingressFrom:
     - podSelector:
         matchLabels:
