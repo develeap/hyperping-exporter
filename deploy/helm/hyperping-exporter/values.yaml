@@ -1,0 +1,111 @@
+replicaCount: 1
+
+image:
+  repository: develeap/hyperping-exporter
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to chart appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+config:
+  # DEVELOPMENT ONLY: Hyperping API key passed inline.
+  # WARNING: This value is stored in plaintext in Helm release metadata and
+  # visible via `helm get values`. For production, use existingSecret with an
+  # externally managed Secret (Sealed Secrets, External Secrets Operator, etc.).
+  apiKey: ""
+  # Name of an existing Secret with key 'api-key' (recommended for production).
+  existingSecret: ""
+  cacheTTL: "60s"
+  metricsPath: "/metrics"
+  logLevel: "info"
+  logFormat: "text"
+  # Optional: path to web.config.file for TLS / basic auth
+  webConfigFile: ""
+  # Optional: Prometheus metric name prefix. Defaults to "hyperping" when empty.
+  # Changing from the default requires updating any alert rules and Grafana
+  # dashboards that reference hardcoded hyperping_* metric names.
+  namespace: ""
+
+service:
+  type: ClusterIP
+  port: 9312
+  annotations: {}
+
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: "60s"
+  scrapeTimeout: "30s"
+  additionalLabels: {}
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+podDisruptionBudget:
+  enabled: false
+  # maxUnavailable is safer than minAvailable when replicaCount=1:
+  # minAvailable=1 with 1 replica blocks all voluntary disruptions (node drains).
+  maxUnavailable: 1
+
+networkPolicy:
+  enabled: false
+  # Selectors for pods allowed to scrape metrics (e.g. Prometheus).
+  # The default assumes Prometheus is in the SAME namespace as this chart.
+  # For cross-namespace scraping, add a namespaceSelector to the entry:
+  #   ingressFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  #       podSelector:
+  #         matchLabels:
+  #           app.kubernetes.io/name: prometheus
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus

@@ -9,3 +9,8 @@ func boolPtr(b bool) *bool       { return &b }
 func strPtr(s string) *string    { return &s }
 func stringPtr(s string) *string { return &s }
 func intPtr(i int) *int          { return &i }
+
+func flexibleStringPtr(s string) *FlexibleString {
+	fs := FlexibleString(s)
+	return &fs
+}

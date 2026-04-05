@@ -66,8 +66,12 @@ func (c *Client) GetOutage(ctx context.Context, uuid string) (*Outage, error) {
 	return &getResp.Outage, nil
 }
 
-// maxPaginationPages is a safety limit to prevent infinite pagination loops.
-const maxOutagePaginationPages = 100
+// maxOutagePaginationPages limits how many pages of historical outages are fetched.
+// Kept low (10) to prevent linear degradation on accounts with long outage history.
+// The Hyperping API does not support server-side resolved-outage filtering, so the
+// exporter must paginate client-side. 10 pages covers recent activity while
+// avoiding multi-second API calls on large accounts.
+const maxOutagePaginationPages = 10
 
 // ListOutages retrieves all outages, paginating through all pages.
 // API: ... /v2/outages
@@ -101,6 +105,15 @@ func (c *Client) ListOutages(ctx context.Context) ([]Outage, error) {
 
 		if !result.HasNextPage {
 			break
+		}
+
+		// Warn when the page cap truncates results: active outages beyond
+		// this point are silently dropped from the response.
+		if page == maxOutagePaginationPages-1 {
+			c.logDebug(ctx, "outage pagination truncated: more pages available but max page limit reached", map[string]interface{}{
+				"max_pages":      maxOutagePaginationPages,
+				"outages_so_far": len(allOutages),
+			})
 		}
 	}
 

@@ -1,5 +1,5 @@
-# Binary output
-hyperping-exporter
+# Binary output (root only, not deploy/helm/hyperping-exporter/)
+/hyperping-exporter
 /dist/
 
 # Test & coverage artifacts

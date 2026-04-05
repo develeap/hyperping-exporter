@@ -184,7 +184,7 @@ func TestGetStatusPage_Success(t *testing.T) {
 					IsSplit: true,
 					Services: []StatusPageService{
 						{
-							ID:                "svc_1",
+							ID:                flexibleStringPtr("svc_1"),
 							UUID:              "mon_xyz789",
 							Name:              map[string]string{"en": "Main API"},
 							IsGroup:           false,

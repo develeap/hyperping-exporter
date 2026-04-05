@@ -99,12 +99,11 @@ func TestGetStatusPage_WithNestedGroups(t *testing.T) {
 	// --- Flat service assertions ---
 	flatSvc := section.Services[0]
 
-	flatID, ok := flatSvc.ID.(string)
-	if !ok {
-		t.Fatalf("expected flat service ID to be string, got %T", flatSvc.ID)
+	if flatSvc.ID == nil {
+		t.Fatal("expected flat service ID to be non-nil")
 	}
-	if flatID != "mon_abc123" {
-		t.Errorf("expected flat service ID %q, got %q", "mon_abc123", flatID)
+	if flatSvc.ID.String() != "mon_abc123" {
+		t.Errorf("expected flat service ID %q, got %q", "mon_abc123", flatSvc.ID.String())
 	}
 	if flatSvc.IsGroup {
 		t.Error("expected flat service IsGroup=false")
@@ -120,23 +119,57 @@ func TestGetStatusPage_WithNestedGroups(t *testing.T) {
 		t.Fatalf("expected 2 child services in group, got %d", len(groupSvc.Services))
 	}
 
-	// Child 1: ID should unmarshal as float64 (JSON number → interface{} = float64)
+	// Child 1: ID should unmarshal as "117122" (JSON number normalised to string via FlexibleString)
 	child1 := groupSvc.Services[0]
-	child1ID, ok := child1.ID.(float64)
-	if !ok {
-		t.Fatalf("expected child service ID to be float64 (JSON number), got %T", child1.ID)
+	if child1.ID == nil {
+		t.Fatal("expected child service ID to be non-nil")
 	}
-	if child1ID != 117122 {
-		t.Errorf("expected child1 ID 117122, got %v", child1ID)
+	if child1.ID.String() != "117122" {
+		t.Errorf("expected child1 ID %q, got %q", "117122", child1.ID.String())
 	}
 	if child1.UUID != "child_uuid_1" {
 		t.Errorf("expected child1 UUID %q, got %q", "child_uuid_1", child1.UUID)
 	}
 
-	// Child 2: verify UUID is present and distinct
+	// Child 2: verify UUID and ID are present and distinct
 	child2 := groupSvc.Services[1]
+	if child2.ID == nil {
+		t.Fatal("expected child2 ID to be non-nil")
+	}
+	if child2.ID.String() != "117123" {
+		t.Errorf("expected child2 ID %q, got %q", "117123", child2.ID.String())
+	}
 	if child2.UUID != "child_uuid_2" {
 		t.Errorf("expected child2 UUID %q, got %q", "child_uuid_2", child2.UUID)
+	}
+}
+
+// TestStatusPageService_NullID verifies that a JSON null "id" correctly
+// deserialises to a nil *FlexibleString (the group-header case).
+func TestStatusPageService_NullID(t *testing.T) {
+	raw := `{"uuid":"grp_1","name":{"en":"Group Header"},"is_group":true,"id":null}`
+	var svc StatusPageService
+	if err := json.Unmarshal([]byte(raw), &svc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if svc.ID != nil {
+		t.Errorf("expected nil ID for group header, got %q", svc.ID.String())
+	}
+	if !svc.IsGroup {
+		t.Error("expected IsGroup=true")
+	}
+}
+
+// TestStatusPageService_AbsentID verifies that an absent "id" field also
+// produces a nil *FlexibleString.
+func TestStatusPageService_AbsentID(t *testing.T) {
+	raw := `{"uuid":"grp_2","name":{"en":"No ID"},"is_group":true}`
+	var svc StatusPageService
+	if err := json.Unmarshal([]byte(raw), &svc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if svc.ID != nil {
+		t.Errorf("expected nil ID when field is absent, got %q", svc.ID.String())
 	}
 }
 

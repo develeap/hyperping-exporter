@@ -850,3 +850,36 @@ func TestClient_ListOutages_MultiPagePagination(t *testing.T) {
 		}
 	}
 }
+
+// TestClient_ListOutages_TruncationAtPageCap verifies that ListOutages stops
+// after maxOutagePaginationPages even when the server keeps returning
+// hasNextPage=true, and returns the outages collected so far (not an error).
+func TestClient_ListOutages_TruncationAtPageCap(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"outages": []map[string]interface{}{
+				{"uuid": "out_page_" + r.URL.Query().Get("page"), "isResolved": false, "statusCode": 500},
+			},
+			"hasNextPage": true, // always more pages
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient("test_key", WithBaseURL(server.URL), WithMaxRetries(0))
+	outages, err := client.ListOutages(context.Background())
+	if err != nil {
+		t.Fatalf("ListOutages() error = %v, want nil (truncation is not an error)", err)
+	}
+
+	if requestCount != maxOutagePaginationPages {
+		t.Errorf("expected exactly %d page requests, got %d", maxOutagePaginationPages, requestCount)
+	}
+	if len(outages) != maxOutagePaginationPages {
+		t.Errorf("expected %d outages (one per page), got %d", maxOutagePaginationPages, len(outages))
+	}
+}
