@@ -430,6 +430,7 @@ func TestCollect_EscalationTierMetrics(t *testing.T) {
 		monitors: []hyperping.Monitor{
 			{UUID: "mon_1", Name: "Core", Protocol: "http", HTTPMethod: "GET", EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "policy_abc", Name: "Core Policy"}},
 			{UUID: "mon_2", Name: "Edge", Protocol: "http", HTTPMethod: "GET", EscalationPolicy: nil},
+			{UUID: "mon_3", Name: "NonCore", Protocol: "http", HTTPMethod: "GET", EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "policy_nc", Name: "NonCore-Escalation"}},
 		},
 		healthchecks: []hyperping.Healthcheck{},
 	}
@@ -442,6 +443,7 @@ func TestCollect_EscalationTierMetrics(t *testing.T) {
 # TYPE hyperping_monitor_escalation_tier gauge
 hyperping_monitor_escalation_tier{name="Core",tier="core",uuid="mon_1"} 1
 hyperping_monitor_escalation_tier{name="Edge",tier="unknown",uuid="mon_2"} 1
+hyperping_monitor_escalation_tier{name="NonCore",tier="noncore",uuid="mon_3"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_escalation_tier",
@@ -597,6 +599,8 @@ func TestEscalationTier(t *testing.T) {
 	assert.Equal(t, "core", escalationTier(hyperping.Monitor{EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "uuid-123", Name: "Core Policy"}}))
 	assert.Equal(t, "noncore", escalationTier(hyperping.Monitor{EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "uuid-456", Name: "Noncore Services"}}))
 	assert.Equal(t, "unknown", escalationTier(hyperping.Monitor{EscalationPolicy: nil}))
+	assert.Equal(t, "unknown", escalationTier(hyperping.Monitor{EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "uuid-789", Name: ""}}))
+	assert.Equal(t, "noncore", escalationTier(hyperping.Monitor{EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "uuid-abc", Name: "NonCore-Escalation"}}))
 }
 
 // refreshCountingAPI wraps mockAPI and counts each ListMonitors call.
