@@ -32,6 +32,8 @@ type HyperpingAPI interface {
 	ListHealthchecks(ctx context.Context) ([]hyperping.Healthcheck, error)
 	ListOutages(ctx context.Context) ([]hyperping.Outage, error)
 	ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error)
+	ListMaintenance(ctx context.Context) ([]hyperping.Maintenance, error)
+	ListIncidents(ctx context.Context) ([]hyperping.Incident, error)
 }
 
 // collectorDescs holds all Prometheus metric descriptor fields.
@@ -61,13 +63,17 @@ type collectorDescs struct {
 	tenantActiveOutages       *prometheus.Desc
 	tenantAvgSLA              *prometheus.Desc
 	monitorTier               *prometheus.Desc
+	monitorInMaintenance     *prometheus.Desc
+	monitorUpByRegion        *prometheus.Desc
+	incidentsOpen            *prometheus.Desc
+	maintenanceWindowsActive *prometheus.Desc
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
 func newCollectorDescs(ns string) collectorDescs {
 	fqn := prometheus.BuildFQName
-	ml := []string{"uuid", "name"}
-	mpl := []string{"uuid", "name", "period"}
+	ml := []string{"uuid", "name", "tenant", "tier"}
+	mpl := []string{"uuid", "name", "tenant", "tier", "period"}
 	return collectorDescs{
 		monitorUp:                 prometheus.NewDesc(fqn(ns, "monitor", "up"), "Whether the monitor is up (1) or down (0).", ml, nil),
 		monitorPaused:             prometheus.NewDesc(fqn(ns, "monitor", "paused"), "Whether the monitor is paused (1) or active (0).", ml, nil),
@@ -94,19 +100,45 @@ func newCollectorDescs(ns string) collectorDescs {
 		tenantActiveOutages:       prometheus.NewDesc(fqn(ns, "tenant", "active_outages"), "Total number of active (unresolved) outages across all monitors.", nil, nil),
 		tenantAvgSLA:              prometheus.NewDesc(fqn(ns, "tenant", "avg_sla_ratio"), "Average SLA ratio across all monitors for the labelled period.", []string{"period"}, nil),
 		monitorTier:               prometheus.NewDesc(fqn(ns, "monitor", "escalation_tier"), "Escalation tier info (always 1). Join on uuid+name; use tier label to filter core/noncore.", []string{"uuid", "name", "tier"}, nil),
+		monitorInMaintenance: prometheus.NewDesc(
+			fqn(ns, "monitor", "in_maintenance"),
+			"1 if the monitor is currently covered by an active maintenance window, 0 otherwise.",
+			[]string{"uuid", "name", "tenant", "tier"}, nil,
+		),
+		monitorUpByRegion: prometheus.NewDesc(
+			fqn(ns, "monitor", "up_by_region"),
+			"1 if the monitor is up in the given region, 0 if confirmed down. "+
+				"Derived from active outage confirmed locations; approximation only.",
+			[]string{"uuid", "name", "tenant", "tier", "region"}, nil,
+		),
+		incidentsOpen: prometheus.NewDesc(
+			fqn(ns, "", "incidents_open"),
+			"Number of open (non-resolved) incidents.",
+			nil, nil,
+		),
+		maintenanceWindowsActive: prometheus.NewDesc(
+			fqn(ns, "", "maintenance_windows_active"),
+			"Number of currently active (ongoing) maintenance windows.",
+			nil, nil,
+		),
 	}
 }
 
 // collectorSnapshot is a point-in-time copy of the cache for lock-free metric emission.
 type collectorSnapshot struct {
-	monitors        []hyperping.Monitor
-	healthchecks    []hyperping.Healthcheck
-	outageIndex     map[string]hyperping.Outage
-	reports         map[string][]hyperping.MonitorReport
-	lastSuccessTime time.Time
-	scrapeOK        bool
-	scrapeDur       time.Duration
-	dataAge         float64
+	monitors               []hyperping.Monitor
+	healthchecks           []hyperping.Healthcheck
+	outageIndex            map[string]hyperping.Outage
+	monitorIndex           map[string]hyperping.Monitor // uuid -> monitor, for report label enrichment
+	reports                map[string][]hyperping.MonitorReport
+	lastSuccessTime        time.Time
+	scrapeOK               bool
+	scrapeDur              time.Duration
+	dataAge                float64
+	maintenanceIndex       map[string]bool              // monitor uuid -> covered by active window
+	regionDownIndex        map[string]map[string]bool   // uuid -> region -> is_down
+	openIncidentCount      int
+	activeMaintenanceCount int
 }
 
 // Collector fetches Hyperping data on a background timer and serves
@@ -117,15 +149,17 @@ type Collector struct {
 	logger   *slog.Logger
 
 	// Cache (protected by mu).
-	mu              sync.RWMutex
-	monitors        []hyperping.Monitor
-	healthchecks    []hyperping.Healthcheck
-	outages         []hyperping.Outage
-	reportsByPeriod map[string][]hyperping.MonitorReport
-	lastSuccessTime time.Time
-	lastScrapeOK    bool
-	lastScrapeDur   time.Duration
-	everSucceeded   bool // latches true after first successful scrape; never resets
+	mu                 sync.RWMutex
+	monitors           []hyperping.Monitor
+	healthchecks       []hyperping.Healthcheck
+	outages            []hyperping.Outage
+	maintenanceWindows []hyperping.Maintenance
+	incidents          []hyperping.Incident
+	reportsByPeriod    map[string][]hyperping.MonitorReport
+	lastSuccessTime    time.Time
+	lastScrapeOK       bool
+	lastScrapeDur      time.Duration
+	everSucceeded      bool // latches true after first successful scrape; never resets
 
 	collectorDescs
 }
@@ -161,40 +195,55 @@ func (c *Collector) Start(ctx context.Context) {
 	}
 }
 
-// fetchCoreData fetches monitors, healthchecks, and outages in parallel.
-// Outage failures are non-fatal: the error is logged and nil outages are returned,
-// signalling the caller to retain stale outage data. Monitor or healthcheck
-// failures are fatal and cause a non-nil error return.
-func (c *Collector) fetchCoreData(ctx context.Context) ([]hyperping.Monitor, []hyperping.Healthcheck, []hyperping.Outage, error) {
+// fetchCoreData fetches monitors, healthchecks, outages, maintenance windows, and incidents in parallel.
+// Outage, maintenance, and incident failures are non-fatal: errors are logged and nil slices are returned,
+// signalling the caller to retain stale data. Monitor or healthcheck failures are fatal.
+func (c *Collector) fetchCoreData(ctx context.Context) (
+	[]hyperping.Monitor, []hyperping.Healthcheck, []hyperping.Outage,
+	[]hyperping.Maintenance, []hyperping.Incident, error) {
 	var (
-		monitors     []hyperping.Monitor
-		healthchecks []hyperping.Healthcheck
-		outages      []hyperping.Outage
-		monErr       error
-		hcErr        error
-		outageErr    error
-		wg           sync.WaitGroup
+		monitors           []hyperping.Monitor
+		healthchecks       []hyperping.Healthcheck
+		outages            []hyperping.Outage
+		maintenanceWindows []hyperping.Maintenance
+		incidents          []hyperping.Incident
+		monErr             error
+		hcErr              error
+		outageErr          error
+		maintenanceErr     error
+		incidentsErr       error
+		wg                 sync.WaitGroup
 	)
 
-	wg.Add(3)
+	wg.Add(5)
 	go func() { defer wg.Done(); monitors, monErr = c.api.ListMonitors(ctx) }()
 	go func() { defer wg.Done(); healthchecks, hcErr = c.api.ListHealthchecks(ctx) }()
 	go func() { defer wg.Done(); outages, outageErr = c.api.ListOutages(ctx) }()
+	go func() { defer wg.Done(); maintenanceWindows, maintenanceErr = c.api.ListMaintenance(ctx) }()
+	go func() { defer wg.Done(); incidents, incidentsErr = c.api.ListIncidents(ctx) }()
 	wg.Wait()
 
 	if monErr != nil {
 		c.logger.Error("failed to list monitors", "error", monErr)
-		return nil, nil, nil, monErr
+		return nil, nil, nil, nil, nil, monErr
 	}
 	if hcErr != nil {
 		c.logger.Error("failed to list healthchecks", "error", hcErr)
-		return nil, nil, nil, hcErr
+		return nil, nil, nil, nil, nil, hcErr
 	}
 	if outageErr != nil {
 		c.logger.Warn("failed to list outages; outage metrics will use stale data", "error", outageErr)
-		return monitors, healthchecks, nil, nil
+		outages = nil
 	}
-	return monitors, healthchecks, outages, nil
+	if maintenanceErr != nil {
+		c.logger.Warn("failed to list maintenance windows; metrics will use stale data", "error", maintenanceErr)
+		maintenanceWindows = nil
+	}
+	if incidentsErr != nil {
+		c.logger.Warn("failed to list incidents; metrics will use stale data", "error", incidentsErr)
+		incidents = nil
+	}
+	return monitors, healthchecks, outages, maintenanceWindows, incidents, nil
 }
 
 // fetchReports fetches SLA reports for all periods in parallel. Failures per
@@ -231,7 +280,7 @@ func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string]
 func (c *Collector) Refresh(ctx context.Context) {
 	start := time.Now()
 
-	monitors, healthchecks, outages, err := c.fetchCoreData(ctx)
+	monitors, healthchecks, outages, maintenanceWindows, incidents, err := c.fetchCoreData(ctx)
 	reportResults := map[string][]hyperping.MonitorReport{}
 	if err == nil {
 		reportResults = c.fetchReports(ctx, start.UTC())
@@ -251,6 +300,12 @@ func (c *Collector) Refresh(ctx context.Context) {
 	if outages != nil {
 		c.outages = outages
 	}
+	if maintenanceWindows != nil {
+		c.maintenanceWindows = maintenanceWindows
+	}
+	if incidents != nil {
+		c.incidents = incidents
+	}
 	c.monitors = monitors
 	c.healthchecks = healthchecks
 	// Merge successful period results; periods that failed retain previous data.
@@ -265,6 +320,8 @@ func (c *Collector) Refresh(ctx context.Context) {
 		"monitors", len(monitors),
 		"healthchecks", len(healthchecks),
 		"outages", len(c.outages),
+		"maintenance_windows", len(c.maintenanceWindows),
+		"incidents", len(c.incidents),
 		"report_periods", len(reportResults),
 		"duration", dur,
 	)
@@ -306,6 +363,10 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tenantActiveOutages
 	ch <- c.tenantAvgSLA
 	ch <- c.monitorTier
+	ch <- c.monitorInMaintenance
+	ch <- c.monitorUpByRegion
+	ch <- c.incidentsOpen
+	ch <- c.maintenanceWindowsActive
 }
 
 // takeSnapshot copies protected fields under the caller's read lock.
@@ -319,15 +380,27 @@ func (c *Collector) takeSnapshot() collectorSnapshot {
 	for k, v := range c.reportsByPeriod {
 		reports[k] = v
 	}
+	monIdx := make(map[string]hyperping.Monitor, len(c.monitors))
+	for _, m := range c.monitors {
+		monIdx[m.UUID] = m
+	}
+	outageIdx := buildActiveOutageIndex(c.outages)
+	maintenanceIdx := buildMaintenanceIndex(c.maintenanceWindows, c.monitors)
+	regionDownIdx := buildRegionDownIndex(outageIdx)
 	return collectorSnapshot{
-		monitors:        c.monitors,
-		healthchecks:    c.healthchecks,
-		outageIndex:     buildActiveOutageIndex(c.outages),
-		reports:         reports,
-		lastSuccessTime: c.lastSuccessTime,
-		scrapeOK:        c.lastScrapeOK,
-		scrapeDur:       c.lastScrapeDur,
-		dataAge:         dataAge,
+		monitors:               c.monitors,
+		healthchecks:           c.healthchecks,
+		outageIndex:            outageIdx,
+		monitorIndex:           monIdx,
+		reports:                reports,
+		lastSuccessTime:        c.lastSuccessTime,
+		scrapeOK:               c.lastScrapeOK,
+		scrapeDur:              c.lastScrapeDur,
+		dataAge:                dataAge,
+		maintenanceIndex:       maintenanceIdx,
+		regionDownIndex:        regionDownIdx,
+		openIncidentCount:      countOpenIncidents(c.incidents),
+		activeMaintenanceCount: countActiveMaintenanceWindows(c.maintenanceWindows),
 	}
 }
 
@@ -347,35 +420,58 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 // emitMonitorMetrics sends per-monitor metrics derived from the snapshot.
 func (c *Collector) emitMonitorMetrics(ch chan<- prometheus.Metric, snap collectorSnapshot) {
 	for _, m := range snap.monitors {
+		tenant := extractTenant(m.Name)
+		tier := escalationTier(m)
 		ch <- prometheus.MustNewConstMetric(c.monitorUp, prometheus.GaugeValue,
-			boolToFloat64(m.Status == "up"), m.UUID, m.Name)
+			boolToFloat64(m.Status == "up"), m.UUID, m.Name, tenant, tier)
 		ch <- prometheus.MustNewConstMetric(c.monitorPaused, prometheus.GaugeValue,
-			boolToFloat64(m.Paused), m.UUID, m.Name)
+			boolToFloat64(m.Paused), m.UUID, m.Name, tenant, tier)
 		ch <- prometheus.MustNewConstMetric(c.monitorCheckInterval, prometheus.GaugeValue,
-			float64(m.CheckFrequency), m.UUID, m.Name)
+			float64(m.CheckFrequency), m.UUID, m.Name, tenant, tier)
 		// M2: strip query params to prevent label cardinality explosion.
 		ch <- prometheus.MustNewConstMetric(c.monitorInfo, prometheus.GaugeValue, 1,
 			m.UUID, m.Name, m.Protocol, sanitizeURL(m.URL), m.ProjectUUID, m.HTTPMethod)
 
 		if m.SSLExpiration != nil {
 			ch <- prometheus.MustNewConstMetric(c.monitorSSLExpDays, prometheus.GaugeValue,
-				float64(*m.SSLExpiration), m.UUID, m.Name)
+				float64(*m.SSLExpiration), m.UUID, m.Name, tenant, tier)
 		}
 
 		// OPS-32: active outage state and HTTP status code.
 		activeOutage, hasActive := snap.outageIndex[m.UUID]
 		ch <- prometheus.MustNewConstMetric(c.monitorOutageActive, prometheus.GaugeValue,
-			boolToFloat64(hasActive), m.UUID, m.Name)
+			boolToFloat64(hasActive), m.UUID, m.Name, tenant, tier)
 		statusCode := 0
 		if hasActive {
 			statusCode = activeOutage.StatusCode
 		}
 		ch <- prometheus.MustNewConstMetric(c.monitorActiveOutageStatus, prometheus.GaugeValue,
-			float64(statusCode), m.UUID, m.Name)
+			float64(statusCode), m.UUID, m.Name, tenant, tier)
 
 		// OPS-39: escalation tier info.
 		ch <- prometheus.MustNewConstMetric(c.monitorTier, prometheus.GaugeValue, 1,
-			m.UUID, m.Name, escalationTier(m))
+			m.UUID, m.Name, tier)
+
+		// EXP-02: maintenance window coverage.
+		inMaint := 0.0
+		if snap.maintenanceIndex[m.UUID] {
+			inMaint = 1.0
+		}
+		ch <- prometheus.MustNewConstMetric(c.monitorInMaintenance, prometheus.GaugeValue,
+			inMaint, m.UUID, m.Name, tenant, tier)
+
+		// EXP-03: per-region up/down status.
+		if len(m.Regions) > 0 {
+			downRegions := snap.regionDownIndex[m.UUID]
+			for _, region := range m.Regions {
+				val := 1.0
+				if downRegions[region] {
+					val = 0.0
+				}
+				ch <- prometheus.MustNewConstMetric(c.monitorUpByRegion, prometheus.GaugeValue,
+					val, m.UUID, m.Name, tenant, tier, region)
+			}
+		}
 	}
 }
 
@@ -397,18 +493,21 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 		reports := snap.reports[period]
 		slaSum := 0.0
 		for _, r := range reports {
+			mon := snap.monitorIndex[r.UUID]
+			tenant := extractTenant(mon.Name)
+			tier := escalationTier(mon)
 			sla := r.SLA / 100.0 // API returns 0–100; expose as 0–1
 			ch <- prometheus.MustNewConstMetric(c.monitorSLA, prometheus.GaugeValue,
-				sla, r.UUID, r.Name, period)
+				sla, r.UUID, r.Name, tenant, tier, period)
 			ch <- prometheus.MustNewConstMetric(c.monitorOutages, prometheus.GaugeValue,
-				float64(r.Outages.Count), r.UUID, r.Name, period)
+				float64(r.Outages.Count), r.UUID, r.Name, tenant, tier, period)
 			ch <- prometheus.MustNewConstMetric(c.monitorDowntime, prometheus.GaugeValue,
-				float64(r.Outages.TotalDowntime), r.UUID, r.Name, period)
+				float64(r.Outages.TotalDowntime), r.UUID, r.Name, tenant, tier, period)
 			ch <- prometheus.MustNewConstMetric(c.monitorLongestOutage, prometheus.GaugeValue,
-				float64(r.Outages.LongestOutage), r.UUID, r.Name, period)
+				float64(r.Outages.LongestOutage), r.UUID, r.Name, tenant, tier, period)
 			if r.MTTR > 0 {
 				ch <- prometheus.MustNewConstMetric(c.monitorMTTR, prometheus.GaugeValue,
-					float64(r.MTTR), r.UUID, r.Name, period)
+					float64(r.MTTR), r.UUID, r.Name, tenant, tier, period)
 			}
 			slaSum += sla
 		}
@@ -457,6 +556,12 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 		ch <- prometheus.MustNewConstMetric(c.tenantHealthScore, prometheus.GaugeValue,
 			computeHealthScore(upRatio, avg30dSLA, len(snap.outageIndex), len(snap.monitors)))
 	}
+
+	// EXP-04: open incidents and active maintenance windows.
+	ch <- prometheus.MustNewConstMetric(c.incidentsOpen, prometheus.GaugeValue,
+		float64(snap.openIncidentCount))
+	ch <- prometheus.MustNewConstMetric(c.maintenanceWindowsActive, prometheus.GaugeValue,
+		float64(snap.activeMaintenanceCount))
 }
 
 // buildActiveOutageIndex returns a map of monitor UUID → active Outage.
@@ -469,6 +574,77 @@ func buildActiveOutageIndex(outages []hyperping.Outage) map[string]hyperping.Out
 		}
 	}
 	return idx
+}
+
+// buildMaintenanceIndex returns a map of monitor UUID -> true for all monitors
+// covered by at least one currently-active maintenance window (Status == "ongoing").
+// If an active window has no monitor UUIDs (account-level window), every monitor
+// in the monitors slice is considered covered.
+func buildMaintenanceIndex(windows []hyperping.Maintenance, monitors []hyperping.Monitor) map[string]bool {
+	idx := make(map[string]bool)
+	for _, w := range windows {
+		if w.Status != "ongoing" {
+			continue
+		}
+		if len(w.Monitors) == 0 {
+			// Account-level window: covers all monitors.
+			for _, m := range monitors {
+				idx[m.UUID] = true
+			}
+		} else {
+			for _, uuid := range w.Monitors {
+				idx[uuid] = true
+			}
+		}
+	}
+	return idx
+}
+
+// buildRegionDownIndex returns a map of monitor UUID -> set of region names
+// that are confirmed down based on active outages.
+// ConfirmedLocations is a comma-separated string of region names.
+func buildRegionDownIndex(outageIndex map[string]hyperping.Outage) map[string]map[string]bool {
+	idx := make(map[string]map[string]bool)
+	for monUUID, o := range outageIndex {
+		regionSet := make(map[string]bool)
+		if o.DetectedLocation != "" {
+			regionSet[o.DetectedLocation] = true
+		}
+		if o.ConfirmedLocations != "" {
+			for _, r := range strings.Split(o.ConfirmedLocations, ",") {
+				r = strings.TrimSpace(r)
+				if r != "" {
+					regionSet[r] = true
+				}
+			}
+		}
+		if len(regionSet) > 0 {
+			idx[monUUID] = regionSet
+		}
+	}
+	return idx
+}
+
+// countOpenIncidents returns the number of incidents where Type != "resolved".
+func countOpenIncidents(incidents []hyperping.Incident) int {
+	count := 0
+	for _, inc := range incidents {
+		if inc.Type != "resolved" {
+			count++
+		}
+	}
+	return count
+}
+
+// countActiveMaintenanceWindows returns the number of windows with Status == "ongoing".
+func countActiveMaintenanceWindows(windows []hyperping.Maintenance) int {
+	count := 0
+	for _, w := range windows {
+		if w.Status == "ongoing" {
+			count++
+		}
+	}
+	return count
 }
 
 // sanitizeURL strips query parameters and fragments from a URL to prevent
@@ -489,16 +665,29 @@ func sanitizeURL(raw string) string {
 	return u.String()
 }
 
+// extractTenant derives the tenant ID from monitor name convention "[TENANT-ID]-SuffixName".
+// Returns empty string for monitors whose name does not start with "[".
+func extractTenant(monitorName string) string {
+	if !strings.HasPrefix(monitorName, "[") {
+		return ""
+	}
+	end := strings.Index(monitorName, "]")
+	if end < 0 {
+		return ""
+	}
+	return monitorName[1:end]
+}
+
 // escalationTier classifies the monitor as "core", "noncore", or "unknown".
 // Returns "unknown" when no escalation policy is set (nil) or the policy name is empty.
-// Returns "noncore" when the policy name contains "noncore" (case-insensitive).
+// Returns "noncore" when the policy name contains "noncore" or "non-core" (case-insensitive).
 // Returns "core" otherwise.
 func escalationTier(m hyperping.Monitor) string {
 	if m.EscalationPolicy == nil || m.EscalationPolicy.Name == "" {
 		return "unknown"
 	}
 	name := strings.ToLower(m.EscalationPolicy.Name)
-	if strings.Contains(name, "noncore") {
+	if strings.Contains(name, "noncore") || strings.Contains(name, "non-core") {
 		return "noncore"
 	}
 	return "core"
