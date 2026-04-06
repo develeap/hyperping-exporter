@@ -490,11 +490,11 @@ func sanitizeURL(raw string) string {
 }
 
 // escalationTier classifies the monitor as "core", "noncore", or "unknown".
-// Returns "unknown" when no escalation policy is set (nil).
+// Returns "unknown" when no escalation policy is set (nil) or the policy name is empty.
 // Returns "noncore" when the policy name contains "noncore" (case-insensitive).
 // Returns "core" otherwise.
 func escalationTier(m hyperping.Monitor) string {
-	if m.EscalationPolicy == nil {
+	if m.EscalationPolicy == nil || m.EscalationPolicy.Name == "" {
 		return "unknown"
 	}
 	name := strings.ToLower(m.EscalationPolicy.Name)
