@@ -151,3 +151,12 @@ jobs:
           exit-code: 1
           severity: CRITICAL,HIGH
           format: table
+      - name: Report Docker build status
+        if: always()
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ github.sha }} \
+            -f state=${{ job.status == 'success' && 'success' || 'failure' }} \
+            -f context="Docker build" \
+            -f description="Docker build & scan ${{ job.status }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

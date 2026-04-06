@@ -152,6 +152,65 @@ func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 	assert.True(t, c.IsReady())
 }
 
+func TestRefresh_MaintenanceErrorIsNonFatal(t *testing.T) {
+	// Maintenance API failures should not mark the scrape as failed; stale data is retained.
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+		maintenanceWindows: []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{"mon_1"}},
+		},
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	// Second refresh: maintenance API fails; stale window data should be retained.
+	api.maintenanceErr = errors.New("maintenance api error")
+	api.maintenanceWindows = nil
+	c.Refresh(context.Background())
+
+	assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
+
+	// Monitor should still show in_maintenance=1 from the retained stale window.
+	expected := `
+# HELP hyperping_monitor_in_maintenance 1 if the monitor is currently covered by an active maintenance window, 0 otherwise.
+# TYPE hyperping_monitor_in_maintenance gauge
+hyperping_monitor_in_maintenance{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitor_in_maintenance")
+	require.NoError(t, err)
+}
+
+func TestRefresh_IncidentErrorIsNonFatal(t *testing.T) {
+	// Incident API failures should not mark the scrape as failed; stale data is retained.
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{},
+		healthchecks: []hyperping.Healthcheck{},
+		incidents:    []hyperping.Incident{{UUID: "i1", Type: "investigating"}},
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	// Second refresh: incidents API fails; stale count should be retained.
+	api.incidentsErr = errors.New("incidents api error")
+	api.incidents = nil
+	c.Refresh(context.Background())
+
+	assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
+
+	expected := `
+# HELP hyperping_incidents_open Number of open (non-resolved) incidents.
+# TYPE hyperping_incidents_open gauge
+hyperping_incidents_open 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
+	require.NoError(t, err)
+}
+
 func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 	api := &mockAPI{
 		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
@@ -895,44 +954,59 @@ func TestBuildMaintenanceIndex(t *testing.T) {
 	}
 
 	t.Run("no windows", func(t *testing.T) {
-		idx := buildMaintenanceIndex(nil, monitors)
+		idx, count := buildMaintenanceIndex(nil, monitors)
 		assert.Empty(t, idx)
+		assert.Equal(t, 0, count)
 	})
 
 	t.Run("ongoing window covers subset", func(t *testing.T) {
 		windows := []hyperping.Maintenance{
 			{Status: "ongoing", Monitors: []string{"m1", "m2"}},
 		}
-		idx := buildMaintenanceIndex(windows, monitors)
+		idx, count := buildMaintenanceIndex(windows, monitors)
 		assert.True(t, idx["m1"])
 		assert.True(t, idx["m2"])
 		assert.False(t, idx["m3"])
+		assert.Equal(t, 1, count)
 	})
 
 	t.Run("upcoming window ignored", func(t *testing.T) {
 		windows := []hyperping.Maintenance{
 			{Status: "upcoming", Monitors: []string{"m1"}},
 		}
-		idx := buildMaintenanceIndex(windows, monitors)
+		idx, count := buildMaintenanceIndex(windows, monitors)
 		assert.Empty(t, idx)
+		assert.Equal(t, 0, count)
 	})
 
 	t.Run("completed window ignored", func(t *testing.T) {
 		windows := []hyperping.Maintenance{
 			{Status: "completed", Monitors: []string{"m1"}},
 		}
-		idx := buildMaintenanceIndex(windows, monitors)
+		idx, count := buildMaintenanceIndex(windows, monitors)
 		assert.Empty(t, idx)
+		assert.Equal(t, 0, count)
 	})
 
 	t.Run("account-level window covers all monitors", func(t *testing.T) {
 		windows := []hyperping.Maintenance{
 			{Status: "ongoing", Monitors: []string{}},
 		}
-		idx := buildMaintenanceIndex(windows, monitors)
+		idx, count := buildMaintenanceIndex(windows, monitors)
 		assert.True(t, idx["m1"])
 		assert.True(t, idx["m2"])
 		assert.True(t, idx["m3"])
+		assert.Equal(t, 1, count)
+	})
+
+	t.Run("multiple active windows counted correctly", func(t *testing.T) {
+		windows := []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{"m1"}},
+			{Status: "ongoing", Monitors: []string{"m2"}},
+			{Status: "upcoming", Monitors: []string{"m3"}},
+		}
+		_, count := buildMaintenanceIndex(windows, monitors)
+		assert.Equal(t, 2, count)
 	})
 }
 

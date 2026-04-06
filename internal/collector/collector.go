@@ -195,55 +195,58 @@ func (c *Collector) Start(ctx context.Context) {
 	}
 }
 
+// coreData holds the results of a parallel core API fetch.
+type coreData struct {
+	monitors     []hyperping.Monitor
+	healthchecks []hyperping.Healthcheck
+	outages      []hyperping.Outage
+	maintenance  []hyperping.Maintenance
+	incidents    []hyperping.Incident
+}
+
 // fetchCoreData fetches monitors, healthchecks, outages, maintenance windows, and incidents in parallel.
 // Outage, maintenance, and incident failures are non-fatal: errors are logged and nil slices are returned,
 // signalling the caller to retain stale data. Monitor or healthcheck failures are fatal.
-func (c *Collector) fetchCoreData(ctx context.Context) (
-	[]hyperping.Monitor, []hyperping.Healthcheck, []hyperping.Outage,
-	[]hyperping.Maintenance, []hyperping.Incident, error) {
+func (c *Collector) fetchCoreData(ctx context.Context) (coreData, error) {
 	var (
-		monitors           []hyperping.Monitor
-		healthchecks       []hyperping.Healthcheck
-		outages            []hyperping.Outage
-		maintenanceWindows []hyperping.Maintenance
-		incidents          []hyperping.Incident
-		monErr             error
-		hcErr              error
-		outageErr          error
-		maintenanceErr     error
-		incidentsErr       error
-		wg                 sync.WaitGroup
+		result         coreData
+		monErr         error
+		hcErr          error
+		outageErr      error
+		maintenanceErr error
+		incidentsErr   error
+		wg             sync.WaitGroup
 	)
 
 	wg.Add(5)
-	go func() { defer wg.Done(); monitors, monErr = c.api.ListMonitors(ctx) }()
-	go func() { defer wg.Done(); healthchecks, hcErr = c.api.ListHealthchecks(ctx) }()
-	go func() { defer wg.Done(); outages, outageErr = c.api.ListOutages(ctx) }()
-	go func() { defer wg.Done(); maintenanceWindows, maintenanceErr = c.api.ListMaintenance(ctx) }()
-	go func() { defer wg.Done(); incidents, incidentsErr = c.api.ListIncidents(ctx) }()
+	go func() { defer wg.Done(); result.monitors, monErr = c.api.ListMonitors(ctx) }()
+	go func() { defer wg.Done(); result.healthchecks, hcErr = c.api.ListHealthchecks(ctx) }()
+	go func() { defer wg.Done(); result.outages, outageErr = c.api.ListOutages(ctx) }()
+	go func() { defer wg.Done(); result.maintenance, maintenanceErr = c.api.ListMaintenance(ctx) }()
+	go func() { defer wg.Done(); result.incidents, incidentsErr = c.api.ListIncidents(ctx) }()
 	wg.Wait()
 
 	if monErr != nil {
 		c.logger.Error("failed to list monitors", "error", monErr)
-		return nil, nil, nil, nil, nil, monErr
+		return coreData{}, monErr
 	}
 	if hcErr != nil {
 		c.logger.Error("failed to list healthchecks", "error", hcErr)
-		return nil, nil, nil, nil, nil, hcErr
+		return coreData{}, hcErr
 	}
 	if outageErr != nil {
 		c.logger.Warn("failed to list outages; outage metrics will use stale data", "error", outageErr)
-		outages = nil
+		result.outages = nil
 	}
 	if maintenanceErr != nil {
 		c.logger.Warn("failed to list maintenance windows; metrics will use stale data", "error", maintenanceErr)
-		maintenanceWindows = nil
+		result.maintenance = nil
 	}
 	if incidentsErr != nil {
 		c.logger.Warn("failed to list incidents; metrics will use stale data", "error", incidentsErr)
-		incidents = nil
+		result.incidents = nil
 	}
-	return monitors, healthchecks, outages, maintenanceWindows, incidents, nil
+	return result, nil
 }
 
 // fetchReports fetches SLA reports for all periods in parallel. Failures per
@@ -280,7 +283,7 @@ func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string]
 func (c *Collector) Refresh(ctx context.Context) {
 	start := time.Now()
 
-	monitors, healthchecks, outages, maintenanceWindows, incidents, err := c.fetchCoreData(ctx)
+	core, err := c.fetchCoreData(ctx)
 	reportResults := map[string][]hyperping.MonitorReport{}
 	if err == nil {
 		reportResults = c.fetchReports(ctx, start.UTC())
@@ -297,17 +300,17 @@ func (c *Collector) Refresh(ctx context.Context) {
 		return
 	}
 
-	if outages != nil {
-		c.outages = outages
+	if core.outages != nil {
+		c.outages = core.outages
 	}
-	if maintenanceWindows != nil {
-		c.maintenanceWindows = maintenanceWindows
+	if core.maintenance != nil {
+		c.maintenanceWindows = core.maintenance
 	}
-	if incidents != nil {
-		c.incidents = incidents
+	if core.incidents != nil {
+		c.incidents = core.incidents
 	}
-	c.monitors = monitors
-	c.healthchecks = healthchecks
+	c.monitors = core.monitors
+	c.healthchecks = core.healthchecks
 	// Merge successful period results; periods that failed retain previous data.
 	for period, reports := range reportResults {
 		c.reportsByPeriod[period] = reports
@@ -317,8 +320,8 @@ func (c *Collector) Refresh(ctx context.Context) {
 	c.lastSuccessTime = time.Now()
 
 	c.logger.Info("cache refreshed",
-		"monitors", len(monitors),
-		"healthchecks", len(healthchecks),
+		"monitors", len(core.monitors),
+		"healthchecks", len(core.healthchecks),
 		"outages", len(c.outages),
 		"maintenance_windows", len(c.maintenanceWindows),
 		"incidents", len(c.incidents),
@@ -369,47 +372,53 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.maintenanceWindowsActive
 }
 
-// takeSnapshot copies protected fields under the caller's read lock.
-// Must be called with c.mu.RLock held.
-func (c *Collector) takeSnapshot() collectorSnapshot {
-	var dataAge float64
-	if !c.lastSuccessTime.IsZero() {
-		dataAge = time.Since(c.lastSuccessTime).Seconds()
-	}
+// Collect implements prometheus.Collector.
+// Cached slices are copied under a minimal read lock; all index building and
+// metric emission happen outside the lock to avoid blocking concurrent Refresh calls.
+func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	// STEP 1: Copy raw cached state under read lock (no CPU-heavy work here).
+	c.mu.RLock()
+	monitors := c.monitors
+	healthchecks := c.healthchecks
+	outages := c.outages
+	maintenance := c.maintenanceWindows
+	incidents := c.incidents
 	reports := make(map[string][]hyperping.MonitorReport, len(c.reportsByPeriod))
 	for k, v := range c.reportsByPeriod {
 		reports[k] = v
 	}
-	monIdx := make(map[string]hyperping.Monitor, len(c.monitors))
-	for _, m := range c.monitors {
+	lastSuccess := c.lastSuccessTime
+	scrapeOK := c.lastScrapeOK
+	scrapeDur := c.lastScrapeDur
+	c.mu.RUnlock()
+
+	// STEP 2: Build all derived indices outside the lock.
+	var dataAge float64
+	if !lastSuccess.IsZero() {
+		dataAge = time.Since(lastSuccess).Seconds()
+	}
+	outageIdx := buildActiveOutageIndex(outages)
+	monIdx := make(map[string]hyperping.Monitor, len(monitors))
+	for _, m := range monitors {
 		monIdx[m.UUID] = m
 	}
-	outageIdx := buildActiveOutageIndex(c.outages)
-	maintenanceIdx := buildMaintenanceIndex(c.maintenanceWindows, c.monitors)
-	regionDownIdx := buildRegionDownIndex(outageIdx)
-	return collectorSnapshot{
-		monitors:               c.monitors,
-		healthchecks:           c.healthchecks,
+	maintenanceIdx, activeMaintenanceCount := buildMaintenanceIndex(maintenance, monitors)
+
+	snap := collectorSnapshot{
+		monitors:               monitors,
+		healthchecks:           healthchecks,
 		outageIndex:            outageIdx,
 		monitorIndex:           monIdx,
 		reports:                reports,
-		lastSuccessTime:        c.lastSuccessTime,
-		scrapeOK:               c.lastScrapeOK,
-		scrapeDur:              c.lastScrapeDur,
+		lastSuccessTime:        lastSuccess,
+		scrapeOK:               scrapeOK,
+		scrapeDur:              scrapeDur,
 		dataAge:                dataAge,
 		maintenanceIndex:       maintenanceIdx,
-		regionDownIndex:        regionDownIdx,
-		openIncidentCount:      countOpenIncidents(c.incidents),
-		activeMaintenanceCount: countActiveMaintenanceWindows(c.maintenanceWindows),
+		regionDownIndex:        buildRegionDownIndex(outageIdx),
+		openIncidentCount:      countOpenIncidents(incidents),
+		activeMaintenanceCount: activeMaintenanceCount,
 	}
-}
-
-// Collect implements prometheus.Collector.
-// A snapshot is taken under a brief read lock; all metric sends happen lock-free.
-func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	c.mu.RLock()
-	snap := c.takeSnapshot()
-	c.mu.RUnlock()
 
 	c.emitMonitorMetrics(ch, snap)
 	c.emitHealthcheckMetrics(ch, snap)
@@ -576,16 +585,18 @@ func buildActiveOutageIndex(outages []hyperping.Outage) map[string]hyperping.Out
 	return idx
 }
 
-// buildMaintenanceIndex returns a map of monitor UUID -> true for all monitors
-// covered by at least one currently-active maintenance window (Status == "ongoing").
-// If an active window has no monitor UUIDs (account-level window), every monitor
-// in the monitors slice is considered covered.
-func buildMaintenanceIndex(windows []hyperping.Maintenance, monitors []hyperping.Monitor) map[string]bool {
+// buildMaintenanceIndex returns a coverage map and the count of active windows.
+// The map contains monitor UUID -> true for all monitors covered by at least one
+// currently-active window (Status == "ongoing"). If an active window has no monitor
+// UUIDs (account-level window), every monitor in the monitors slice is considered covered.
+func buildMaintenanceIndex(windows []hyperping.Maintenance, monitors []hyperping.Monitor) (map[string]bool, int) {
 	idx := make(map[string]bool)
+	activeCount := 0
 	for _, w := range windows {
 		if w.Status != "ongoing" {
 			continue
 		}
+		activeCount++
 		if len(w.Monitors) == 0 {
 			// Account-level window: covers all monitors.
 			for _, m := range monitors {
@@ -597,7 +608,7 @@ func buildMaintenanceIndex(windows []hyperping.Maintenance, monitors []hyperping
 			}
 		}
 	}
-	return idx
+	return idx, activeCount
 }
 
 // buildRegionDownIndex returns a map of monitor UUID -> set of region names
@@ -630,17 +641,6 @@ func countOpenIncidents(incidents []hyperping.Incident) int {
 	count := 0
 	for _, inc := range incidents {
 		if inc.Type != "resolved" {
-			count++
-		}
-	}
-	return count
-}
-
-// countActiveMaintenanceWindows returns the number of windows with Status == "ongoing".
-func countActiveMaintenanceWindows(windows []hyperping.Maintenance) int {
-	count := 0
-	for _, w := range windows {
-		if w.Status == "ongoing" {
 			count++
 		}
 	}
