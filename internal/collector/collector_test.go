@@ -23,14 +23,18 @@ import (
 
 // mockAPI implements HyperpingAPI for testing.
 type mockAPI struct {
-	monitors        []hyperping.Monitor
-	healthchecks    []hyperping.Healthcheck
-	outages         []hyperping.Outage
-	reports         []hyperping.MonitorReport
-	monitorsErr     error
-	healthchecksErr error
-	outagesErr      error
-	reportsErr      error
+	monitors           []hyperping.Monitor
+	healthchecks       []hyperping.Healthcheck
+	outages            []hyperping.Outage
+	reports            []hyperping.MonitorReport
+	maintenanceWindows []hyperping.Maintenance
+	incidents          []hyperping.Incident
+	monitorsErr        error
+	healthchecksErr    error
+	outagesErr         error
+	reportsErr         error
+	maintenanceErr     error
+	incidentsErr       error
 }
 
 func (m *mockAPI) ListMonitors(_ context.Context) ([]hyperping.Monitor, error) {
@@ -49,6 +53,14 @@ func (m *mockAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperpin
 	return m.reports, m.reportsErr
 }
 
+func (m *mockAPI) ListMaintenance(_ context.Context) ([]hyperping.Maintenance, error) {
+	return m.maintenanceWindows, m.maintenanceErr
+}
+
+func (m *mockAPI) ListIncidents(_ context.Context) ([]hyperping.Incident, error) {
+	return m.incidents, m.incidentsErr
+}
+
 func newTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -63,7 +75,7 @@ func TestNewCollector(t *testing.T) {
 func TestDescribe(t *testing.T) {
 	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
 
-	ch := make(chan *prometheus.Desc, 30)
+	ch := make(chan *prometheus.Desc, 34)
 	c.Describe(ch)
 	close(ch)
 
@@ -71,8 +83,8 @@ func TestDescribe(t *testing.T) {
 	for d := range ch {
 		descs = append(descs, d)
 	}
-	// 12 original + 13 new (OPS-31/32/33/34/39) = 25
-	assert.Len(t, descs, 25)
+	// 12 original + 13 new (OPS-31/32/33/34/39) + 4 new (EXP-02/03/04) = 29
+	assert.Len(t, descs, 29)
 }
 
 func TestRefresh_Success(t *testing.T) {
@@ -140,6 +152,65 @@ func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 	assert.True(t, c.IsReady())
 }
 
+func TestRefresh_MaintenanceErrorIsNonFatal(t *testing.T) {
+	// Maintenance API failures should not mark the scrape as failed; stale data is retained.
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+		maintenanceWindows: []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{"mon_1"}},
+		},
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	// Second refresh: maintenance API fails; stale window data should be retained.
+	api.maintenanceErr = errors.New("maintenance api error")
+	api.maintenanceWindows = nil
+	c.Refresh(context.Background())
+
+	assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
+
+	// Monitor should still show in_maintenance=1 from the retained stale window.
+	expected := `
+# HELP hyperping_monitor_in_maintenance 1 if the monitor is currently covered by an active maintenance window, 0 otherwise.
+# TYPE hyperping_monitor_in_maintenance gauge
+hyperping_monitor_in_maintenance{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitor_in_maintenance")
+	require.NoError(t, err)
+}
+
+func TestRefresh_IncidentErrorIsNonFatal(t *testing.T) {
+	// Incident API failures should not mark the scrape as failed; stale data is retained.
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{},
+		healthchecks: []hyperping.Healthcheck{},
+		incidents:    []hyperping.Incident{{UUID: "i1", Type: "investigating"}},
+	}
+
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	// Second refresh: incidents API fails; stale count should be retained.
+	api.incidentsErr = errors.New("incidents api error")
+	api.incidents = nil
+	c.Refresh(context.Background())
+
+	assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
+
+	expected := `
+# HELP hyperping_incidents_open Number of open (non-resolved) incidents.
+# TYPE hyperping_incidents_open gauge
+hyperping_incidents_open 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
+	require.NoError(t, err)
+}
+
 func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 	api := &mockAPI{
 		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
@@ -157,11 +228,11 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 	assert.True(t, c.IsReady())
 
 	// Old monitor data remains; lastSuccessTime was set on first scrape so data_age IS emitted.
-	// Per monitor: up + paused + check_interval + info + outage_active + status_code + tier = 7
-	// Summary: 4, Tenant: up_ratio + active_outages + data_age = 3 (health_score omitted: no reports)
-	// Total: 7 + 4 + 3 = 14
+	// Per monitor: up + paused + check_interval + info + outage_active + status_code + tier + inMaintenance = 8
+	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
+	// Total: 8 + 4 + 5 = 17
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 14, count)
+	assert.Equal(t, 17, count)
 }
 
 func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
@@ -199,22 +270,23 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
-	// mon_1: up + paused + interval + info + ssl + outage_active + status_code + tier = 8
-	// mon_2: up + paused + interval + info + outage_active + status_code + tier = 7
+	// mon_1: up + paused + interval + info + ssl + outage_active + status_code + tier + inMaintenance = 9
+	// mon_2: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
 	// hc: up + paused + period = 3
 	// Summary: monitors + healthchecks + scrape_duration + scrape_success = 4
-	// Tenant: up_ratio + active_outages + data_age = 3 (health_score omitted: no reports in mock)
-	// Total = 25
+	// Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
+	// Total = 29
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 25, count)
+	assert.Equal(t, 29, count)
 }
 
 func TestCollect_EmptyCache(t *testing.T) {
 	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
 
-	// No refresh: 4 summary + 2 tenant (up_ratio + active_outages; no data_age, no health_score) = 6
+	// No refresh: 4 summary + 4 tenant (up_ratio + active_outages + incidents_open + maintenance_windows_active;
+	// no data_age, no health_score) = 8
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 6, count)
+	assert.Equal(t, 8, count)
 }
 
 func TestCollect_NoSSLExpiration(t *testing.T) {
@@ -235,11 +307,11 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
-	// Monitor: up + paused + interval + info + outage_active + status_code + tier = 7
-	// Summary: 4, Tenant: up_ratio + active_outages + data_age = 3 (health_score omitted: no reports)
-	// Total = 14
+	// Monitor: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
+	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
+	// Total = 17
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 14, count)
+	assert.Equal(t, 17, count)
 }
 
 func TestCollect_SummaryMetricValues(t *testing.T) {
@@ -300,16 +372,16 @@ func TestCollect_MonitorMetricValues(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_up Whether the monitor is up (1) or down (0).
 # TYPE hyperping_monitor_up gauge
-hyperping_monitor_up{name="Web",uuid="mon_1"} 1
+hyperping_monitor_up{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
 # HELP hyperping_monitor_paused Whether the monitor is paused (1) or active (0).
 # TYPE hyperping_monitor_paused gauge
-hyperping_monitor_paused{name="Web",uuid="mon_1"} 0
+hyperping_monitor_paused{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0
 # HELP hyperping_monitor_check_interval_seconds Monitor check frequency in seconds.
 # TYPE hyperping_monitor_check_interval_seconds gauge
-hyperping_monitor_check_interval_seconds{name="Web",uuid="mon_1"} 120
+hyperping_monitor_check_interval_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 120
 # HELP hyperping_monitor_ssl_expiration_days Days until SSL certificate expiration.
 # TYPE hyperping_monitor_ssl_expiration_days gauge
-hyperping_monitor_ssl_expiration_days{name="Web",uuid="mon_1"} 45
+hyperping_monitor_ssl_expiration_days{name="Web",tenant="",tier="unknown",uuid="mon_1"} 45
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_up",
@@ -411,12 +483,12 @@ func TestCollect_ActiveOutageMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_outage_active Whether the monitor has an active (unresolved) outage (1) or not (0).
 # TYPE hyperping_monitor_outage_active gauge
-hyperping_monitor_outage_active{name="API",uuid="mon_2"} 0
-hyperping_monitor_outage_active{name="Web",uuid="mon_1"} 1
+hyperping_monitor_outage_active{name="API",tenant="",tier="unknown",uuid="mon_2"} 0
+hyperping_monitor_outage_active{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
 # HELP hyperping_monitor_active_outage_status_code HTTP status code of the current active outage; 0 when no active outage.
 # TYPE hyperping_monitor_active_outage_status_code gauge
-hyperping_monitor_active_outage_status_code{name="API",uuid="mon_2"} 0
-hyperping_monitor_active_outage_status_code{name="Web",uuid="mon_1"} 503
+hyperping_monitor_active_outage_status_code{name="API",tenant="",tier="unknown",uuid="mon_2"} 0
+hyperping_monitor_active_outage_status_code{name="Web",tenant="",tier="unknown",uuid="mon_1"} 503
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_outage_active",
@@ -480,9 +552,9 @@ func TestCollect_SLAReportMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_sla_ratio Monitor SLA as a ratio (0–1) over the labelled period.
 # TYPE hyperping_monitor_sla_ratio gauge
-hyperping_monitor_sla_ratio{name="Web",period="24h",uuid="mon_1"} 0.995
-hyperping_monitor_sla_ratio{name="Web",period="7d",uuid="mon_1"} 0.995
-hyperping_monitor_sla_ratio{name="Web",period="30d",uuid="mon_1"} 0.995
+hyperping_monitor_sla_ratio{name="Web",period="24h",tenant="",tier="unknown",uuid="mon_1"} 0.995
+hyperping_monitor_sla_ratio{name="Web",period="7d",tenant="",tier="unknown",uuid="mon_1"} 0.995
+hyperping_monitor_sla_ratio{name="Web",period="30d",tenant="",tier="unknown",uuid="mon_1"} 0.995
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_sla_ratio",
@@ -621,6 +693,12 @@ func (a *refreshCountingAPI) ListOutages(ctx context.Context) ([]hyperping.Outag
 }
 func (a *refreshCountingAPI) ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error) {
 	return a.inner.ListMonitorReports(ctx, from, to)
+}
+func (a *refreshCountingAPI) ListMaintenance(ctx context.Context) ([]hyperping.Maintenance, error) {
+	return a.inner.ListMaintenance(ctx)
+}
+func (a *refreshCountingAPI) ListIncidents(ctx context.Context) ([]hyperping.Incident, error) {
+	return a.inner.ListIncidents(ctx)
 }
 
 func TestStart_BlocksUntilContextDone(t *testing.T) {
@@ -853,4 +931,201 @@ func TestClientMetrics_RecordCircuitBreakerState(t *testing.T) {
 	assert.Equal(t, float64(1), stateValues["half-open"], "last state set should be 1")
 	assert.Equal(t, float64(0), stateValues["closed"], "closed gauge should be 0 after transitioning away")
 	assert.Equal(t, float64(0), stateValues["open"], "open gauge should be 0 after transitioning away")
+}
+
+func TestExtractTenant(t *testing.T) {
+	assert.Equal(t, "ACME-CO", extractTenant("[ACME-CO]-PaymentAPI"))
+	assert.Equal(t, "T1", extractTenant("[T1]-MonitorName"))
+	assert.Equal(t, "", extractTenant("SharedMonitor"))
+	assert.Equal(t, "", extractTenant("[NoClosingBracket"))
+	assert.Equal(t, "", extractTenant(""))
+}
+
+func TestEscalationTier_NonCoreDash(t *testing.T) {
+	assert.Equal(t, "noncore",
+		escalationTier(hyperping.Monitor{
+			EscalationPolicy: &hyperping.EscalationPolicyRef{Name: "Non-Core Services"},
+		}))
+}
+
+func TestBuildMaintenanceIndex(t *testing.T) {
+	monitors := []hyperping.Monitor{
+		{UUID: "m1"}, {UUID: "m2"}, {UUID: "m3"},
+	}
+
+	t.Run("no windows", func(t *testing.T) {
+		idx, count := buildMaintenanceIndex(nil, monitors)
+		assert.Empty(t, idx)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("ongoing window covers subset", func(t *testing.T) {
+		windows := []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{"m1", "m2"}},
+		}
+		idx, count := buildMaintenanceIndex(windows, monitors)
+		assert.True(t, idx["m1"])
+		assert.True(t, idx["m2"])
+		assert.False(t, idx["m3"])
+		assert.Equal(t, 1, count)
+	})
+
+	t.Run("upcoming window ignored", func(t *testing.T) {
+		windows := []hyperping.Maintenance{
+			{Status: "upcoming", Monitors: []string{"m1"}},
+		}
+		idx, count := buildMaintenanceIndex(windows, monitors)
+		assert.Empty(t, idx)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("completed window ignored", func(t *testing.T) {
+		windows := []hyperping.Maintenance{
+			{Status: "completed", Monitors: []string{"m1"}},
+		}
+		idx, count := buildMaintenanceIndex(windows, monitors)
+		assert.Empty(t, idx)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("account-level window covers all monitors", func(t *testing.T) {
+		windows := []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{}},
+		}
+		idx, count := buildMaintenanceIndex(windows, monitors)
+		assert.True(t, idx["m1"])
+		assert.True(t, idx["m2"])
+		assert.True(t, idx["m3"])
+		assert.Equal(t, 1, count)
+	})
+
+	t.Run("multiple active windows counted correctly", func(t *testing.T) {
+		windows := []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{"m1"}},
+			{Status: "ongoing", Monitors: []string{"m2"}},
+			{Status: "upcoming", Monitors: []string{"m3"}},
+		}
+		_, count := buildMaintenanceIndex(windows, monitors)
+		assert.Equal(t, 2, count)
+	})
+}
+
+func TestBuildRegionDownIndex(t *testing.T) {
+	t.Run("empty outage index", func(t *testing.T) {
+		idx := buildRegionDownIndex(map[string]hyperping.Outage{})
+		assert.Empty(t, idx)
+	})
+
+	t.Run("outage with confirmed locations", func(t *testing.T) {
+		outageIdx := map[string]hyperping.Outage{
+			"m1": {
+				DetectedLocation:   "london",
+				ConfirmedLocations: "london, paris",
+				Monitor:            hyperping.MonitorReference{UUID: "m1"},
+			},
+		}
+		idx := buildRegionDownIndex(outageIdx)
+		assert.True(t, idx["m1"]["london"])
+		assert.True(t, idx["m1"]["paris"])
+		assert.False(t, idx["m1"]["frankfurt"])
+	})
+}
+
+func TestCollect_InMaintenanceMetric(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "m1", Name: "Web", Protocol: "http", HTTPMethod: "GET"},
+			{UUID: "m2", Name: "API", Protocol: "http", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		maintenanceWindows: []hyperping.Maintenance{
+			{Status: "ongoing", Monitors: []string{"m1"}},
+		},
+	}
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_monitor_in_maintenance 1 if the monitor is currently covered by an active maintenance window, 0 otherwise.
+# TYPE hyperping_monitor_in_maintenance gauge
+hyperping_monitor_in_maintenance{name="API",tenant="",tier="unknown",uuid="m2"} 0
+hyperping_monitor_in_maintenance{name="Web",tenant="",tier="unknown",uuid="m1"} 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
+		"hyperping_monitor_in_maintenance",
+	)
+	require.NoError(t, err)
+}
+
+func TestCollect_UpByRegionMetric(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{
+				UUID: "m1", Name: "Web", Protocol: "http", HTTPMethod: "GET",
+				Status: "down",
+				Regions: []string{"london", "paris", "frankfurt"},
+			},
+			{
+				UUID: "m2", Name: "API", Protocol: "http", HTTPMethod: "GET",
+				Status: "up",
+				// No regions configured: should emit nothing for up_by_region.
+			},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		outages: []hyperping.Outage{
+			{
+				UUID: "out_1", IsResolved: false, EndDate: nil,
+				Monitor:            hyperping.MonitorReference{UUID: "m1"},
+				DetectedLocation:   "london",
+				ConfirmedLocations: "london, paris",
+			},
+		},
+	}
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_monitor_up_by_region 1 if the monitor is up in the given region, 0 if confirmed down. Derived from active outage confirmed locations; approximation only.
+# TYPE hyperping_monitor_up_by_region gauge
+hyperping_monitor_up_by_region{name="Web",region="frankfurt",tenant="",tier="unknown",uuid="m1"} 1
+hyperping_monitor_up_by_region{name="Web",region="london",tenant="",tier="unknown",uuid="m1"} 0
+hyperping_monitor_up_by_region{name="Web",region="paris",tenant="",tier="unknown",uuid="m1"} 0
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
+		"hyperping_monitor_up_by_region",
+	)
+	require.NoError(t, err)
+}
+
+func TestCollect_IncidentAndMaintenanceAccountMetrics(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{},
+		healthchecks: []hyperping.Healthcheck{},
+		incidents: []hyperping.Incident{
+			{UUID: "i1", Type: "investigating"},
+			{UUID: "i2", Type: "identified"},
+			{UUID: "i3", Type: "resolved"},
+		},
+		maintenanceWindows: []hyperping.Maintenance{
+			{Status: "ongoing"},
+			{Status: "ongoing"},
+			{Status: "upcoming"},
+		},
+	}
+	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_incidents_open Number of open (non-resolved) incidents.
+# TYPE hyperping_incidents_open gauge
+hyperping_incidents_open 2
+# HELP hyperping_maintenance_windows_active Number of currently active (ongoing) maintenance windows.
+# TYPE hyperping_maintenance_windows_active gauge
+hyperping_maintenance_windows_active 2
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
+		"hyperping_incidents_open",
+		"hyperping_maintenance_windows_active",
+	)
+	require.NoError(t, err)
 }
