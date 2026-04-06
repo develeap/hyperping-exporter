@@ -13,7 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/develeap/hyperping-exporter/internal/client"
+	hyperping "github.com/develeap/hyperping-go"
 )
 
 // reportPeriods defines the SLA/outage report windows fetched on each refresh.
@@ -28,10 +28,10 @@ var reportDurations = map[string]time.Duration{
 
 // HyperpingAPI defines the Hyperping API methods used by the collector.
 type HyperpingAPI interface {
-	ListMonitors(ctx context.Context) ([]client.Monitor, error)
-	ListHealthchecks(ctx context.Context) ([]client.Healthcheck, error)
-	ListOutages(ctx context.Context) ([]client.Outage, error)
-	ListMonitorReports(ctx context.Context, from, to string) ([]client.MonitorReport, error)
+	ListMonitors(ctx context.Context) ([]hyperping.Monitor, error)
+	ListHealthchecks(ctx context.Context) ([]hyperping.Healthcheck, error)
+	ListOutages(ctx context.Context) ([]hyperping.Outage, error)
+	ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error)
 }
 
 // collectorDescs holds all Prometheus metric descriptor fields.
@@ -99,10 +99,10 @@ func newCollectorDescs(ns string) collectorDescs {
 
 // collectorSnapshot is a point-in-time copy of the cache for lock-free metric emission.
 type collectorSnapshot struct {
-	monitors        []client.Monitor
-	healthchecks    []client.Healthcheck
-	outageIndex     map[string]client.Outage
-	reports         map[string][]client.MonitorReport
+	monitors        []hyperping.Monitor
+	healthchecks    []hyperping.Healthcheck
+	outageIndex     map[string]hyperping.Outage
+	reports         map[string][]hyperping.MonitorReport
 	lastSuccessTime time.Time
 	scrapeOK        bool
 	scrapeDur       time.Duration
@@ -118,10 +118,10 @@ type Collector struct {
 
 	// Cache (protected by mu).
 	mu              sync.RWMutex
-	monitors        []client.Monitor
-	healthchecks    []client.Healthcheck
-	outages         []client.Outage
-	reportsByPeriod map[string][]client.MonitorReport
+	monitors        []hyperping.Monitor
+	healthchecks    []hyperping.Healthcheck
+	outages         []hyperping.Outage
+	reportsByPeriod map[string][]hyperping.MonitorReport
 	lastSuccessTime time.Time
 	lastScrapeOK    bool
 	lastScrapeDur   time.Duration
@@ -139,7 +139,7 @@ func NewCollector(api HyperpingAPI, cacheTTL time.Duration, logger *slog.Logger,
 		api:             api,
 		cacheTTL:        cacheTTL,
 		logger:          logger,
-		reportsByPeriod: make(map[string][]client.MonitorReport),
+		reportsByPeriod: make(map[string][]hyperping.MonitorReport),
 		collectorDescs:  newCollectorDescs(namespace),
 	}
 }
@@ -165,11 +165,11 @@ func (c *Collector) Start(ctx context.Context) {
 // Outage failures are non-fatal: the error is logged and nil outages are returned,
 // signalling the caller to retain stale outage data. Monitor or healthcheck
 // failures are fatal and cause a non-nil error return.
-func (c *Collector) fetchCoreData(ctx context.Context) ([]client.Monitor, []client.Healthcheck, []client.Outage, error) {
+func (c *Collector) fetchCoreData(ctx context.Context) ([]hyperping.Monitor, []hyperping.Healthcheck, []hyperping.Outage, error) {
 	var (
-		monitors     []client.Monitor
-		healthchecks []client.Healthcheck
-		outages      []client.Outage
+		monitors     []hyperping.Monitor
+		healthchecks []hyperping.Healthcheck
+		outages      []hyperping.Outage
 		monErr       error
 		hcErr        error
 		outageErr    error
@@ -199,8 +199,8 @@ func (c *Collector) fetchCoreData(ctx context.Context) ([]client.Monitor, []clie
 
 // fetchReports fetches SLA reports for all periods in parallel. Failures per
 // period are logged as warnings; the returned map omits periods that failed.
-func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string][]client.MonitorReport {
-	results := make(map[string][]client.MonitorReport, len(reportPeriods))
+func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string][]hyperping.MonitorReport {
+	results := make(map[string][]hyperping.MonitorReport, len(reportPeriods))
 	var (
 		mu sync.Mutex
 		wg sync.WaitGroup
@@ -232,7 +232,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 	start := time.Now()
 
 	monitors, healthchecks, outages, err := c.fetchCoreData(ctx)
-	reportResults := map[string][]client.MonitorReport{}
+	reportResults := map[string][]hyperping.MonitorReport{}
 	if err == nil {
 		reportResults = c.fetchReports(ctx, start.UTC())
 	}
@@ -315,7 +315,7 @@ func (c *Collector) takeSnapshot() collectorSnapshot {
 	if !c.lastSuccessTime.IsZero() {
 		dataAge = time.Since(c.lastSuccessTime).Seconds()
 	}
-	reports := make(map[string][]client.MonitorReport, len(c.reportsByPeriod))
+	reports := make(map[string][]hyperping.MonitorReport, len(c.reportsByPeriod))
 	for k, v := range c.reportsByPeriod {
 		reports[k] = v
 	}
@@ -461,8 +461,8 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 
 // buildActiveOutageIndex returns a map of monitor UUID → active Outage.
 // An outage is active when IsResolved is false and EndDate is nil (ongoing).
-func buildActiveOutageIndex(outages []client.Outage) map[string]client.Outage {
-	idx := make(map[string]client.Outage, len(outages))
+func buildActiveOutageIndex(outages []hyperping.Outage) map[string]hyperping.Outage {
+	idx := make(map[string]hyperping.Outage, len(outages))
 	for _, o := range outages {
 		if !o.IsResolved && o.EndDate == nil {
 			idx[o.Monitor.UUID] = o
@@ -489,19 +489,23 @@ func sanitizeURL(raw string) string {
 	return u.String()
 }
 
-// escalationTier returns "core" when the monitor has an escalation policy set,
-// "noncore" otherwise. The binary classification is intentional: the Hyperping
-// API does not expose a "shared infrastructure" concept at the monitor level;
-// tenant grouping is a concern of the Python automation layer, not this exporter.
-func escalationTier(m client.Monitor) string {
-	if m.EscalationPolicy != nil && *m.EscalationPolicy != "" {
-		return "core"
+// escalationTier classifies the monitor as "core", "noncore", or "unknown".
+// Returns "unknown" when no escalation policy is set (nil).
+// Returns "noncore" when the policy name contains "noncore" (case-insensitive).
+// Returns "core" otherwise.
+func escalationTier(m hyperping.Monitor) string {
+	if m.EscalationPolicy == nil {
+		return "unknown"
 	}
-	return "noncore"
+	name := strings.ToLower(m.EscalationPolicy.Name)
+	if strings.Contains(name, "noncore") {
+		return "noncore"
+	}
+	return "core"
 }
 
-// avgSLAForPeriod computes the mean SLA ratio (0–1) across a set of reports.
-func avgSLAForPeriod(reports []client.MonitorReport) float64 {
+// avgSLAForPeriod computes the mean SLA ratio (0-1) across a set of reports.
+func avgSLAForPeriod(reports []hyperping.MonitorReport) float64 {
 	if len(reports) == 0 {
 		return 0
 	}

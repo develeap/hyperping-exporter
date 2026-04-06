@@ -21,7 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/exporter-toolkit/web"
 
-	"github.com/develeap/hyperping-exporter/internal/client"
+	hyperping "github.com/develeap/hyperping-go"
 	"github.com/develeap/hyperping-exporter/internal/collector"
 )
 
@@ -150,7 +150,7 @@ func run() int {
 	logger := setupLogger(cfg.logLevel, cfg.logFormat)
 	registry := newBaseRegistry(cfg.namespace)
 	clientMetrics := collector.NewClientMetrics(registry, cfg.namespace)
-	apiClient := client.NewClient(cfg.apiKey, client.WithMaxRetries(2), client.WithMetrics(clientMetrics))
+	apiClient := hyperping.NewClient(cfg.apiKey, hyperping.WithMaxRetries(2), hyperping.WithMetrics(clientMetrics))
 	c := collector.NewCollector(apiClient, cfg.cacheTTL, logger, cfg.namespace)
 	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)

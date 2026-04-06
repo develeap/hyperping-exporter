@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/develeap/hyperping-exporter/internal/client"
+	hyperping "github.com/develeap/hyperping-go"
 	"github.com/develeap/hyperping-exporter/internal/collector"
 )
 
@@ -91,16 +91,16 @@ func TestNewBaseRegistry(t *testing.T) {
 // dummyCollectorAPI implements collector.HyperpingAPI with no-op responses.
 type dummyCollectorAPI struct{}
 
-func (d *dummyCollectorAPI) ListMonitors(_ context.Context) ([]client.Monitor, error) {
+func (d *dummyCollectorAPI) ListMonitors(_ context.Context) ([]hyperping.Monitor, error) {
 	return nil, nil
 }
-func (d *dummyCollectorAPI) ListHealthchecks(_ context.Context) ([]client.Healthcheck, error) {
+func (d *dummyCollectorAPI) ListHealthchecks(_ context.Context) ([]hyperping.Healthcheck, error) {
 	return nil, nil
 }
-func (d *dummyCollectorAPI) ListOutages(_ context.Context) ([]client.Outage, error) {
+func (d *dummyCollectorAPI) ListOutages(_ context.Context) ([]hyperping.Outage, error) {
 	return nil, nil
 }
-func (d *dummyCollectorAPI) ListMonitorReports(_ context.Context, _, _ string) ([]client.MonitorReport, error) {
+func (d *dummyCollectorAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperping.MonitorReport, error) {
 	return nil, nil
 }
 
