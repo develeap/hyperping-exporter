@@ -18,34 +18,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/develeap/hyperping-exporter/internal/client"
+	hyperping "github.com/develeap/hyperping-go"
 )
 
 // mockAPI implements HyperpingAPI for testing.
 type mockAPI struct {
-	monitors        []client.Monitor
-	healthchecks    []client.Healthcheck
-	outages         []client.Outage
-	reports         []client.MonitorReport
+	monitors        []hyperping.Monitor
+	healthchecks    []hyperping.Healthcheck
+	outages         []hyperping.Outage
+	reports         []hyperping.MonitorReport
 	monitorsErr     error
 	healthchecksErr error
 	outagesErr      error
 	reportsErr      error
 }
 
-func (m *mockAPI) ListMonitors(_ context.Context) ([]client.Monitor, error) {
+func (m *mockAPI) ListMonitors(_ context.Context) ([]hyperping.Monitor, error) {
 	return m.monitors, m.monitorsErr
 }
 
-func (m *mockAPI) ListHealthchecks(_ context.Context) ([]client.Healthcheck, error) {
+func (m *mockAPI) ListHealthchecks(_ context.Context) ([]hyperping.Healthcheck, error) {
 	return m.healthchecks, m.healthchecksErr
 }
 
-func (m *mockAPI) ListOutages(_ context.Context) ([]client.Outage, error) {
+func (m *mockAPI) ListOutages(_ context.Context) ([]hyperping.Outage, error) {
 	return m.outages, m.outagesErr
 }
 
-func (m *mockAPI) ListMonitorReports(_ context.Context, _, _ string) ([]client.MonitorReport, error) {
+func (m *mockAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperping.MonitorReport, error) {
 	return m.reports, m.reportsErr
 }
 
@@ -78,7 +78,7 @@ func TestDescribe(t *testing.T) {
 func TestRefresh_Success(t *testing.T) {
 	sslDays := 90
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{
 				UUID:           "mon_123",
 				Name:           "API Monitor",
@@ -91,7 +91,7 @@ func TestRefresh_Success(t *testing.T) {
 				HTTPMethod:     "GET",
 			},
 		},
-		healthchecks: []client.Healthcheck{
+		healthchecks: []hyperping.Healthcheck{
 			{UUID: "tok_456", Name: "Cron Job", Period: 300},
 		},
 	}
@@ -105,7 +105,7 @@ func TestRefresh_Success(t *testing.T) {
 func TestRefresh_MonitorError(t *testing.T) {
 	api := &mockAPI{
 		monitorsErr:  errors.New("api error"),
-		healthchecks: []client.Healthcheck{},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
@@ -116,7 +116,7 @@ func TestRefresh_MonitorError(t *testing.T) {
 
 func TestRefresh_HealthcheckError(t *testing.T) {
 	api := &mockAPI{
-		monitors:        []client.Monitor{},
+		monitors:        []hyperping.Monitor{},
 		healthchecksErr: errors.New("api error"),
 	}
 
@@ -129,8 +129,8 @@ func TestRefresh_HealthcheckError(t *testing.T) {
 func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 	// Outage failures should not mark the scrape as failed.
 	api := &mockAPI{
-		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
-		healthchecks: []client.Healthcheck{},
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
 		outagesErr:   errors.New("outage api error"),
 	}
 
@@ -142,8 +142,8 @@ func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 
 func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 	api := &mockAPI{
-		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
-		healthchecks: []client.Healthcheck{},
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
@@ -167,7 +167,7 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 	sslDays := 30
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{
 				UUID:           "mon_1",
 				Name:           "Web",
@@ -191,7 +191,7 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 				HTTPMethod:     "POST",
 			},
 		},
-		healthchecks: []client.Healthcheck{
+		healthchecks: []hyperping.Healthcheck{
 			{UUID: "tok_1", Name: "Backup", Period: 3600},
 		},
 	}
@@ -219,7 +219,7 @@ func TestCollect_EmptyCache(t *testing.T) {
 
 func TestCollect_NoSSLExpiration(t *testing.T) {
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{
 				UUID:           "mon_1",
 				Name:           "TCP Monitor",
@@ -229,7 +229,7 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 				HTTPMethod:     "GET",
 			},
 		},
-		healthchecks: []client.Healthcheck{},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
@@ -244,11 +244,11 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 
 func TestCollect_SummaryMetricValues(t *testing.T) {
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{UUID: "mon_1", Name: "Web", Protocol: "http", HTTPMethod: "GET", CheckFrequency: 60, Status: "up"},
 			{UUID: "mon_2", Name: "API", Protocol: "http", HTTPMethod: "GET", CheckFrequency: 30, Status: "down"},
 		},
-		healthchecks: []client.Healthcheck{
+		healthchecks: []hyperping.Healthcheck{
 			{UUID: "tok_1", Name: "Job", Period: 300},
 		},
 	}
@@ -278,7 +278,7 @@ hyperping_scrape_success 1
 func TestCollect_MonitorMetricValues(t *testing.T) {
 	sslDays := 45
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{
 				UUID:           "mon_1",
 				Name:           "Web",
@@ -291,7 +291,7 @@ func TestCollect_MonitorMetricValues(t *testing.T) {
 				HTTPMethod:     "GET",
 			},
 		},
-		healthchecks: []client.Healthcheck{},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
@@ -322,8 +322,8 @@ hyperping_monitor_ssl_expiration_days{name="Web",uuid="mon_1"} 45
 
 func TestCollect_HealthcheckMetricValues(t *testing.T) {
 	api := &mockAPI{
-		monitors: []client.Monitor{},
-		healthchecks: []client.Healthcheck{
+		monitors: []hyperping.Monitor{},
+		healthchecks: []hyperping.Healthcheck{
 			{UUID: "tok_1", Name: "Daily Backup", IsDown: true, IsPaused: false, Period: 86400},
 			{UUID: "tok_2", Name: "Hourly Sync", IsDown: false, IsPaused: true, Period: 3600},
 		},
@@ -376,19 +376,19 @@ hyperping_scrape_success 0
 func TestCollect_ActiveOutageMetrics(t *testing.T) {
 	endDate := "2026-03-29T12:00:00Z"
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{UUID: "mon_1", Name: "Web", Protocol: "http", HTTPMethod: "GET", Status: "down"},
 			{UUID: "mon_2", Name: "API", Protocol: "http", HTTPMethod: "GET", Status: "up"},
 		},
-		healthchecks: []client.Healthcheck{},
-		outages: []client.Outage{
+		healthchecks: []hyperping.Healthcheck{},
+		outages: []hyperping.Outage{
 			// Active outage on mon_1 (EndDate nil, IsResolved false)
 			{
 				UUID:       "out_1",
 				IsResolved: false,
 				EndDate:    nil,
 				StatusCode: 503,
-				Monitor:    client.MonitorReference{UUID: "mon_1", Name: "Web"},
+				Monitor:    hyperping.MonitorReference{UUID: "mon_1", Name: "Web"},
 				OutageType: "automatic",
 				StartDate:  "2026-03-29T10:00:00Z",
 			},
@@ -398,7 +398,7 @@ func TestCollect_ActiveOutageMetrics(t *testing.T) {
 				IsResolved: true,
 				EndDate:    &endDate,
 				StatusCode: 500,
-				Monitor:    client.MonitorReference{UUID: "mon_2", Name: "API"},
+				Monitor:    hyperping.MonitorReference{UUID: "mon_2", Name: "API"},
 				OutageType: "automatic",
 				StartDate:  "2026-03-29T09:00:00Z",
 			},
@@ -426,13 +426,12 @@ hyperping_monitor_active_outage_status_code{name="Web",uuid="mon_1"} 503
 }
 
 func TestCollect_EscalationTierMetrics(t *testing.T) {
-	policyUUID := "policy_abc"
 	api := &mockAPI{
-		monitors: []client.Monitor{
-			{UUID: "mon_1", Name: "Core", Protocol: "http", HTTPMethod: "GET", EscalationPolicy: &policyUUID},
+		monitors: []hyperping.Monitor{
+			{UUID: "mon_1", Name: "Core", Protocol: "http", HTTPMethod: "GET", EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "policy_abc", Name: "Core Policy"}},
 			{UUID: "mon_2", Name: "Edge", Protocol: "http", HTTPMethod: "GET", EscalationPolicy: nil},
 		},
-		healthchecks: []client.Healthcheck{},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
@@ -442,7 +441,7 @@ func TestCollect_EscalationTierMetrics(t *testing.T) {
 # HELP hyperping_monitor_escalation_tier Escalation tier info (always 1). Join on uuid+name; use tier label to filter core/noncore.
 # TYPE hyperping_monitor_escalation_tier gauge
 hyperping_monitor_escalation_tier{name="Core",tier="core",uuid="mon_1"} 1
-hyperping_monitor_escalation_tier{name="Edge",tier="noncore",uuid="mon_2"} 1
+hyperping_monitor_escalation_tier{name="Edge",tier="unknown",uuid="mon_2"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_escalation_tier",
@@ -452,18 +451,18 @@ hyperping_monitor_escalation_tier{name="Edge",tier="noncore",uuid="mon_2"} 1
 
 func TestCollect_SLAReportMetrics(t *testing.T) {
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{UUID: "mon_1", Name: "Web", Protocol: "http", HTTPMethod: "GET", Status: "up"},
 		},
-		healthchecks: []client.Healthcheck{},
-		reports: []client.MonitorReport{
+		healthchecks: []hyperping.Healthcheck{},
+		reports: []hyperping.MonitorReport{
 			{
 				UUID:     "mon_1",
 				Name:     "Web",
 				Protocol: "http",
 				SLA:      99.5,
 				MTTR:     120,
-				Outages: client.OutageStats{
+				Outages: hyperping.OutageStats{
 					Count:         2,
 					TotalDowntime: 300,
 					LongestOutage: 240,
@@ -491,12 +490,12 @@ hyperping_monitor_sla_ratio{name="Web",period="30d",uuid="mon_1"} 0.995
 
 func TestCollect_TenantHealthMetrics(t *testing.T) {
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{UUID: "mon_1", Name: "A", Protocol: "http", HTTPMethod: "GET", Status: "up"},
 			{UUID: "mon_2", Name: "B", Protocol: "http", HTTPMethod: "GET", Status: "up"},
 		},
-		healthchecks: []client.Healthcheck{},
-		reports: []client.MonitorReport{
+		healthchecks: []hyperping.Healthcheck{},
+		reports: []hyperping.MonitorReport{
 			{UUID: "mon_1", Name: "A", SLA: 100.0},
 			{UUID: "mon_2", Name: "B", SLA: 98.0},
 		},
@@ -523,26 +522,25 @@ hyperping_tenant_active_outages 0
 }
 
 func TestCollect_Lint(t *testing.T) {
-	policyUUID := "policy_123"
 	endDate := "2026-03-29T08:00:00Z"
 	api := &mockAPI{
-		monitors: []client.Monitor{
+		monitors: []hyperping.Monitor{
 			{
 				UUID: "mon_1", Name: "Web", Protocol: "http",
 				HTTPMethod: "GET", CheckFrequency: 60, Status: "up",
-				EscalationPolicy: &policyUUID,
+				EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "policy_123", Name: "Core Policy"},
 			},
 		},
-		healthchecks: []client.Healthcheck{
+		healthchecks: []hyperping.Healthcheck{
 			{UUID: "tok_1", Name: "Job", Period: 300},
 		},
-		outages: []client.Outage{
+		outages: []hyperping.Outage{
 			{
 				UUID: "out_1", IsResolved: true, EndDate: &endDate, StatusCode: 200,
-				Monitor: client.MonitorReference{UUID: "mon_1", Name: "Web"},
+				Monitor: hyperping.MonitorReference{UUID: "mon_1", Name: "Web"},
 			},
 		},
-		reports: []client.MonitorReport{
+		reports: []hyperping.MonitorReport{
 			{UUID: "mon_1", Name: "Web", SLA: 99.9},
 		},
 	}
@@ -581,10 +579,10 @@ func TestComputeHealthScore(t *testing.T) {
 
 func TestBuildActiveOutageIndex(t *testing.T) {
 	endDate := "2026-03-29T12:00:00Z"
-	outages := []client.Outage{
-		{UUID: "a", IsResolved: false, EndDate: nil, Monitor: client.MonitorReference{UUID: "mon_1"}},
-		{UUID: "b", IsResolved: true, EndDate: &endDate, Monitor: client.MonitorReference{UUID: "mon_2"}},
-		{UUID: "c", IsResolved: false, EndDate: &endDate, Monitor: client.MonitorReference{UUID: "mon_3"}},
+	outages := []hyperping.Outage{
+		{UUID: "a", IsResolved: false, EndDate: nil, Monitor: hyperping.MonitorReference{UUID: "mon_1"}},
+		{UUID: "b", IsResolved: true, EndDate: &endDate, Monitor: hyperping.MonitorReference{UUID: "mon_2"}},
+		{UUID: "c", IsResolved: false, EndDate: &endDate, Monitor: hyperping.MonitorReference{UUID: "mon_3"}},
 	}
 
 	idx := buildActiveOutageIndex(outages)
@@ -596,12 +594,9 @@ func TestBuildActiveOutageIndex(t *testing.T) {
 }
 
 func TestEscalationTier(t *testing.T) {
-	policyUUID := "uuid-123"
-	emptyUUID := ""
-
-	assert.Equal(t, "core", escalationTier(client.Monitor{EscalationPolicy: &policyUUID}))
-	assert.Equal(t, "noncore", escalationTier(client.Monitor{EscalationPolicy: nil}))
-	assert.Equal(t, "noncore", escalationTier(client.Monitor{EscalationPolicy: &emptyUUID}))
+	assert.Equal(t, "core", escalationTier(hyperping.Monitor{EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "uuid-123", Name: "Core Policy"}}))
+	assert.Equal(t, "noncore", escalationTier(hyperping.Monitor{EscalationPolicy: &hyperping.EscalationPolicyRef{UUID: "uuid-456", Name: "Noncore Services"}}))
+	assert.Equal(t, "unknown", escalationTier(hyperping.Monitor{EscalationPolicy: nil}))
 }
 
 // refreshCountingAPI wraps mockAPI and counts each ListMonitors call.
@@ -610,24 +605,24 @@ type refreshCountingAPI struct {
 	count *atomic.Int32
 }
 
-func (a *refreshCountingAPI) ListMonitors(ctx context.Context) ([]client.Monitor, error) {
+func (a *refreshCountingAPI) ListMonitors(ctx context.Context) ([]hyperping.Monitor, error) {
 	a.count.Add(1)
 	return a.inner.ListMonitors(ctx)
 }
-func (a *refreshCountingAPI) ListHealthchecks(ctx context.Context) ([]client.Healthcheck, error) {
+func (a *refreshCountingAPI) ListHealthchecks(ctx context.Context) ([]hyperping.Healthcheck, error) {
 	return a.inner.ListHealthchecks(ctx)
 }
-func (a *refreshCountingAPI) ListOutages(ctx context.Context) ([]client.Outage, error) {
+func (a *refreshCountingAPI) ListOutages(ctx context.Context) ([]hyperping.Outage, error) {
 	return a.inner.ListOutages(ctx)
 }
-func (a *refreshCountingAPI) ListMonitorReports(ctx context.Context, from, to string) ([]client.MonitorReport, error) {
+func (a *refreshCountingAPI) ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error) {
 	return a.inner.ListMonitorReports(ctx, from, to)
 }
 
 func TestStart_BlocksUntilContextDone(t *testing.T) {
 	api := &mockAPI{
-		monitors:     []client.Monitor{},
-		healthchecks: []client.Healthcheck{},
+		monitors:     []hyperping.Monitor{},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 	c := NewCollector(api, 10*time.Second, newTestLogger(), "hyperping")
 
@@ -651,8 +646,8 @@ func TestStart_PeriodicRefreshOnTick(t *testing.T) {
 	var calls atomic.Int32
 	api := &refreshCountingAPI{
 		inner: &mockAPI{
-			monitors:     []client.Monitor{},
-			healthchecks: []client.Healthcheck{},
+			monitors:     []hyperping.Monitor{},
+			healthchecks: []hyperping.Healthcheck{},
 		},
 		count: &calls,
 	}
@@ -668,9 +663,9 @@ func TestStart_PeriodicRefreshOnTick(t *testing.T) {
 
 func TestRefresh_ReportErrorPreservesStaleData(t *testing.T) {
 	api := &mockAPI{
-		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
-		healthchecks: []client.Healthcheck{},
-		reports:      []client.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+		reports:      []hyperping.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
@@ -690,8 +685,8 @@ func TestRefresh_ReportErrorPreservesStaleData(t *testing.T) {
 
 func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 	api := &mockAPI{
-		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
-		healthchecks: []client.Healthcheck{},
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET"}},
+		healthchecks: []hyperping.Healthcheck{},
 		reportsErr:   errors.New("reports unavailable"),
 	}
 
@@ -703,7 +698,7 @@ func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 
 func TestAvgSLAForPeriod_Empty(t *testing.T) {
 	assert.Equal(t, 0.0, avgSLAForPeriod(nil))
-	assert.Equal(t, 0.0, avgSLAForPeriod([]client.MonitorReport{}))
+	assert.Equal(t, 0.0, avgSLAForPeriod([]hyperping.MonitorReport{}))
 }
 
 func TestComputeHealthScore_CapAtMax(t *testing.T) {
@@ -714,8 +709,8 @@ func TestComputeHealthScore_CapAtMax(t *testing.T) {
 
 func TestNewCollector_CustomNamespace(t *testing.T) {
 	api := &mockAPI{
-		monitors:     []client.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
-		healthchecks: []client.Healthcheck{},
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
 	}
 
 	c := NewCollector(api, 60*time.Second, newTestLogger(), "testns")

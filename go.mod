@@ -3,12 +3,15 @@ module github.com/develeap/hyperping-exporter
 go 1.26.1
 
 require (
+	github.com/develeap/hyperping-go v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/exporter-toolkit v0.16.0
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/dnaeon/go-vcr.v3 v3.2.0
 )
+
+replace github.com/develeap/hyperping-go => ../hyperping-go
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
