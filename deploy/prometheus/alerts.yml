@@ -36,12 +36,9 @@ groups:
             This may indicate a shared infrastructure issue. Check OPS-38 dashboard.
 
       - alert: HyperpingCoreMonitorDown
-        # Requires OPS-39 tier label via metric join.
-        # hyperping_monitor_escalation_tier has labels {uuid, name, tier}
-        # where tier="core" when the monitor's escalation policy is set.
-        expr: |
-          (hyperping_monitor_up == 0) * on(uuid) group_left(tier)
-            (hyperping_monitor_escalation_tier{tier="core"})
+        # tier label is carried directly on hyperping_monitor_up since EXP-01.
+        # No join needed; filter tier="core" inline.
+        expr: hyperping_monitor_up{tier="core"} == 0
         for: 1m
         labels:
           severity: critical
@@ -148,34 +145,6 @@ groups:
           description: >-
             The composite tenant health score has dropped to {{ $value | humanize }},
             indicating severe service degradation.
-
-  - name: hyperping_watchdog
-    interval: 1m
-    rules:
-      - alert: WatchdogStalled
-        expr: hyperping_watchdog_last_poll_age_seconds > 300
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Hyperping watchdog has not polled in {{ $value | humanizeDuration }}"
-          description: >-
-            The watchdog daemon has not completed a poll in over 5 minutes.
-            New monitor failures will not trigger incidents until the watchdog recovers.
-            Check: systemctl status watchdog.service
-
-      - alert: WatchdogNeverRan
-        # PromQL cannot compare with NaN using ==; NaN != NaN is the standard idiom.
-        # The exporter emits NaN for this metric when the state file has no last_poll timestamp.
-        expr: hyperping_watchdog_last_poll_age_seconds != hyperping_watchdog_last_poll_age_seconds
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Hyperping watchdog has never run or state file is missing"
-          description: >-
-            The watchdog state file is absent or has no last_poll timestamp.
-            Deploy the watchdog service: systemctl start watchdog.service
 
   - name: hyperping_exporter
     interval: 1m

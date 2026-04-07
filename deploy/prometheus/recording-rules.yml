@@ -22,29 +22,19 @@ groups:
     interval: 1m
     rules:
       # Per-tier up-ratio: monitors UP divided by total monitors per tier.
+      # tier label is carried directly on hyperping_monitor_up since EXP-01; no join needed.
       - record: hyperping:tier:monitors_up_ratio
         expr: |
-          count by (tier) (
-            (hyperping_monitor_up == 1) * on(uuid, name) group_left(tier)
-              hyperping_monitor_escalation_tier
-          ) / count by (tier) (
-            hyperping_monitor_up * on(uuid, name) group_left(tier)
-              hyperping_monitor_escalation_tier
-          )
+          count by (tier) (hyperping_monitor_up == 1)
+          /
+          count by (tier) (hyperping_monitor_up)
 
+      # tier label is carried directly on hyperping_monitor_sla_ratio since EXP-01; no join needed.
       - record: hyperping:tier:avg_sla_30d
-        expr: |
-          avg by (tier) (
-            hyperping_monitor_sla_ratio{period="30d"} * on(uuid, name) group_left(tier)
-              hyperping_monitor_escalation_tier
-          )
+        expr: avg by (tier) (hyperping_monitor_sla_ratio{period="30d"})
 
       - record: hyperping:tier:avg_sla_7d
-        expr: |
-          avg by (tier) (
-            hyperping_monitor_sla_ratio{period="7d"} * on(uuid, name) group_left(tier)
-              hyperping_monitor_escalation_tier
-          )
+        expr: avg by (tier) (hyperping_monitor_sla_ratio{period="7d"})
 
   - name: hyperping_sla_aggregates
     interval: 5m
