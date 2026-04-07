@@ -36,12 +36,9 @@ groups:
             This may indicate a shared infrastructure issue. Check OPS-38 dashboard.
 
       - alert: HyperpingCoreMonitorDown
-        # Requires OPS-39 tier label via metric join.
-        # hyperping_monitor_escalation_tier has labels {uuid, name, tier}
-        # where tier="core" when the monitor's escalation policy is set.
-        expr: |
-          (hyperping_monitor_up == 0) * on(uuid) group_left(tier)
-            (hyperping_monitor_escalation_tier{tier="core"})
+        # tier label is carried directly on hyperping_monitor_up since EXP-01.
+        # No join needed; filter tier="core" inline.
+        expr: hyperping_monitor_up{tier="core"} == 0
         for: 1m
         labels:
           severity: critical
@@ -153,6 +150,7 @@ groups:
     interval: 1m
     rules:
       - alert: WatchdogStalled
+        # requires: go-exporter (via hyp prometheus serve)
         expr: hyperping_watchdog_last_poll_age_seconds > 300
         for: 2m
         labels:
@@ -165,6 +163,7 @@ groups:
             Check: systemctl status watchdog.service
 
       - alert: WatchdogNeverRan
+        # requires: go-exporter (via hyp prometheus serve)
         # PromQL cannot compare with NaN using ==; NaN != NaN is the standard idiom.
         # The exporter emits NaN for this metric when the state file has no last_poll timestamp.
         expr: hyperping_watchdog_last_poll_age_seconds != hyperping_watchdog_last_poll_age_seconds
