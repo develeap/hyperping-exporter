@@ -135,6 +135,9 @@ jobs:
   docker:
     name: Docker build & scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -151,3 +154,12 @@ jobs:
           exit-code: 1
           severity: CRITICAL,HIGH
           format: table
+      - name: Report Docker build status
+        if: always()
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ github.sha }} \
+            -f state=${{ job.status == 'success' && 'success' || 'failure' }} \
+            -f context="Docker build" \
+            -f description="Docker build & scan ${{ job.status }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

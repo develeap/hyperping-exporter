@@ -103,6 +103,12 @@ func (d *dummyCollectorAPI) ListOutages(_ context.Context) ([]hyperping.Outage, 
 func (d *dummyCollectorAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperping.MonitorReport, error) {
 	return nil, nil
 }
+func (d *dummyCollectorAPI) ListMaintenance(_ context.Context) ([]hyperping.Maintenance, error) {
+	return nil, nil
+}
+func (d *dummyCollectorAPI) ListIncidents(_ context.Context) ([]hyperping.Incident, error) {
+	return nil, nil
+}
 
 func TestNewMux(t *testing.T) {
 	c := collector.NewCollector(
