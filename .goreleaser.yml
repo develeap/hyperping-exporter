@@ -79,6 +79,7 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
       - "v{{ .Major }}"
+      - latest
     platforms:
       - linux/amd64
       - linux/arm64
