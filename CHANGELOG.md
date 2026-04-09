@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-09
+
+### Added
+
+- **`tenant` and `tier` labels** on all per-monitor metrics (`hyperping_monitor_up`,
+  `hyperping_monitor_sla`, etc.). `tenant` is the tenant ID; `tier` is `core`,
+  `noncore`, or `unknown` derived from escalation policy name (EXP-01).
+- **`hyperping_monitor_in_maintenance`** gauge - 1 when monitor has an active
+  maintenance window, 0 otherwise. Prevents false-positive alerts during planned
+  downtime (EXP-02).
+- **`hyperping_monitor_up_by_region{uuid,name,region}`** gauge - per-region up/down
+  status derived from active outage `detectedLocation`/`confirmedLocations`. Additive
+  alongside the existing `hyperping_monitor_up` family (EXP-03).
+- **`hyperping_incident_active`** and **`hyperping_maintenance_active`** event gauges
+  with `tenant`, `tier`, `severity` labels (EXP-04).
+- **`WatchdogStalled`** alert rule - fires when the watchdog has not updated its
+  state file within the expected interval (AUTO-03).
+- **`WatchdogNeverRan`** alert rule - fires when no watchdog state file exists
+  at all (AUTO-03).
+- Dependabot group for `hyperping-go` module auto-updates.
+
+### Changed
+
+- Migrated from vendored `internal/client/` to the shared
+  `github.com/develeap/hyperping-go` module. No API or metric changes - internal
+  only.
+- Alert and recording rules updated to include `tenant` and `tier` label selectors
+  matching the new EXP-01 schema. **Existing dashboards must add `tenant` and `tier`
+  to their variable filters** - see `deploy/grafana/` for updated dashboard JSONs (OPS-40).
+
+### Fixed
+
+- Release workflow: GoReleaser archive name corrected.
+- Collector: minor field mapping corrections from phase 0 audit.
+
 ## [1.0.3] - 2026-04-05
 
 ### Added
