@@ -1,9 +1,9 @@
 module github.com/develeap/hyperping-exporter
 
-go 1.26.1
+go 1.26.2
 
 require (
-	github.com/develeap/hyperping-go v0.1.0
+	github.com/develeap/hyperping-go v0.2.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/exporter-toolkit v0.16.0
 	github.com/stretchr/testify v1.11.1
