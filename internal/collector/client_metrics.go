@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -48,11 +49,13 @@ func NewClientMetrics(registry *prometheus.Registry, namespace string) *promethe
 
 // RecordAPICall implements client.Metrics.
 func (m *prometheusClientMetrics) RecordAPICall(_ context.Context, method, path string, statusCode int, durationSec float64) {
+	path = strings.SplitN(path, "?", 2)[0]
 	m.apiCallDuration.WithLabelValues(method, path, strconv.Itoa(statusCode)).Observe(durationSec)
 }
 
 // RecordRetry implements client.Metrics.
 func (m *prometheusClientMetrics) RecordRetry(_ context.Context, method, path string, attempt int) {
+	path = strings.SplitN(path, "?", 2)[0]
 	m.retryTotal.WithLabelValues(method, path, strconv.Itoa(attempt)).Inc()
 }
 
