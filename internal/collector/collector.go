@@ -180,7 +180,9 @@ func NewCollector(api HyperpingAPI, cacheTTL time.Duration, logger *slog.Logger,
 
 // Start begins the background cache refresh loop. It blocks until ctx is cancelled.
 func (c *Collector) Start(ctx context.Context) {
-	c.Refresh(ctx)
+	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	c.Refresh(initCtx)
 
 	ticker := time.NewTicker(c.cacheTTL)
 	defer ticker.Stop()
@@ -254,8 +256,9 @@ func (c *Collector) fetchCoreData(ctx context.Context) (coreData, error) {
 func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string][]hyperping.MonitorReport {
 	results := make(map[string][]hyperping.MonitorReport, len(reportPeriods))
 	var (
-		mu sync.Mutex
-		wg sync.WaitGroup
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		failures int
 	)
 	for _, p := range reportPeriods {
 		dur := reportDurations[p]
@@ -267,6 +270,9 @@ func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string]
 			reports, err := c.api.ListMonitorReports(ctx, fromStr, toStr)
 			if err != nil {
 				c.logger.Warn("failed to fetch monitor reports", "period", period, "error", err)
+				mu.Lock()
+				failures++
+				mu.Unlock()
 				return
 			}
 			mu.Lock()
@@ -275,6 +281,9 @@ func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string]
 		}(p, from, to)
 	}
 	wg.Wait()
+	if failures == len(reportPeriods) {
+		c.logger.Warn("all report period fetches failed; SLA metrics will use stale data")
+	}
 	return results
 }
 
@@ -502,7 +511,10 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 		reports := snap.reports[period]
 		slaSum := 0.0
 		for _, r := range reports {
-			mon := snap.monitorIndex[r.UUID]
+			mon, ok := snap.monitorIndex[r.UUID]
+			if !ok {
+				continue
+			}
 			tenant := extractTenant(mon.Name)
 			tier := escalationTier(mon)
 			sla := r.SLA / 100.0 // API returns 0–100; expose as 0–1
