@@ -41,6 +41,7 @@ type config struct {
 	logFormat     string
 	webConfigFile string
 	namespace     string
+	mcpURL        string
 }
 
 func parseConfig() (config, bool) {
@@ -53,6 +54,7 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&cfg.webConfigFile, "web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
 	flag.StringVar(&cfg.namespace, "namespace", "", `Metric name prefix (env: HYPERPING_EXPORTER_NAMESPACE, default: "hyperping")`)
+	flag.StringVar(&cfg.mcpURL, "mcp-url", "", "Custom Hyperping MCP server URL (default: https://api.hyperping.io/v1/mcp)")
 	flag.Parse()
 
 	if cfg.apiKey == "" {
@@ -151,7 +153,12 @@ func run() int {
 	registry := newBaseRegistry(cfg.namespace)
 	clientMetrics := collector.NewClientMetrics(registry, cfg.namespace)
 	apiClient := hyperping.NewClient(cfg.apiKey, hyperping.WithMaxRetries(2), hyperping.WithMetrics(clientMetrics))
-	c := collector.NewCollector(apiClient, cfg.cacheTTL, logger, cfg.namespace)
+
+	// Initialize MCP client for advanced metrics
+	mcpTransport := hyperping.NewMcpTransport(cfg.apiKey, cfg.mcpURL)
+	mcpClient := hyperping.NewMCPClient(mcpTransport)
+
+	c := collector.NewCollector(apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace)
 	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)
 	if err != nil {
