@@ -67,6 +67,11 @@ type collectorDescs struct {
 	monitorUpByRegion        *prometheus.Desc
 	incidentsOpen            *prometheus.Desc
 	maintenanceWindowsActive *prometheus.Desc
+	monitorResponseTimeAvg    *prometheus.Desc
+	monitorMtta               *prometheus.Desc
+	monitorAnomalyCount       *prometheus.Desc
+	monitorAnomalyScore       *prometheus.Desc
+	alertCountTotal           *prometheus.Desc
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
@@ -121,6 +126,31 @@ func newCollectorDescs(ns string) collectorDescs {
 			"Number of currently active (ongoing) maintenance windows.",
 			nil, nil,
 		),
+		monitorResponseTimeAvg: prometheus.NewDesc(
+			fqn(ns, "monitor", "response_time_avg_seconds"),
+			"Average monitor response time in seconds.",
+			ml, nil,
+		),
+		monitorMtta: prometheus.NewDesc(
+			fqn(ns, "monitor", "mtta_seconds"),
+			"Mean Time To Acknowledge in seconds.",
+			ml, nil,
+		),
+		monitorAnomalyCount: prometheus.NewDesc(
+			fqn(ns, "monitor", "anomaly_count"),
+			"Number of detected anomalies for the monitor.",
+			ml, nil,
+		),
+		monitorAnomalyScore: prometheus.NewDesc(
+			fqn(ns, "monitor", "anomaly_score"),
+			"Highest anomaly score for the monitor.",
+			ml, nil,
+		),
+		alertCountTotal: prometheus.NewDesc(
+			fqn(ns, "", "alerts_total"),
+			"Total number of alerts in history.",
+			nil, nil,
+		),
 	}
 }
 
@@ -139,12 +169,20 @@ type collectorSnapshot struct {
 	regionDownIndex        map[string]map[string]bool   // uuid -> region -> is_down
 	openIncidentCount      int
 	activeMaintenanceCount int
+
+	// MCP Metrics
+	responseTimeIndex map[string]float64
+	mttaIndex         map[string]float64
+	anomalyCountIndex map[string]int
+	anomalyScoreIndex map[string]float64
+	totalAlerts       int
 }
 
 // Collector fetches Hyperping data on a background timer and serves
 // cached results as Prometheus metrics. It implements prometheus.Collector.
 type Collector struct {
 	api      HyperpingAPI
+	mcp      *hyperping.MCPClient
 	cacheTTL time.Duration
 	logger   *slog.Logger
 
@@ -161,6 +199,13 @@ type Collector struct {
 	lastScrapeDur      time.Duration
 	everSucceeded      bool // latches true after first successful scrape; never resets
 
+	// MCP Cache (protected by mu)
+	responseTimeIndex map[string]float64
+	mttaIndex         map[string]float64
+	anomalyCountIndex map[string]int
+	anomalyScoreIndex map[string]float64
+	totalAlerts       int
+
 	collectorDescs
 }
 
@@ -168,13 +213,18 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, cacheTTL time.Duration, logger *slog.Logger, namespace string) *Collector {
+func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string) *Collector {
 	return &Collector{
-		api:             api,
-		cacheTTL:        cacheTTL,
-		logger:          logger,
-		reportsByPeriod: make(map[string][]hyperping.MonitorReport),
-		collectorDescs:  newCollectorDescs(namespace),
+		api:               api,
+		mcp:               mcp,
+		cacheTTL:          cacheTTL,
+		logger:            logger,
+		reportsByPeriod:   make(map[string][]hyperping.MonitorReport),
+		responseTimeIndex: make(map[string]float64),
+		mttaIndex:         make(map[string]float64),
+		anomalyCountIndex: make(map[string]int),
+		anomalyScoreIndex: make(map[string]float64),
+		collectorDescs:    newCollectorDescs(namespace),
 	}
 }
 
@@ -287,16 +337,157 @@ func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string]
 	return results
 }
 
+type mcpData struct {
+	responseTime map[string]float64
+	mtta         map[string]float64
+	anomalyCount map[string]int
+	anomalyScore map[string]float64
+	totalAlerts  int
+}
+
+// fetchMcpData fetches advanced metrics from the MCP server in parallel.
+// It uses a worker pool to limit concurrency and handles per-monitor failures gracefully.
+func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monitor) (mcpData, error) {
+	if c.mcp == nil {
+		return mcpData{}, nil
+	}
+
+	// Initialise results with current cached values to ensure graceful degradation
+	// on per-monitor failures (partial updates).
+	c.mu.RLock()
+	res := mcpData{
+		responseTime: make(map[string]float64, len(c.responseTimeIndex)),
+		mtta:         make(map[string]float64, len(c.mttaIndex)),
+		anomalyCount: make(map[string]int, len(c.anomalyCountIndex)),
+		anomalyScore: make(map[string]float64, len(c.anomalyScoreIndex)),
+		totalAlerts:  c.totalAlerts,
+	}
+	for k, v := range c.responseTimeIndex {
+		res.responseTime[k] = v
+	}
+	for k, v := range c.mttaIndex {
+		res.mtta[k] = v
+	}
+	for k, v := range c.anomalyCountIndex {
+		res.anomalyCount[k] = v
+	}
+	for k, v := range c.anomalyScoreIndex {
+		res.anomalyScore[k] = v
+	}
+	c.mu.RUnlock()
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// 1. Fetch global alert history
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		alerts, err := c.mcp.ListRecentAlerts(ctx)
+		if err != nil {
+			c.logger.Warn("failed to fetch recent alerts from MCP", "error", err)
+			return
+		}
+		mu.Lock()
+		res.totalAlerts = alerts.Total
+		mu.Unlock()
+	}()
+
+	// 2. Fetch per-monitor metrics using a worker pool
+	monitorChan := make(chan hyperping.Monitor, len(monitors))
+	for _, m := range monitors {
+		monitorChan <- m
+	}
+	close(monitorChan)
+
+	// Limit concurrency to 10 workers
+	numWorkers := 10
+	if len(monitors) < numWorkers {
+		numWorkers = len(monitors)
+	}
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for m := range monitorChan {
+				uuid := m.UUID
+
+				// Response Time
+				if report, err := c.mcp.GetMonitorResponseTime(ctx, uuid); err == nil {
+					mu.Lock()
+					res.responseTime[uuid] = report.Avg
+					mu.Unlock()
+				} else {
+					c.logger.Debug("failed to fetch response time", "uuid", uuid, "error", err)
+				}
+
+				// MTTA
+				if report, err := c.mcp.GetMonitorMtta(ctx, uuid); err == nil {
+					mu.Lock()
+					res.mtta[uuid] = report.AvgWait
+					mu.Unlock()
+				} else {
+					c.logger.Debug("failed to fetch mtta", "uuid", uuid, "error", err)
+				}
+
+				// Anomalies
+				if anomalies, err := c.mcp.GetMonitorAnomalies(ctx, uuid); err == nil {
+					mu.Lock()
+					res.anomalyCount[uuid] = len(anomalies)
+					maxScore := 0.0
+					for _, a := range anomalies {
+						if a.Score > maxScore {
+							maxScore = a.Score
+						}
+					}
+					res.anomalyScore[uuid] = maxScore
+					mu.Unlock()
+				} else {
+					c.logger.Debug("failed to fetch anomalies", "uuid", uuid, "error", err)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	return res, nil
+}
+
 // Refresh performs a single API scrape and updates the cache.
 // Monitors and healthchecks are required; outages and reports are best-effort.
 func (c *Collector) Refresh(ctx context.Context) {
 	start := time.Now()
 
-	core, err := c.fetchCoreData(ctx)
-	reportResults := map[string][]hyperping.MonitorReport{}
-	if err == nil {
-		reportResults = c.fetchReports(ctx, start.UTC())
+	// REST core data fetch (monitors, healthchecks, etc.)
+	core, coreErr := c.fetchCoreData(ctx)
+	if coreErr != nil {
+		c.mu.Lock()
+		c.lastScrapeOK = false
+		c.lastScrapeDur = time.Since(start)
+		c.mu.Unlock()
+		return
 	}
+
+	var (
+		mcp           mcpData
+		mcpErr        error
+		reportResults map[string][]hyperping.MonitorReport
+		wg            sync.WaitGroup
+	)
+
+	// Now that we have monitors, fetch reports and MCP metrics in parallel
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		reportResults = c.fetchReports(ctx, start.UTC())
+	}()
+	go func() {
+		defer wg.Done()
+		mcp, mcpErr = c.fetchMcpData(ctx, core.monitors)
+	}()
+	wg.Wait()
+
 	dur := time.Since(start)
 
 	c.mu.Lock()
@@ -304,7 +495,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 
 	c.lastScrapeDur = dur
 
-	if err != nil {
+	if coreErr != nil {
 		c.lastScrapeOK = false
 		return
 	}
@@ -320,6 +511,15 @@ func (c *Collector) Refresh(ctx context.Context) {
 	}
 	c.monitors = core.monitors
 	c.healthchecks = core.healthchecks
+
+	if mcpErr == nil {
+		c.responseTimeIndex = mcp.responseTime
+		c.mttaIndex = mcp.mtta
+		c.anomalyCountIndex = mcp.anomalyCount
+		c.anomalyScoreIndex = mcp.anomalyScore
+		c.totalAlerts = mcp.totalAlerts
+	}
+
 	// Merge successful period results; periods that failed retain previous data.
 	for period, reports := range reportResults {
 		c.reportsByPeriod[period] = reports
@@ -334,7 +534,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 		"outages", len(c.outages),
 		"maintenance_windows", len(c.maintenanceWindows),
 		"incidents", len(c.incidents),
-		"report_periods", len(reportResults),
+		"mcp_metrics", mcpErr == nil,
 		"duration", dur,
 	)
 }
@@ -379,6 +579,11 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.monitorUpByRegion
 	ch <- c.incidentsOpen
 	ch <- c.maintenanceWindowsActive
+	ch <- c.monitorResponseTimeAvg
+	ch <- c.monitorMtta
+	ch <- c.monitorAnomalyCount
+	ch <- c.monitorAnomalyScore
+	ch <- c.alertCountTotal
 }
 
 // Collect implements prometheus.Collector.
@@ -399,6 +604,25 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	lastSuccess := c.lastSuccessTime
 	scrapeOK := c.lastScrapeOK
 	scrapeDur := c.lastScrapeDur
+
+	// Copy MCP cache
+	rtIdx := make(map[string]float64, len(c.responseTimeIndex))
+	for k, v := range c.responseTimeIndex {
+		rtIdx[k] = v
+	}
+	mttaIdx := make(map[string]float64, len(c.mttaIndex))
+	for k, v := range c.mttaIndex {
+		mttaIdx[k] = v
+	}
+	anomCountIdx := make(map[string]int, len(c.anomalyCountIndex))
+	for k, v := range c.anomalyCountIndex {
+		anomCountIdx[k] = v
+	}
+	anomScoreIdx := make(map[string]float64, len(c.anomalyScoreIndex))
+	for k, v := range c.anomalyScoreIndex {
+		anomScoreIdx[k] = v
+	}
+	totalAlerts := c.totalAlerts
 	c.mu.RUnlock()
 
 	// STEP 2: Build all derived indices outside the lock.
@@ -427,12 +651,20 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		regionDownIndex:        buildRegionDownIndex(outageIdx),
 		openIncidentCount:      countOpenIncidents(incidents),
 		activeMaintenanceCount: activeMaintenanceCount,
+
+		// MCP Metrics
+		responseTimeIndex: rtIdx,
+		mttaIndex:         mttaIdx,
+		anomalyCountIndex: anomCountIdx,
+		anomalyScoreIndex: anomScoreIdx,
+		totalAlerts:       totalAlerts,
 	}
 
 	c.emitMonitorMetrics(ch, snap)
 	c.emitHealthcheckMetrics(ch, snap)
 	c.emitReportMetrics(ch, snap)
 	c.emitTenantMetrics(ch, snap)
+	c.emitMcpMetrics(ch, snap)
 }
 
 // emitMonitorMetrics sends per-monitor metrics derived from the snapshot.
@@ -489,6 +721,24 @@ func (c *Collector) emitMonitorMetrics(ch chan<- prometheus.Metric, snap collect
 				ch <- prometheus.MustNewConstMetric(c.monitorUpByRegion, prometheus.GaugeValue,
 					val, m.UUID, m.Name, tenant, tier, region)
 			}
+		}
+
+		// MCP Metrics
+		if val, ok := snap.responseTimeIndex[m.UUID]; ok {
+			ch <- prometheus.MustNewConstMetric(c.monitorResponseTimeAvg, prometheus.GaugeValue,
+				val, m.UUID, m.Name, tenant, tier)
+		}
+		if val, ok := snap.mttaIndex[m.UUID]; ok {
+			ch <- prometheus.MustNewConstMetric(c.monitorMtta, prometheus.GaugeValue,
+				val, m.UUID, m.Name, tenant, tier)
+		}
+		if val, ok := snap.anomalyCountIndex[m.UUID]; ok {
+			ch <- prometheus.MustNewConstMetric(c.monitorAnomalyCount, prometheus.GaugeValue,
+				float64(val), m.UUID, m.Name, tenant, tier)
+		}
+		if val, ok := snap.anomalyScoreIndex[m.UUID]; ok {
+			ch <- prometheus.MustNewConstMetric(c.monitorAnomalyScore, prometheus.GaugeValue,
+				val, m.UUID, m.Name, tenant, tier)
 		}
 	}
 }
@@ -741,4 +991,10 @@ func boolToFloat64(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// emitMcpMetrics sends global MCP-sourced metrics.
+func (c *Collector) emitMcpMetrics(ch chan<- prometheus.Metric, snap collectorSnapshot) {
+	ch <- prometheus.MustNewConstMetric(c.alertCountTotal, prometheus.CounterValue,
+		float64(snap.totalAlerts))
 }

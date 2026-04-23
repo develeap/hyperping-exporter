@@ -113,6 +113,7 @@ func (d *dummyCollectorAPI) ListIncidents(_ context.Context) ([]hyperping.Incide
 func TestNewMux(t *testing.T) {
 	c := collector.NewCollector(
 		&dummyCollectorAPI{},
+		nil,
 		60*time.Second,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"hyperping",

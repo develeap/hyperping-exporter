@@ -66,16 +66,16 @@ func newTestLogger() *slog.Logger {
 }
 
 func TestNewCollector(t *testing.T) {
-	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
 
 	assert.NotNil(t, c)
 	assert.False(t, c.IsReady())
 }
 
 func TestDescribe(t *testing.T) {
-	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
 
-	ch := make(chan *prometheus.Desc, 34)
+	ch := make(chan *prometheus.Desc, 40)
 	c.Describe(ch)
 	close(ch)
 
@@ -83,8 +83,8 @@ func TestDescribe(t *testing.T) {
 	for d := range ch {
 		descs = append(descs, d)
 	}
-	// 12 original + 13 new (OPS-31/32/33/34/39) + 4 new (EXP-02/03/04) = 29
-	assert.Len(t, descs, 29)
+	// 29 previous + 5 MCP (EXP-01) = 34
+	assert.Len(t, descs, 34)
 }
 
 func TestRefresh_Success(t *testing.T) {
@@ -108,7 +108,7 @@ func TestRefresh_Success(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.True(t, c.IsReady())
@@ -120,7 +120,7 @@ func TestRefresh_MonitorError(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.False(t, c.IsReady())
@@ -132,7 +132,7 @@ func TestRefresh_HealthcheckError(t *testing.T) {
 		healthchecksErr: errors.New("api error"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.False(t, c.IsReady())
@@ -146,7 +146,7 @@ func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 		outagesErr:   errors.New("outage api error"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.True(t, c.IsReady())
@@ -162,7 +162,7 @@ func TestRefresh_MaintenanceErrorIsNonFatal(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -191,7 +191,7 @@ func TestRefresh_IncidentErrorIsNonFatal(t *testing.T) {
 		incidents:    []hyperping.Incident{{UUID: "i1", Type: "investigating"}},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -217,7 +217,7 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -232,7 +232,7 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
 	// Total: 8 + 4 + 5 = 17
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 17, count)
+	assert.Equal(t, 18, count)
 }
 
 func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
@@ -267,7 +267,7 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// mon_1: up + paused + interval + info + ssl + outage_active + status_code + tier + inMaintenance = 9
@@ -277,16 +277,16 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 	// Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
 	// Total = 29
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 29, count)
+	assert.Equal(t, 30, count)
 }
 
 func TestCollect_EmptyCache(t *testing.T) {
-	c := NewCollector(&mockAPI{}, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
 
 	// No refresh: 4 summary + 4 tenant (up_ratio + active_outages + incidents_open + maintenance_windows_active;
 	// no data_age, no health_score) = 8
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 8, count)
+	assert.Equal(t, 9, count)
 }
 
 func TestCollect_NoSSLExpiration(t *testing.T) {
@@ -304,14 +304,14 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// Monitor: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
 	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
 	// Total = 17
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 17, count)
+	assert.Equal(t, 18, count)
 }
 
 func TestCollect_SummaryMetricValues(t *testing.T) {
@@ -325,7 +325,7 @@ func TestCollect_SummaryMetricValues(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -366,7 +366,7 @@ func TestCollect_MonitorMetricValues(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -401,7 +401,7 @@ func TestCollect_HealthcheckMetricValues(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -431,7 +431,7 @@ func TestCollect_ScrapeFailureMetric(t *testing.T) {
 		monitorsErr: errors.New("network error"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -477,7 +477,7 @@ func TestCollect_ActiveOutageMetrics(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -507,7 +507,7 @@ func TestCollect_EscalationTierMetrics(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -545,7 +545,7 @@ func TestCollect_SLAReportMetrics(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// Reports are fetched for 3 periods; each period returns the same mock data.
@@ -575,7 +575,7 @@ func TestCollect_TenantHealthMetrics(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	// 2 monitors up, 0 active outages → up_ratio=1.0
@@ -619,7 +619,7 @@ func TestCollect_Lint(t *testing.T) {
 		},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	problems, err := testutil.CollectAndLint(c)
@@ -706,7 +706,7 @@ func TestStart_BlocksUntilContextDone(t *testing.T) {
 		monitors:     []hyperping.Monitor{},
 		healthchecks: []hyperping.Healthcheck{},
 	}
-	c := NewCollector(api, 10*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 10*time.Second, newTestLogger(), "hyperping")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -735,7 +735,7 @@ func TestStart_PeriodicRefreshOnTick(t *testing.T) {
 	}
 
 	// 20ms TTL; run for 100ms → expect 1 immediate + ≥3 ticks
-	c := NewCollector(api, 20*time.Millisecond, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 20*time.Millisecond, newTestLogger(), "hyperping")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -750,7 +750,7 @@ func TestRefresh_ReportErrorPreservesStaleData(t *testing.T) {
 		reports:      []hyperping.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -772,7 +772,7 @@ func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 		reportsErr:   errors.New("reports unavailable"),
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	assert.True(t, c.IsReady(), "report failure must not fail the scrape")
@@ -795,7 +795,7 @@ func TestNewCollector_CustomNamespace(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "testns")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "testns")
 	c.Refresh(context.Background())
 	require.True(t, c.IsReady())
 
@@ -1042,7 +1042,7 @@ func TestCollect_InMaintenanceMetric(t *testing.T) {
 			{Status: "ongoing", Monitors: []string{"m1"}},
 		},
 	}
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -1081,7 +1081,7 @@ func TestCollect_UpByRegionMetric(t *testing.T) {
 			},
 		},
 	}
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -1112,7 +1112,7 @@ func TestCollect_IncidentAndMaintenanceAccountMetrics(t *testing.T) {
 			{Status: "upcoming"},
 		},
 	}
-	c := NewCollector(api, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
 
 	expected := `
@@ -1128,4 +1128,77 @@ hyperping_maintenance_windows_active 2
 		"hyperping_maintenance_windows_active",
 	)
 	require.NoError(t, err)
+}
+
+type mockMCPTransport struct {
+	results map[string]any
+	errors  map[string]error
+}
+
+func (m *mockMCPTransport) Initialize(ctx context.Context) (map[string]any, error) {
+	return nil, nil
+}
+
+func (m *mockMCPTransport) CallTool(ctx context.Context, toolName string, args map[string]any) (any, error) {
+	if err, ok := m.errors[toolName]; ok {
+		return nil, err
+	}
+	if toolName == "get_monitor_response_time" || toolName == "get_monitor_mtta" || toolName == "get_monitor_anomalies" {
+		uuid := args["uuid"].(string)
+		key := toolName + ":" + uuid
+		return m.results[key], nil
+	}
+	return m.results[toolName], nil
+}
+
+func TestCollect_McpMetrics(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "mon_1", Name: "Web", Status: "up"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	transport := &mockMCPTransport{
+		results: map[string]any{
+			"list_recent_alerts": map[string]any{"total": 42},
+			"get_monitor_response_time:mon_1": map[string]any{"uuid": "mon_1", "avg": 0.123},
+			"get_monitor_mtta:mon_1":         map[string]any{"uuid": "mon_1", "avg_wait": 45.0},
+			"get_monitor_anomalies:mon_1":    map[string]any{"anomalies": []any{
+				map[string]any{"uuid": "a1", "score": 0.8},
+				map[string]any{"uuid": "a2", "score": 0.95},
+			}},
+		},
+	}
+	mcp := hyperping.NewMCPClient(transport)
+
+	c := NewCollector(api, mcp, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_alerts_total Total number of alerts in history.
+# TYPE hyperping_alerts_total counter
+hyperping_alerts_total 42
+# HELP hyperping_monitor_anomaly_count Number of detected anomalies for the monitor.
+# TYPE hyperping_monitor_anomaly_count gauge
+hyperping_monitor_anomaly_count{name="Web",tenant="",tier="unknown",uuid="mon_1"} 2
+# HELP hyperping_monitor_anomaly_score Highest anomaly score for the monitor.
+# TYPE hyperping_monitor_anomaly_score gauge
+hyperping_monitor_anomaly_score{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0.95
+# HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds.
+# TYPE hyperping_monitor_mtta_seconds gauge
+hyperping_monitor_mtta_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 45
+# HELP hyperping_monitor_response_time_avg_seconds Average monitor response time in seconds.
+# TYPE hyperping_monitor_response_time_avg_seconds gauge
+hyperping_monitor_response_time_avg_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0.123
+`
+
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
+		"hyperping_alerts_total",
+		"hyperping_monitor_response_time_avg_seconds",
+		"hyperping_monitor_mtta_seconds",
+		"hyperping_monitor_anomaly_count",
+		"hyperping_monitor_anomaly_score",
+	)
+	assert.NoError(t, err)
 }
