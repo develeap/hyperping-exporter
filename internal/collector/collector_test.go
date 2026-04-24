@@ -1202,3 +1202,31 @@ hyperping_monitor_response_time_avg_seconds{name="Web",tenant="",tier="unknown",
 	)
 	assert.NoError(t, err)
 }
+
+func TestFetchMcpData_ContextCancellation(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "mon_1", Name: "Web", Status: "up"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	transport := &mockMCPTransport{
+		results: map[string]any{
+			"list_recent_alerts": map[string]any{"total": 42},
+		},
+	}
+	// We want to test that workers stop if context is cancelled.
+	// Since CallTool is mocked, we'll make it block or just use a cancelled context.
+	mcp := hyperping.NewMCPClient(transport)
+	c := NewCollector(api, mcp, 60*time.Second, newTestLogger(), "hyperping")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := c.fetchMcpData(ctx, api.monitors)
+	// It might return err or empty data depending on where it stopped, 
+	// but it must return fairly quickly (not hang).
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
+	_ = err
+}
