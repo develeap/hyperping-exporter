@@ -86,6 +86,7 @@ type collectorDescs struct {
 	monitorAnomalyScore       *prometheus.Desc
 	alertCount                *prometheus.Desc
 	cacheTTLDesc              *prometheus.Desc
+	excludedDesc              *prometheus.Desc
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
@@ -168,7 +169,12 @@ func newCollectorDescs(ns string) collectorDescs {
 		),
 		cacheTTLDesc: prometheus.NewDesc(
 			fqn(ns, "cache", "ttl_seconds"),
-			"Configured cache refresh interval in seconds.",
+			"Cache refresh interval in seconds (value of --cache-ttl).",
+			nil, nil,
+		),
+		excludedDesc: prometheus.NewDesc(
+			fqn(ns, "monitors", "excluded"),
+			"Number of monitors excluded by --exclude-name-pattern on the last cache refresh.",
 			nil, nil,
 		),
 	}
@@ -190,6 +196,8 @@ type collectorSnapshot struct {
 	openIncidentCount      int
 	activeMaintenanceCount int
 
+	excludedCount int
+
 	// MCP Metrics
 	responseTimeIndex map[string]float64
 	mttaIndex         map[string]float64
@@ -209,6 +217,7 @@ type Collector struct {
 
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
+	excludedCount      int
 	monitors           []hyperping.Monitor
 	healthchecks       []hyperping.Healthcheck
 	outages            []hyperping.Outage
@@ -584,6 +593,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 	if core.incidents != nil {
 		c.incidents = core.incidents
 	}
+	c.excludedCount = len(excluded)
 	c.monitors = core.monitors
 	c.healthchecks = core.healthchecks
 
@@ -660,6 +670,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.monitorAnomalyScore
 	ch <- c.alertCount
 	ch <- c.cacheTTLDesc
+	ch <- c.excludedDesc
 }
 
 // Collect implements prometheus.Collector.
@@ -699,6 +710,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		anomScoreIdx[k] = v
 	}
 	totalAlerts := c.totalAlerts
+	excludedCount := c.excludedCount
 	c.mu.RUnlock()
 
 	// STEP 2: Build all derived indices outside the lock.
@@ -727,6 +739,8 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		regionDownIndex:        buildRegionDownIndex(outageIdx),
 		openIncidentCount:      countOpenIncidents(incidents),
 		activeMaintenanceCount: activeMaintenanceCount,
+
+		excludedCount: excludedCount,
 
 		// MCP Metrics
 		responseTimeIndex: rtIdx,
@@ -912,6 +926,8 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 
 	ch <- prometheus.MustNewConstMetric(c.cacheTTLDesc, prometheus.GaugeValue,
 		c.cacheTTL.Seconds())
+	ch <- prometheus.MustNewConstMetric(c.excludedDesc, prometheus.GaugeValue,
+		float64(snap.excludedCount))
 }
 
 // buildActiveOutageIndex returns a map of monitor UUID → active Outage.

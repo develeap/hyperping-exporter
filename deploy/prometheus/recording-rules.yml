@@ -63,6 +63,9 @@ groups:
         expr: avg(hyperping_monitor_sla_ratio{period="30d"})
 
       # Monitors breaching 99.9% SLA in each period.
+      # `count()` drops all labels, so the result is a label-free scalar per metric name.
+      # `or vector(0)` returns 0 when all monitors are above threshold (no breaches),
+      # keeping dashboard panels at 0 rather than showing "no data".
       - record: hyperping:sla:breach_count_24h
         expr: count(hyperping_monitor_sla_ratio{period="24h"} < 0.999) or vector(0)
 

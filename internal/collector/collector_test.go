@@ -76,7 +76,7 @@ func TestNewCollector(t *testing.T) {
 func TestDescribe(t *testing.T) {
 	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
 
-	ch := make(chan *prometheus.Desc, 40)
+	ch := make(chan *prometheus.Desc, 64)
 	c.Describe(ch)
 	close(ch)
 
@@ -84,8 +84,8 @@ func TestDescribe(t *testing.T) {
 	for d := range ch {
 		descs = append(descs, d)
 	}
-	// 29 previous + 5 MCP (EXP-01) + 1 cache_ttl = 35
-	assert.Len(t, descs, 35)
+	// 29 previous + 5 MCP (EXP-01) + 1 cache_ttl + 1 monitors_excluded = 36
+	assert.Len(t, descs, 36)
 }
 
 func TestRefresh_Success(t *testing.T) {
@@ -230,10 +230,10 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 
 	// Old monitor data remains; lastSuccessTime was set on first scrape so data_age IS emitted.
 	// Per monitor: up + paused + check_interval + info + outage_active + status_code + tier + inMaintenance = 8
-	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl = 6
-	// MCP: alertCount = 1. Total: 8 + 4 + 6 + 1 = 19
+	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl + excluded = 7
+	// MCP: alertCount = 1. Total: 8 + 4 + 7 + 1 = 20
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 19, count)
+	assert.Equal(t, 20, count)
 }
 
 func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
@@ -275,19 +275,19 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 	// mon_2: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
 	// hc: up + paused + period = 3
 	// Summary: monitors + healthchecks + scrape_duration + scrape_success = 4
-	// Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl = 6
-	// MCP: alertCount = 1. Total = 9 + 8 + 3 + 4 + 6 + 1 = 31
+	// Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl + excluded = 7
+	// MCP: alertCount = 1. Total = 9 + 8 + 3 + 4 + 7 + 1 = 32
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 31, count)
+	assert.Equal(t, 32, count)
 }
 
 func TestCollect_EmptyCache(t *testing.T) {
 	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
 
-	// No refresh: 4 summary + 5 tenant (up_ratio + active_outages + incidents_open + maintenance_windows_active + cache_ttl;
-	// no data_age, no health_score) + 1 MCP (alertCount) = 10
+	// No refresh: 4 summary + 6 tenant (up_ratio + active_outages + incidents_open + maintenance_windows_active + cache_ttl + excluded;
+	// no data_age, no health_score) + 1 MCP (alertCount) = 11
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 10, count)
+	assert.Equal(t, 11, count)
 }
 
 func TestCollect_NoSSLExpiration(t *testing.T) {
@@ -309,10 +309,10 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 	c.Refresh(context.Background())
 
 	// Monitor: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
-	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl = 6
-	// MCP: alertCount = 1. Total = 8 + 4 + 6 + 1 = 19
+	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl + excluded = 7
+	// MCP: alertCount = 1. Total = 8 + 4 + 7 + 1 = 20
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 19, count)
+	assert.Equal(t, 20, count)
 }
 
 func TestCollect_SummaryMetricValues(t *testing.T) {
@@ -1415,10 +1415,69 @@ func TestCollect_CacheTTLSeconds(t *testing.T) {
 	c.Refresh(context.Background())
 
 	expected := `
-# HELP hyperping_cache_ttl_seconds Configured cache refresh interval in seconds.
+# HELP hyperping_cache_ttl_seconds Cache refresh interval in seconds (value of --cache-ttl).
 # TYPE hyperping_cache_ttl_seconds gauge
 hyperping_cache_ttl_seconds 45
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_cache_ttl_seconds")
 	require.NoError(t, err)
+}
+
+func TestCollect_MonitorsExcluded(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL-TA]-NOOP", Status: "down", HTTPMethod: "GET"},
+			{UUID: "drill-2", Name: "[DRILL-TB]-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	t.Run("with pattern: excluded count equals matched monitors", func(t *testing.T) {
+		rx := regexp.MustCompile(`\[DRILL`)
+		c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+		c.Refresh(context.Background())
+
+		expected := `
+# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# TYPE hyperping_monitors_excluded gauge
+hyperping_monitors_excluded 2
+`
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
+		require.NoError(t, err)
+	})
+
+	t.Run("without pattern: excluded count is zero", func(t *testing.T) {
+		c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+		c.Refresh(context.Background())
+
+		expected := `
+# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# TYPE hyperping_monitors_excluded gauge
+hyperping_monitors_excluded 0
+`
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
+		require.NoError(t, err)
+	})
+
+	t.Run("excluded count resets if pattern stops matching", func(t *testing.T) {
+		rx := regexp.MustCompile(`\[DRILL`)
+		c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+		c.Refresh(context.Background())
+
+		// Swap to an API that has no drill monitors.
+		c.api = &mockAPI{
+			monitors:     []hyperping.Monitor{{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"}},
+			healthchecks: []hyperping.Healthcheck{},
+		}
+		c.Refresh(context.Background())
+
+		expected := `
+# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# TYPE hyperping_monitors_excluded gauge
+hyperping_monitors_excluded 0
+`
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
+		require.NoError(t, err)
+	})
 }
