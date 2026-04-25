@@ -100,10 +100,11 @@ All flags can also be set via environment variables.
 | `hyperping_monitor_escalation_tier` | Gauge | 1 (info only). | `uuid`, `name`, `tier` |
 | `hyperping_monitor_in_maintenance` | Gauge | 1 if in a maintenance window. | `uuid`, `name`, `tenant`, `tier` |
 | `hyperping_monitor_up_by_region` | Gauge | 1 if up in region, 0 if down. | `uuid`, `name`, `tenant`, `tier`, `region` |
-| `hyperping_monitor_response_time_avg_seconds` | Gauge | Average response time via MCP. | `uuid`, `name`, `tenant`, `tier` |
+| `hyperping_monitor_response_time_seconds` | Gauge | Average response time via MCP. | `uuid`, `name`, `tenant`, `tier` |
 | `hyperping_monitor_mtta_seconds` | Gauge | Mean Time To Acknowledge via MCP. | `uuid`, `name`, `tenant`, `tier` |
 | `hyperping_monitor_anomaly_count` | Gauge | Detected anomalies count via MCP. | `uuid`, `name`, `tenant`, `tier` |
 | `hyperping_monitor_anomaly_score` | Gauge | Highest anomaly score via MCP. | `uuid`, `name`, `tenant`, `tier` |
+| `hyperping_alerts` | Gauge | Recent alert snapshot count via MCP. | `uuid`, `name` |
 | `hyperping_monitor_sla_ratio` | Gauge | Monitor SLA (0–1). | `uuid`, `name`, `tenant`, `tier`, `period` |
 | `hyperping_monitor_outages` | Gauge | Count of outages in period. | `uuid`, `name`, `tenant`, `tier`, `period` |
 | `hyperping_monitor_downtime` | Gauge | Total downtime seconds in period. | `uuid`, `name`, `tenant`, `tier`, `period` |
@@ -127,7 +128,8 @@ All flags can also be set via environment variables.
 | `hyperping_tenant_health_score` | Gauge | Composite health score (0–100). | |
 | `hyperping_incidents_open` | Gauge | Count of open incidents. | |
 | `hyperping_maintenance_windows_active` | Gauge | Active maintenance windows. | |
-| `hyperping_alerts_total` | Counter | Total alerts in history via MCP. | |
+| `hyperping_incident_active` | Gauge | 1 per active incident. | `tenant`, `tier`, `severity` |
+| `hyperping_maintenance_active` | Gauge | 1 per active maintenance window. | `tenant`, `tier`, `severity` |
 | `hyperping_monitors` | Gauge | Total monitors discovered. | |
 | `hyperping_healthchecks` | Gauge | Total healthchecks discovered. | |
 | `hyperping_scrape_success` | Gauge | 1 if last API scrape succeeded. | |
@@ -205,7 +207,7 @@ Pre-configured rules in `deploy/prometheus/alerts.yml`:
 
 ## Relationship to terraform-provider-hyperping
 
-This exporter uses the same Hyperping API client as [develeap/terraform-provider-hyperping](https://github.com/develeap/terraform-provider-hyperping), but the client code is fully vendored here — there is no runtime dependency on the provider.
+This exporter shares the same API client as [develeap/terraform-provider-hyperping](https://github.com/develeap/terraform-provider-hyperping) via the [`github.com/develeap/hyperping-go`](https://github.com/develeap/hyperping-go) module. There is no runtime dependency on the provider.
 
 ---
 
