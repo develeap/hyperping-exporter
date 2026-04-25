@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,18 @@ import (
 
 	hyperping "github.com/develeap/hyperping-go"
 )
+
+// CollectorOption configures a Collector after construction.
+type CollectorOption func(*Collector)
+
+// WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
+// is dropped from the monitor list immediately after the API fetch, before any
+// metric computation or tenant aggregate calculation.
+func WithExcludePattern(rx *regexp.Regexp) CollectorOption {
+	return func(c *Collector) {
+		c.excludePattern = rx
+	}
+}
 
 // reportPeriods defines the SLA/outage report windows fetched on each refresh.
 var reportPeriods = []string{"24h", "7d", "30d"}
@@ -72,6 +85,7 @@ type collectorDescs struct {
 	monitorAnomalyCount       *prometheus.Desc
 	monitorAnomalyScore       *prometheus.Desc
 	alertCount                *prometheus.Desc
+	cacheTTLDesc              *prometheus.Desc
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
@@ -152,6 +166,11 @@ func newCollectorDescs(ns string) collectorDescs {
 			"Snapshot count of alerts in history.",
 			nil, nil,
 		),
+		cacheTTLDesc: prometheus.NewDesc(
+			fqn(ns, "cache", "ttl_seconds"),
+			"Configured cache refresh interval in seconds.",
+			nil, nil,
+		),
 	}
 }
 
@@ -182,10 +201,11 @@ type collectorSnapshot struct {
 // Collector fetches Hyperping data on a background timer and serves
 // cached results as Prometheus metrics. It implements prometheus.Collector.
 type Collector struct {
-	api      HyperpingAPI
-	mcp      *hyperping.MCPClient
-	cacheTTL time.Duration
-	logger   *slog.Logger
+	api            HyperpingAPI
+	mcp            *hyperping.MCPClient
+	cacheTTL       time.Duration
+	logger         *slog.Logger
+	excludePattern *regexp.Regexp
 
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
@@ -214,8 +234,8 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string) *Collector {
-	return &Collector{
+func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...CollectorOption) *Collector {
+	c := &Collector{
 		api:               api,
 		mcp:               mcp,
 		cacheTTL:          cacheTTL,
@@ -227,6 +247,10 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 		anomalyScoreIndex: make(map[string]float64),
 		collectorDescs:    newCollectorDescs(namespace),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Start begins the background cache refresh loop. It blocks until ctx is cancelled.
@@ -436,7 +460,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
-						} else {
+						} else if err != nil {
 							c.logger.Debug("failed to fetch response time", "uuid", uuid, "error", err)
 						}
 					}
@@ -502,6 +526,23 @@ func (c *Collector) Refresh(ctx context.Context) {
 		c.mu.Unlock()
 		return
 	}
+
+	// Apply name exclusion filter before any downstream processing.
+	monitors, excluded := filterMonitorsByName(core.monitors, c.excludePattern)
+	if len(excluded) > 0 {
+		names := make([]string, len(excluded))
+		for i, m := range excluded {
+			names[i] = m.Name
+		}
+		c.logger.Debug("excluded monitors by name pattern", "count", len(excluded), "names", names)
+		// Filter outages so tenant aggregates don't count excluded monitors.
+		includedUUIDs := make(map[string]struct{}, len(monitors))
+		for _, m := range monitors {
+			includedUUIDs[m.UUID] = struct{}{}
+		}
+		core.outages = filterOutagesByMonitorUUID(core.outages, includedUUIDs)
+	}
+	core.monitors = monitors
 
 	var (
 		mcp           mcpData
@@ -618,6 +659,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.monitorAnomalyCount
 	ch <- c.monitorAnomalyScore
 	ch <- c.alertCount
+	ch <- c.cacheTTLDesc
 }
 
 // Collect implements prometheus.Collector.
@@ -867,6 +909,9 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 		float64(snap.openIncidentCount))
 	ch <- prometheus.MustNewConstMetric(c.maintenanceWindowsActive, prometheus.GaugeValue,
 		float64(snap.activeMaintenanceCount))
+
+	ch <- prometheus.MustNewConstMetric(c.cacheTTLDesc, prometheus.GaugeValue,
+		c.cacheTTL.Seconds())
 }
 
 // buildActiveOutageIndex returns a map of monitor UUID → active Outage.

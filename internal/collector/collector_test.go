@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -83,8 +84,8 @@ func TestDescribe(t *testing.T) {
 	for d := range ch {
 		descs = append(descs, d)
 	}
-	// 29 previous + 5 MCP (EXP-01) = 34
-	assert.Len(t, descs, 34)
+	// 29 previous + 5 MCP (EXP-01) + 1 cache_ttl = 35
+	assert.Len(t, descs, 35)
 }
 
 func TestRefresh_Success(t *testing.T) {
@@ -229,10 +230,10 @@ func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
 
 	// Old monitor data remains; lastSuccessTime was set on first scrape so data_age IS emitted.
 	// Per monitor: up + paused + check_interval + info + outage_active + status_code + tier + inMaintenance = 8
-	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
-	// Total: 8 + 4 + 5 = 17
+	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl = 6
+	// MCP: alertCount = 1. Total: 8 + 4 + 6 + 1 = 19
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 18, count)
+	assert.Equal(t, 19, count)
 }
 
 func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
@@ -274,19 +275,19 @@ func TestCollect_WithMonitorsAndHealthchecks(t *testing.T) {
 	// mon_2: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
 	// hc: up + paused + period = 3
 	// Summary: monitors + healthchecks + scrape_duration + scrape_success = 4
-	// Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
-	// Total = 29
+	// Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl = 6
+	// MCP: alertCount = 1. Total = 9 + 8 + 3 + 4 + 6 + 1 = 31
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 30, count)
+	assert.Equal(t, 31, count)
 }
 
 func TestCollect_EmptyCache(t *testing.T) {
 	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
 
-	// No refresh: 4 summary + 4 tenant (up_ratio + active_outages + incidents_open + maintenance_windows_active;
-	// no data_age, no health_score) = 8
+	// No refresh: 4 summary + 5 tenant (up_ratio + active_outages + incidents_open + maintenance_windows_active + cache_ttl;
+	// no data_age, no health_score) + 1 MCP (alertCount) = 10
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 9, count)
+	assert.Equal(t, 10, count)
 }
 
 func TestCollect_NoSSLExpiration(t *testing.T) {
@@ -308,10 +309,10 @@ func TestCollect_NoSSLExpiration(t *testing.T) {
 	c.Refresh(context.Background())
 
 	// Monitor: up + paused + interval + info + outage_active + status_code + tier + inMaintenance = 8
-	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active = 5
-	// Total = 17
+	// Summary: 4, Tenant: up_ratio + active_outages + data_age + incidents_open + maintenance_windows_active + cache_ttl = 6
+	// MCP: alertCount = 1. Total = 8 + 4 + 6 + 1 = 19
 	count := testutil.CollectAndCount(c)
-	assert.Equal(t, 18, count)
+	assert.Equal(t, 19, count)
 }
 
 func TestCollect_SummaryMetricValues(t *testing.T) {
@@ -1258,8 +1259,166 @@ func TestFetchMcpData_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	_, err := c.fetchMcpData(ctx, api.monitors)
-	// It might return err or empty data depending on where it stopped, 
+	// It might return err or empty data depending on where it stopped,
 	// but it must return fairly quickly (not hang).
 	assert.ErrorIs(t, ctx.Err(), context.Canceled)
 	_ = err
+}
+
+// --- WithExcludePattern option ---
+
+func TestRefresh_ExcludePattern_FiltersMonitors(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL-TA]-PaymentAPI-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	c.mu.RLock()
+	monitors := c.monitors
+	c.mu.RUnlock()
+
+	require.Len(t, monitors, 1, "drill monitor must be excluded")
+	assert.Equal(t, "prod-api", monitors[0].Name)
+}
+
+func TestRefresh_ExcludePattern_FiltersOutages(t *testing.T) {
+	endDate := "2026-04-25T10:00:00Z"
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL-TA]-PaymentAPI-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		outages: []hyperping.Outage{
+			// prod active outage
+			{Monitor: hyperping.MonitorReference{UUID: "prod-1"}, IsResolved: false},
+			// drill active outage — must be excluded
+			{Monitor: hyperping.MonitorReference{UUID: "drill-1"}, IsResolved: false},
+			// already-resolved outage for drill monitor — also excluded
+			{Monitor: hyperping.MonitorReference{UUID: "drill-1"}, IsResolved: true, EndDate: &endDate},
+		},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	c.mu.RLock()
+	outages := c.outages
+	c.mu.RUnlock()
+
+	require.Len(t, outages, 1, "drill monitor outages must be excluded")
+	assert.Equal(t, "prod-1", outages[0].Monitor.UUID)
+}
+
+func TestRefresh_ExcludePattern_TenantUpRatioExcludesDrillMonitors(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL-TA]-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_tenant_monitors_up_ratio Fraction of monitors currently up (0–1).
+# TYPE hyperping_tenant_monitors_up_ratio gauge
+hyperping_tenant_monitors_up_ratio 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_monitors_up_ratio")
+	require.NoError(t, err)
+}
+
+func TestRefresh_ExcludePattern_TenantActiveOutagesExcludesDrillOutages(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL-TA]-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		outages: []hyperping.Outage{
+			{Monitor: hyperping.MonitorReference{UUID: "prod-1"}, IsResolved: false},
+			{Monitor: hyperping.MonitorReference{UUID: "drill-1"}, IsResolved: false},
+		},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_tenant_active_outages Total number of active (unresolved) outages across all monitors.
+# TYPE hyperping_tenant_active_outages gauge
+hyperping_tenant_active_outages 1
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_active_outages")
+	require.NoError(t, err)
+}
+
+func TestRefresh_ExcludePattern_NilPatternKeepsAll(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL-TA]-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	c.mu.RLock()
+	count := len(c.monitors)
+	c.mu.RUnlock()
+
+	assert.Equal(t, 2, count, "nil pattern must keep all monitors")
+}
+
+func TestRefresh_ExcludePattern_NoMatchKeepsAll(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "staging-1", Name: "staging-api", Status: "up", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	c.mu.RLock()
+	count := len(c.monitors)
+	c.mu.RUnlock()
+
+	assert.Equal(t, 2, count, "non-matching pattern must keep all monitors")
+}
+
+func TestCollect_CacheTTLSeconds(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	c := NewCollector(api, nil, 45*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	expected := `
+# HELP hyperping_cache_ttl_seconds Configured cache refresh interval in seconds.
+# TYPE hyperping_cache_ttl_seconds gauge
+hyperping_cache_ttl_seconds 45
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_cache_ttl_seconds")
+	require.NoError(t, err)
 }
