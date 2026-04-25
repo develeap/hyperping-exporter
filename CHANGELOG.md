@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-04-25
+
+### Fixed
+
+- Nil pointer panic in MCP worker pool: `GetMonitorResponseTime` and `GetMonitorMtta` return `(nil, nil)` when the MCP server returns an empty result. Accessing `report.Avg` / `report.AvgWait` on a nil pointer caused a crash during scrape. Added `report != nil` guard alongside the existing `err == nil` check.
+- Removed stale `hyperping-go v0.3.0` hashes from `go.sum` (left behind after upgrading to v0.4.0).
+
 ## [1.2.0] - 2026-04-25
 
 ### Added
