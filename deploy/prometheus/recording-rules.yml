@@ -3,17 +3,20 @@ groups:
     interval: 1m
     rules:
       # Pre-aggregate fleet-wide counts for fast dashboard queries.
+      # `or vector(0)` guards against the expression returning absent when all monitors
+      # match the filter (e.g. all down, all paused), which would cause panels and alerts
+      # that depend on these recording rules to disappear rather than show 0.
       - record: hyperping:fleet:monitors_total
-        expr: count(hyperping_monitor_up)
+        expr: count(hyperping_monitor_up) or vector(0)
 
       - record: hyperping:fleet:monitors_up
-        expr: count(hyperping_monitor_up == 1)
+        expr: count(hyperping_monitor_up == 1) or vector(0)
 
       - record: hyperping:fleet:monitors_down
-        expr: count(hyperping_monitor_up == 0 and hyperping_monitor_paused == 0)
+        expr: count(hyperping_monitor_up == 0 and hyperping_monitor_paused == 0) or vector(0)
 
       - record: hyperping:fleet:monitors_paused
-        expr: count(hyperping_monitor_paused == 1)
+        expr: count(hyperping_monitor_paused == 1) or vector(0)
 
       - record: hyperping:fleet:active_outages
         expr: hyperping_tenant_active_outages
@@ -23,9 +26,19 @@ groups:
     rules:
       # Per-tier up-ratio: monitors UP divided by total monitors per tier.
       # tier label is carried directly on hyperping_monitor_up since EXP-01; no join needed.
+      #
+      # Zero-guard for the numerator: when all monitors in a tier are down, the
+      # `== 1` filter returns absent for that tier. Using `or (count by (tier) (...) * 0)`
+      # ensures a 0-valued series with the correct tier label exists, so the ratio
+      # evaluates to 0 instead of disappearing. `or vector(0)` cannot be used here
+      # because vector(0) carries no tier label.
       - record: hyperping:tier:monitors_up_ratio
         expr: |
-          count by (tier) (hyperping_monitor_up == 1)
+          (
+            count by (tier) (hyperping_monitor_up == 1)
+            or
+            (count by (tier) (hyperping_monitor_up) * 0)
+          )
           /
           count by (tier) (hyperping_monitor_up)
 
@@ -50,11 +63,14 @@ groups:
         expr: avg(hyperping_monitor_sla_ratio{period="30d"})
 
       # Monitors breaching 99.9% SLA in each period.
+      # `count()` drops all labels, so the result is a label-free scalar per metric name.
+      # `or vector(0)` returns 0 when all monitors are above threshold (no breaches),
+      # keeping dashboard panels at 0 rather than showing "no data".
       - record: hyperping:sla:breach_count_24h
-        expr: count(hyperping_monitor_sla_ratio{period="24h"} < 0.999)
+        expr: count(hyperping_monitor_sla_ratio{period="24h"} < 0.999) or vector(0)
 
       - record: hyperping:sla:breach_count_7d
-        expr: count(hyperping_monitor_sla_ratio{period="7d"} < 0.999)
+        expr: count(hyperping_monitor_sla_ratio{period="7d"} < 0.999) or vector(0)
 
       - record: hyperping:sla:breach_count_30d
-        expr: count(hyperping_monitor_sla_ratio{period="30d"} < 0.999)
+        expr: count(hyperping_monitor_sla_ratio{period="30d"} < 0.999) or vector(0)

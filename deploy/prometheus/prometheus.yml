@@ -26,3 +26,10 @@ scrape_configs:
       - source_labels: [__name__]
         regex: "go_gc_duration_seconds.*"
         action: drop
+
+# To exclude synthetic or drill monitors from all metrics and tenant aggregates,
+# pass --exclude-name-pattern to the exporter with a RE2 regex matching their names.
+# Example (in docker-compose.yml or your deployment manifest):
+#   command: ["--api-key=...", "--exclude-name-pattern=\\[DRILL|\\[TEST|\\[STAGING"]
+# Excluded monitors do not appear in hyperping_monitor_* metrics and are not counted
+# in hyperping_tenant_monitors_up_ratio or hyperping_tenant_active_outages.

@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,18 @@ import (
 
 	hyperping "github.com/develeap/hyperping-go"
 )
+
+// CollectorOption configures a Collector after construction.
+type CollectorOption func(*Collector)
+
+// WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
+// is dropped from the monitor list immediately after the API fetch, before any
+// metric computation or tenant aggregate calculation.
+func WithExcludePattern(rx *regexp.Regexp) CollectorOption {
+	return func(c *Collector) {
+		c.excludePattern = rx
+	}
+}
 
 // reportPeriods defines the SLA/outage report windows fetched on each refresh.
 var reportPeriods = []string{"24h", "7d", "30d"}
@@ -72,6 +85,8 @@ type collectorDescs struct {
 	monitorAnomalyCount       *prometheus.Desc
 	monitorAnomalyScore       *prometheus.Desc
 	alertCount                *prometheus.Desc
+	cacheTTLDesc              *prometheus.Desc
+	excludedDesc              *prometheus.Desc
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
@@ -152,6 +167,16 @@ func newCollectorDescs(ns string) collectorDescs {
 			"Snapshot count of alerts in history.",
 			nil, nil,
 		),
+		cacheTTLDesc: prometheus.NewDesc(
+			fqn(ns, "cache", "ttl_seconds"),
+			"Cache refresh interval in seconds (value of --cache-ttl).",
+			nil, nil,
+		),
+		excludedDesc: prometheus.NewDesc(
+			fqn(ns, "monitors", "excluded"),
+			"Number of monitors excluded by --exclude-name-pattern on the last cache refresh.",
+			nil, nil,
+		),
 	}
 }
 
@@ -171,6 +196,8 @@ type collectorSnapshot struct {
 	openIncidentCount      int
 	activeMaintenanceCount int
 
+	excludedCount int
+
 	// MCP Metrics
 	responseTimeIndex map[string]float64
 	mttaIndex         map[string]float64
@@ -182,13 +209,15 @@ type collectorSnapshot struct {
 // Collector fetches Hyperping data on a background timer and serves
 // cached results as Prometheus metrics. It implements prometheus.Collector.
 type Collector struct {
-	api      HyperpingAPI
-	mcp      *hyperping.MCPClient
-	cacheTTL time.Duration
-	logger   *slog.Logger
+	api            HyperpingAPI
+	mcp            *hyperping.MCPClient
+	cacheTTL       time.Duration
+	logger         *slog.Logger
+	excludePattern *regexp.Regexp
 
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
+	excludedCount      int
 	monitors           []hyperping.Monitor
 	healthchecks       []hyperping.Healthcheck
 	outages            []hyperping.Outage
@@ -214,8 +243,8 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string) *Collector {
-	return &Collector{
+func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...CollectorOption) *Collector {
+	c := &Collector{
 		api:               api,
 		mcp:               mcp,
 		cacheTTL:          cacheTTL,
@@ -227,6 +256,10 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 		anomalyScoreIndex: make(map[string]float64),
 		collectorDescs:    newCollectorDescs(namespace),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Start begins the background cache refresh loop. It blocks until ctx is cancelled.
@@ -436,7 +469,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
-						} else {
+						} else if err != nil {
 							c.logger.Debug("failed to fetch response time", "uuid", uuid, "error", err)
 						}
 					}
@@ -503,6 +536,23 @@ func (c *Collector) Refresh(ctx context.Context) {
 		return
 	}
 
+	// Apply name exclusion filter before any downstream processing.
+	monitors, excluded := filterMonitorsByName(core.monitors, c.excludePattern)
+	if len(excluded) > 0 {
+		names := make([]string, len(excluded))
+		for i, m := range excluded {
+			names[i] = m.Name
+		}
+		c.logger.Debug("excluded monitors by name pattern", "count", len(excluded), "names", names)
+		// Filter outages so tenant aggregates don't count excluded monitors.
+		includedUUIDs := make(map[string]struct{}, len(monitors))
+		for _, m := range monitors {
+			includedUUIDs[m.UUID] = struct{}{}
+		}
+		core.outages = filterOutagesByMonitorUUID(core.outages, includedUUIDs)
+	}
+	core.monitors = monitors
+
 	var (
 		mcp           mcpData
 		mcpErr        error
@@ -543,6 +593,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 	if core.incidents != nil {
 		c.incidents = core.incidents
 	}
+	c.excludedCount = len(excluded)
 	c.monitors = core.monitors
 	c.healthchecks = core.healthchecks
 
@@ -618,6 +669,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.monitorAnomalyCount
 	ch <- c.monitorAnomalyScore
 	ch <- c.alertCount
+	ch <- c.cacheTTLDesc
+	ch <- c.excludedDesc
 }
 
 // Collect implements prometheus.Collector.
@@ -657,6 +710,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		anomScoreIdx[k] = v
 	}
 	totalAlerts := c.totalAlerts
+	excludedCount := c.excludedCount
 	c.mu.RUnlock()
 
 	// STEP 2: Build all derived indices outside the lock.
@@ -685,6 +739,8 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		regionDownIndex:        buildRegionDownIndex(outageIdx),
 		openIncidentCount:      countOpenIncidents(incidents),
 		activeMaintenanceCount: activeMaintenanceCount,
+
+		excludedCount: excludedCount,
 
 		// MCP Metrics
 		responseTimeIndex: rtIdx,
@@ -867,6 +923,11 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 		float64(snap.openIncidentCount))
 	ch <- prometheus.MustNewConstMetric(c.maintenanceWindowsActive, prometheus.GaugeValue,
 		float64(snap.activeMaintenanceCount))
+
+	ch <- prometheus.MustNewConstMetric(c.cacheTTLDesc, prometheus.GaugeValue,
+		c.cacheTTL.Seconds())
+	ch <- prometheus.MustNewConstMetric(c.excludedDesc, prometheus.GaugeValue,
+		float64(snap.excludedCount))
 }
 
 // buildActiveOutageIndex returns a map of monitor UUID → active Outage.

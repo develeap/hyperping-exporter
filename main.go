@@ -34,15 +34,17 @@ func main() {
 }
 
 type config struct {
-	listenAddr    string
-	metricsPath   string
-	apiKey        string
-	cacheTTL      time.Duration
-	logLevel      string
-	logFormat     string
-	webConfigFile string
-	namespace     string
-	mcpURL        string
+	listenAddr         string
+	metricsPath        string
+	apiKey             string
+	cacheTTL           time.Duration
+	logLevel           string
+	logFormat          string
+	webConfigFile      string
+	namespace          string
+	mcpURL             string
+	excludeNamePattern string
+	excludeNameRx      *regexp.Regexp
 }
 
 func parseConfig() (config, bool) {
@@ -56,6 +58,7 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.webConfigFile, "web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
 	flag.StringVar(&cfg.namespace, "namespace", "", `Metric name prefix (env: HYPERPING_EXPORTER_NAMESPACE, default: "hyperping")`)
 	flag.StringVar(&cfg.mcpURL, "mcp-url", "", "Custom Hyperping MCP server URL (default: https://api.hyperping.io/v1/mcp)")
+	flag.StringVar(&cfg.excludeNamePattern, "exclude-name-pattern", "", "RE2 regex; monitors whose name matches are excluded from all metrics and tenant aggregates")
 	flag.Parse()
 
 	if cfg.apiKey == "" {
@@ -80,6 +83,14 @@ func parseConfig() (config, bool) {
 			fmt.Fprintf(os.Stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
 			return cfg, false
 		}
+	}
+	if cfg.excludeNamePattern != "" {
+		rx, err := regexp.Compile(cfg.excludeNamePattern)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
+			return cfg, false
+		}
+		cfg.excludeNameRx = rx
 	}
 	return cfg, true
 }
@@ -169,7 +180,10 @@ func run() int {
 	}
 	mcpClient := hyperping.NewMCPClient(mcpTransport)
 
-	c := collector.NewCollector(apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace)
+	if cfg.excludeNameRx != nil {
+		logger.Info("monitor exclusion filter active", "pattern", cfg.excludeNamePattern)
+	}
+	c := collector.NewCollector(apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace, collector.WithExcludePattern(cfg.excludeNameRx))
 	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)
 	if err != nil {

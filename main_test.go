@@ -215,3 +215,38 @@ func TestParseConfig_FlagBeatsEnvVar(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "hyperping", cfg.namespace, "explicit flag must beat env var")
 }
+
+func TestParseConfig_ExcludeNamePattern_Valid(t *testing.T) {
+	resetFlags(t, []string{"test", "--exclude-name-pattern", `\[DRILL`})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.NotNil(t, cfg.excludeNameRx, "valid pattern must compile to a non-nil regexp")
+}
+
+func TestParseConfig_ExcludeNamePattern_Alternation(t *testing.T) {
+	resetFlags(t, []string{"test", "--exclude-name-pattern", `\[DRILL|\[TEST|\[STAGING`})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.NotNil(t, cfg.excludeNameRx)
+}
+
+func TestParseConfig_ExcludeNamePattern_InvalidRegex(t *testing.T) {
+	resetFlags(t, []string{"test", "--exclude-name-pattern", `[invalid(`})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	_, ok := parseConfig()
+	assert.False(t, ok, "invalid regex must cause parseConfig to fail")
+}
+
+func TestParseConfig_ExcludeNamePattern_Empty(t *testing.T) {
+	resetFlags(t, []string{"test"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Nil(t, cfg.excludeNameRx, "empty pattern must leave excludeNameRx nil")
+}
