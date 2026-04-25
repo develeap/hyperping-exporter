@@ -1,4 +1,14 @@
 {
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
   "title": "Hyperping Shared Infrastructure",
   "uid": "hyperping-shared-infra",
   "description": "Error code breakdown, cross-monitor pattern visibility, and 422 anomaly detection for ops debugging. Requires OPS-32, OPS-39.",
@@ -12,6 +22,19 @@
   "editable": true,
   "templating": {
     "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
       {
         "name": "tier",
         "label": "Tier",
@@ -49,7 +72,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "count(hyperping_monitor_active_outage_status_code >= 500 and hyperping_monitor_active_outage_status_code < 600) or vector(0)",
           "legendFormat": "5xx",
           "instant": true
@@ -81,7 +104,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "count(hyperping_monitor_active_outage_status_code >= 400 and hyperping_monitor_active_outage_status_code < 500) or vector(0)",
           "legendFormat": "4xx",
           "instant": true
@@ -113,7 +136,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "count(hyperping_monitor_active_outage_status_code == 422) or vector(0)",
           "legendFormat": "422",
           "instant": true
@@ -144,7 +167,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "count(hyperping_monitor_outage_active * on(uuid, name) group_left(tier) hyperping_monitor_escalation_tier{tier=\"core\"} == 1) or vector(0)",
           "legendFormat": "Core Outages",
           "instant": true
@@ -174,7 +197,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "count by (status_code) (label_replace(hyperping_monitor_active_outage_status_code > 0, \"status_code\", \"$1\", \"__name__\", \".+\") * hyperping_monitor_active_outage_status_code > 0)",
           "legendFormat": "{{status_code}}",
           "instant": true
@@ -246,19 +269,19 @@
       ],
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_outage_active",
           "instant": true,
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_active_outage_status_code",
           "instant": true,
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_escalation_tier",
           "instant": true,
           "refId": "C"
@@ -298,7 +321,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping:tier:avg_sla_7d",
           "legendFormat": "{{tier}}"
         }
@@ -358,19 +381,19 @@
       ],
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_outages{period=\"24h\"} > 0",
           "instant": true,
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_downtime_seconds{period=\"24h\"} > 0",
           "instant": true,
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_escalation_tier",
           "instant": true,
           "refId": "C"

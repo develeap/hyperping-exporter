@@ -1,4 +1,14 @@
 {
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
   "title": "Hyperping Tenant Health",
   "uid": "hyperping-tenant-health",
   "description": "Per-tenant health score, SLA gauge, and all-tenants ranking for weekly review. Requires OPS-34.",
@@ -13,10 +23,23 @@
   "templating": {
     "list": [
       {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
         "name": "project_uuid",
         "label": "Project (Tenant)",
         "type": "query",
-        "datasource": { "type": "prometheus" },
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
         "query": "label_values(hyperping_monitor_info, project_uuid)",
         "refresh": 2,
         "sort": 1,
@@ -57,7 +80,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_health_score",
           "legendFormat": "Health Score",
           "instant": true
@@ -92,7 +115,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_monitors_up_ratio",
           "legendFormat": "Up Ratio"
         }
@@ -124,7 +147,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_active_outages",
           "legendFormat": "Outages",
           "instant": true
@@ -159,7 +182,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_avg_sla_ratio{period=\"30d\"}",
           "legendFormat": "30d SLA",
           "instant": true
@@ -194,7 +217,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_avg_sla_ratio{period=\"7d\"}",
           "legendFormat": "7d SLA",
           "instant": true
@@ -233,7 +256,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_health_score",
           "legendFormat": "Health Score"
         }
@@ -255,7 +278,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_tenant_monitors_up_ratio",
           "legendFormat": "Up Ratio"
         }
@@ -300,7 +323,7 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "sort_desc(hyperping_monitor_sla_ratio{period=\"30d\"})",
           "legendFormat": "{{name}}"
         }
@@ -363,31 +386,31 @@
       ],
       "targets": [
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_outages{period=\"30d\"}",
           "instant": true,
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_downtime_seconds{period=\"30d\"}",
           "instant": true,
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_longest_outage_seconds{period=\"30d\"}",
           "instant": true,
           "refId": "C"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_mttr_seconds{period=\"30d\"}",
           "instant": true,
           "refId": "D"
         },
         {
-          "datasource": { "type": "prometheus" },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "expr": "hyperping_monitor_sla_ratio{period=\"30d\"}",
           "instant": true,
           "refId": "E"
