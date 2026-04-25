@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"regexp"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -73,6 +74,12 @@ func parseConfig() (config, bool) {
 	if err := validateNamespace(cfg.namespace); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid namespace: %v\n", err)
 		return cfg, false
+	}
+	if cfg.mcpURL != "" {
+		if !strings.HasPrefix(cfg.mcpURL, "https://") && !strings.HasPrefix(cfg.mcpURL, "http://localhost") {
+			fmt.Fprintf(os.Stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
+			return cfg, false
+		}
 	}
 	return cfg, true
 }
