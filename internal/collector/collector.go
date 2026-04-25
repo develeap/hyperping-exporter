@@ -430,7 +430,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 						report, err := c.mcp.GetMonitorResponseTime(opCtx, uuid)
 						cancel()
-						if err == nil {
+						if err == nil && report != nil {
 							mu.Lock()
 							res.responseTime[uuid] = report.Avg
 							mu.Unlock()
@@ -446,7 +446,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 						report, err := c.mcp.GetMonitorMtta(opCtx, uuid)
 						cancel()
-						if err == nil {
+						if err == nil && report != nil {
 							mu.Lock()
 							res.mtta[uuid] = report.AvgWait
 							mu.Unlock()
