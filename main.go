@@ -162,7 +162,11 @@ func run() int {
 	apiClient := hyperping.NewClient(cfg.apiKey, hyperping.WithMaxRetries(2), hyperping.WithMetrics(clientMetrics))
 
 	// Initialize MCP client for advanced metrics
-	mcpTransport := hyperping.NewMcpTransport(cfg.apiKey, cfg.mcpURL)
+	mcpTransport, err := hyperping.NewMcpTransport(cfg.apiKey, cfg.mcpURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: initialize MCP transport: %v\n", err)
+		return 1
+	}
 	mcpClient := hyperping.NewMCPClient(mcpTransport)
 
 	c := collector.NewCollector(apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace)
