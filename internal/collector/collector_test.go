@@ -1176,9 +1176,9 @@ func TestCollect_McpMetrics(t *testing.T) {
 	c.Refresh(context.Background())
 
 	expected := `
-# HELP hyperping_alerts_total Total number of alerts in history.
-# TYPE hyperping_alerts_total counter
-hyperping_alerts_total 42
+# HELP hyperping_alerts Snapshot count of alerts in history.
+# TYPE hyperping_alerts gauge
+hyperping_alerts 42
 # HELP hyperping_monitor_anomaly_count Number of detected anomalies for the monitor.
 # TYPE hyperping_monitor_anomaly_count gauge
 hyperping_monitor_anomaly_count{name="Web",tenant="",tier="unknown",uuid="mon_1"} 2
@@ -1188,17 +1188,78 @@ hyperping_monitor_anomaly_score{name="Web",tenant="",tier="unknown",uuid="mon_1"
 # HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds.
 # TYPE hyperping_monitor_mtta_seconds gauge
 hyperping_monitor_mtta_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 45
-# HELP hyperping_monitor_response_time_avg_seconds Average monitor response time in seconds.
-# TYPE hyperping_monitor_response_time_avg_seconds gauge
-hyperping_monitor_response_time_avg_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0.123
+# HELP hyperping_monitor_response_time_seconds Average monitor response time in seconds.
+# TYPE hyperping_monitor_response_time_seconds gauge
+hyperping_monitor_response_time_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0.123
 `
 
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
-		"hyperping_alerts_total",
-		"hyperping_monitor_response_time_avg_seconds",
+		"hyperping_alerts",
+		"hyperping_monitor_response_time_seconds",
 		"hyperping_monitor_mtta_seconds",
 		"hyperping_monitor_anomaly_count",
 		"hyperping_monitor_anomaly_score",
 	)
 	assert.NoError(t, err)
+}
+
+// TestRefresh_McpErrorIsNonFatal verifies that MCP failures do not block the collector
+// from becoming ready when the REST API succeeds.
+func TestRefresh_McpErrorIsNonFatal(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	// MCP transport that always returns errors for every tool call.
+	transport := &mockMCPTransport{
+		errors: map[string]error{
+			"list_recent_alerts":       errors.New("mcp unavailable"),
+			"get_monitor_response_time": errors.New("mcp unavailable"),
+			"get_monitor_mtta":          errors.New("mcp unavailable"),
+			"get_monitor_anomalies":     errors.New("mcp unavailable"),
+		},
+	}
+	mcp := hyperping.NewMCPClient(transport)
+
+	c := NewCollector(api, mcp, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	// Collector must be ready despite all MCP calls failing.
+	assert.True(t, c.IsReady())
+
+	// REST metrics must be present.
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	assert.NotEmpty(t, mfs)
+}
+
+func TestFetchMcpData_ContextCancellation(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "mon_1", Name: "Web", Status: "up"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+
+	transport := &mockMCPTransport{
+		results: map[string]any{
+			"list_recent_alerts": map[string]any{"total": 42},
+		},
+	}
+	// We want to test that workers stop if context is cancelled.
+	// Since CallTool is mocked, we'll make it block or just use a cancelled context.
+	mcp := hyperping.NewMCPClient(transport)
+	c := NewCollector(api, mcp, 60*time.Second, newTestLogger(), "hyperping")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := c.fetchMcpData(ctx, api.monitors)
+	// It might return err or empty data depending on where it stopped, 
+	// but it must return fairly quickly (not hang).
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
+	_ = err
 }

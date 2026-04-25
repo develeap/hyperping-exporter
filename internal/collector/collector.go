@@ -71,7 +71,7 @@ type collectorDescs struct {
 	monitorMtta               *prometheus.Desc
 	monitorAnomalyCount       *prometheus.Desc
 	monitorAnomalyScore       *prometheus.Desc
-	alertCountTotal           *prometheus.Desc
+	alertCount                *prometheus.Desc
 }
 
 // newCollectorDescs initialises all Prometheus metric descriptors.
@@ -126,8 +126,9 @@ func newCollectorDescs(ns string) collectorDescs {
 			"Number of currently active (ongoing) maintenance windows.",
 			nil, nil,
 		),
+		// previously named response_time_avg_seconds
 		monitorResponseTimeAvg: prometheus.NewDesc(
-			fqn(ns, "monitor", "response_time_avg_seconds"),
+			fqn(ns, "monitor", "response_time_seconds"),
 			"Average monitor response time in seconds.",
 			ml, nil,
 		),
@@ -146,9 +147,9 @@ func newCollectorDescs(ns string) collectorDescs {
 			"Highest anomaly score for the monitor.",
 			ml, nil,
 		),
-		alertCountTotal: prometheus.NewDesc(
-			fqn(ns, "", "alerts_total"),
-			"Total number of alerts in history.",
+		alertCount: prometheus.NewDesc(
+			fqn(ns, "", "alerts"),
+			"Snapshot count of alerts in history.",
 			nil, nil,
 		),
 	}
@@ -410,41 +411,74 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for m := range monitorChan {
-				uuid := m.UUID
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case m, ok := <-monitorChan:
+					if !ok {
+						return
+					}
+					// Double-check client is still available
+					if c.mcp == nil {
+						return
+					}
+					uuid := m.UUID
 
-				// Response Time
-				if report, err := c.mcp.GetMonitorResponseTime(ctx, uuid); err == nil {
-					mu.Lock()
-					res.responseTime[uuid] = report.Avg
-					mu.Unlock()
-				} else {
-					c.logger.Debug("failed to fetch response time", "uuid", uuid, "error", err)
-				}
-
-				// MTTA
-				if report, err := c.mcp.GetMonitorMtta(ctx, uuid); err == nil {
-					mu.Lock()
-					res.mtta[uuid] = report.AvgWait
-					mu.Unlock()
-				} else {
-					c.logger.Debug("failed to fetch mtta", "uuid", uuid, "error", err)
-				}
-
-				// Anomalies
-				if anomalies, err := c.mcp.GetMonitorAnomalies(ctx, uuid); err == nil {
-					mu.Lock()
-					res.anomalyCount[uuid] = len(anomalies)
-					maxScore := 0.0
-					for _, a := range anomalies {
-						if a.Score > maxScore {
-							maxScore = a.Score
+					// 1. Response Time
+					{
+						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+						report, err := c.mcp.GetMonitorResponseTime(opCtx, uuid)
+						cancel()
+						if err == nil {
+							mu.Lock()
+							res.responseTime[uuid] = report.Avg
+							mu.Unlock()
+						} else if ctx.Err() != nil {
+							return
+						} else {
+							c.logger.Debug("failed to fetch response time", "uuid", uuid, "error", err)
 						}
 					}
-					res.anomalyScore[uuid] = maxScore
-					mu.Unlock()
-				} else {
-					c.logger.Debug("failed to fetch anomalies", "uuid", uuid, "error", err)
+
+					// 2. MTTA
+					{
+						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+						report, err := c.mcp.GetMonitorMtta(opCtx, uuid)
+						cancel()
+						if err == nil {
+							mu.Lock()
+							res.mtta[uuid] = report.AvgWait
+							mu.Unlock()
+						} else if ctx.Err() != nil {
+							return
+						} else {
+							c.logger.Debug("failed to fetch mtta", "uuid", uuid, "error", err)
+						}
+					}
+
+					// 3. Anomalies
+					{
+						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+						anomalies, err := c.mcp.GetMonitorAnomalies(opCtx, uuid)
+						cancel()
+						if err == nil {
+							mu.Lock()
+							res.anomalyCount[uuid] = len(anomalies)
+							maxScore := 0.0
+							for _, a := range anomalies {
+								if a.Score > maxScore {
+									maxScore = a.Score
+								}
+							}
+							res.anomalyScore[uuid] = maxScore
+							mu.Unlock()
+						} else if ctx.Err() != nil {
+							return
+						} else {
+							c.logger.Debug("failed to fetch anomalies", "uuid", uuid, "error", err)
+						}
+					}
 				}
 			}
 		}()
@@ -583,7 +617,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.monitorMtta
 	ch <- c.monitorAnomalyCount
 	ch <- c.monitorAnomalyScore
-	ch <- c.alertCountTotal
+	ch <- c.alertCount
 }
 
 // Collect implements prometheus.Collector.
@@ -995,6 +1029,6 @@ func boolToFloat64(b bool) float64 {
 
 // emitMcpMetrics sends global MCP-sourced metrics.
 func (c *Collector) emitMcpMetrics(ch chan<- prometheus.Metric, snap collectorSnapshot) {
-	ch <- prometheus.MustNewConstMetric(c.alertCountTotal, prometheus.CounterValue,
+	ch <- prometheus.MustNewConstMetric(c.alertCount, prometheus.GaugeValue,
 		float64(snap.totalAlerts))
 }
