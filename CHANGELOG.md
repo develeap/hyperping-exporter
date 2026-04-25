@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-04-25
+
+### Added
+
+- **MCP-sourced metrics** via the Hyperping MCP server (requires `--mcp-url`):
+  - `hyperping_monitor_response_time_seconds{uuid,name}` - average response time per monitor.
+  - `hyperping_monitor_mtta_seconds{uuid,name}` - mean time to acknowledge per monitor.
+  - `hyperping_monitor_anomaly_count{uuid,name}` - number of detected anomalies.
+  - `hyperping_monitor_anomaly_score{uuid,name}` - highest anomaly score.
+  - `hyperping_alerts{uuid,name}` - recent alert snapshot count (gauge).
+- MCP metrics are fetched in parallel with REST metrics. If MCP is unavailable or unconfigured, all existing REST metrics continue to work (graceful degradation).
+- Per-operation 8-second timeout on MCP worker pool calls to prevent scrape blocking.
+
+### Changed
+
+- `--mcp-url` flag now validates the URL at startup: must start with `https://` (or `http://localhost` for local dev). Invalid URLs cause a non-zero exit instead of silently misbehaving.
+- Upgraded `github.com/develeap/hyperping-go` from v0.3.0 to v0.4.0.
+
+### Fixed
+
+- MCP graceful degradation: REST metrics are now covered by a dedicated test (`TestRefresh_McpErrorIsNonFatal`) confirming they remain available when all MCP calls return errors.
+
+### Breaking: metric renames
+
+Dashboards referencing the old names must be updated:
+
+| Old name | New name | Reason |
+|----------|----------|--------|
+| `hyperping_alerts_total` | `hyperping_alerts` | Was typed as Counter but is a snapshot gauge; `_total` is reserved for counters |
+| `hyperping_monitor_response_time_avg_seconds` | `hyperping_monitor_response_time_seconds` | `_avg` is not a Prometheus unit suffix |
+
 ## [1.1.0] - 2026-04-09
 
 ### Added
