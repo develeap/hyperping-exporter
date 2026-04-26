@@ -32,6 +32,11 @@ groups:
       # ensures a 0-valued series with the correct tier label exists, so the ratio
       # evaluates to 0 instead of disappearing. `or vector(0)` cannot be used here
       # because vector(0) carries no tier label.
+      #
+      # Note: this guards "tier present, all down" but cannot synthesise an empty
+      # tier. If every monitor for a tier is removed (renamed, retired), the tier
+      # label disappears from the input metric and the recording rule emits no
+      # series for it — which is correct (no monitors → no ratio).
       - record: hyperping:tier:monitors_up_ratio
         expr: |
           (

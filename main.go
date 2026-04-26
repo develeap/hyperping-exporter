@@ -97,6 +97,11 @@ func parseConfig() (config, bool) {
 
 var reNamespace = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+// validateNamespace enforces Prometheus metric-name compatible characters and
+// caps length at 64 so a typo cannot generate metric names that exceed the
+// 63-character limit imposed by Kubernetes label values and many storage
+// backends. Prometheus itself does not impose a length limit, so 64 is
+// chosen for safety in downstream systems rather than for protocol reasons.
 func validateNamespace(ns string) error {
 	if ns == "" {
 		return fmt.Errorf("must not be empty")

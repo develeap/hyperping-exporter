@@ -29,7 +29,12 @@ spec:
           type: RuntimeDefault
       containers:
         - name: hyperping-exporter
-          image: khaledsalhabdeveleap/hyperping-exporter:latest  # Pin to a specific tag for production use
+          # Replace <VERSION> with a published tag from
+          # https://github.com/develeap/hyperping-exporter/releases (e.g. v1.3.1).
+          # The example manifest deliberately does NOT default to :latest so that
+          # an unmodified `kubectl apply -f` will fail loudly rather than pull a
+          # surprise upgrade on every rollout.
+          image: khaledsalhabdeveleap/hyperping-exporter:<VERSION>
           args:
             - "--cache-ttl=60s"
             - "--log-format=json"

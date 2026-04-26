@@ -174,7 +174,7 @@ func newCollectorDescs(ns string) collectorDescs {
 		),
 		excludedDesc: prometheus.NewDesc(
 			fqn(ns, "monitors", "excluded"),
-			"Number of monitors excluded by --exclude-name-pattern on the last cache refresh.",
+			"Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.",
 			nil, nil,
 		),
 	}
@@ -427,14 +427,20 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 		mu.Unlock()
 	}()
 
-	// 2. Fetch per-monitor metrics using a worker pool
+	// 2. Fetch per-monitor metrics using a worker pool. Skip the pool entirely
+	// when there are no monitors to process; the alert-fetch goroutine added
+	// above is independent and will be drained by the wg.Wait() below.
+	if len(monitors) == 0 {
+		wg.Wait()
+		return res, nil
+	}
 	monitorChan := make(chan hyperping.Monitor, len(monitors))
 	for _, m := range monitors {
 		monitorChan <- m
 	}
 	close(monitorChan)
 
-	// Limit concurrency to 10 workers
+	// Limit concurrency to 10 workers (or fewer if fewer monitors).
 	numWorkers := 10
 	if len(monitors) < numWorkers {
 		numWorkers = len(monitors)
@@ -485,7 +491,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
-						} else {
+						} else if err != nil {
 							c.logger.Debug("failed to fetch mtta", "uuid", uuid, "error", err)
 						}
 					}
@@ -590,11 +596,6 @@ func (c *Collector) Refresh(ctx context.Context) {
 	defer c.mu.Unlock()
 
 	c.lastScrapeDur = dur
-
-	if coreErr != nil {
-		c.lastScrapeOK = false
-		return
-	}
 
 	if core.outages != nil {
 		c.outages = core.outages

@@ -1464,7 +1464,7 @@ func TestCollect_MonitorsExcluded(t *testing.T) {
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_monitors_excluded gauge
 hyperping_monitors_excluded 2
 `
@@ -1477,7 +1477,7 @@ hyperping_monitors_excluded 2
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_monitors_excluded gauge
 hyperping_monitors_excluded 0
 `
@@ -1498,7 +1498,7 @@ hyperping_monitors_excluded 0
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_monitors_excluded gauge
 hyperping_monitors_excluded 0
 `

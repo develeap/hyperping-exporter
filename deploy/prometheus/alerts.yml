@@ -26,12 +26,12 @@ groups:
 
       # Fires when more than 10% of monitored endpoints are simultaneously down.
       # Fleet-size-aware: 10% of 10 monitors = 1, 10% of 100 monitors = 10.
-      # The `and hyperping_monitors_total > 0` guard prevents +Inf from being
+      # The `and hyperping_monitors > 0` guard prevents +Inf from being
       # evaluated (division-by-zero) if the monitor list is momentarily empty.
       - alert: HyperpingMultipleActiveOutages
         expr: |
-          hyperping_tenant_active_outages / hyperping_monitors_total > 0.1
-          and hyperping_monitors_total > 0
+          hyperping_tenant_active_outages / hyperping_monitors > 0.1
+          and hyperping_monitors > 0
         for: 5m
         labels:
           severity: critical
@@ -55,7 +55,7 @@ groups:
       # Fires when the exporter successfully connects to the API but reports no monitors.
       # Usually indicates all monitors were deleted or an account/API-key mismatch.
       - alert: HyperpingNoMonitors
-        expr: hyperping_monitors_total == 0 and hyperping_scrape_success == 1
+        expr: hyperping_monitors == 0 and hyperping_scrape_success == 1
         for: 10m
         labels:
           severity: warning
