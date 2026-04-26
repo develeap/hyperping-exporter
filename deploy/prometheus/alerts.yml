@@ -2,8 +2,14 @@ groups:
   - name: hyperping_monitor_availability
     interval: 1m
     rules:
+      # `unless on(uuid) hyperping_monitor_in_maintenance == 1` suppresses the
+      # alert for monitors covered by an active maintenance window. The exporter
+      # always emits hyperping_monitor_in_maintenance per monitor (0 when no
+      # window is active), so the join is always evaluable.
       - alert: HyperpingMonitorDown
-        expr: hyperping_monitor_up == 0 and hyperping_monitor_paused == 0
+        expr: |
+          (hyperping_monitor_up == 0 and hyperping_monitor_paused == 0)
+          unless on(uuid) hyperping_monitor_in_maintenance == 1
         for: 2m
         labels:
           severity: critical
@@ -13,7 +19,9 @@ groups:
           runbook: "https://wiki.internal/runbooks/hyperping-monitor-down"
 
       - alert: HyperpingMonitorActiveOutage
-        expr: hyperping_monitor_outage_active == 1
+        expr: |
+          hyperping_monitor_outage_active == 1
+          unless on(uuid) hyperping_monitor_in_maintenance == 1
         for: 1m
         labels:
           severity: critical
@@ -43,8 +51,11 @@ groups:
 
       - alert: HyperpingCoreMonitorDown
         # tier label is carried directly on hyperping_monitor_up since EXP-01.
-        # No join needed; filter tier="core" inline.
-        expr: hyperping_monitor_up{tier="core"} == 0
+        # No join needed; filter tier="core" inline. Maintenance suppression
+        # uses on(uuid) because the join target lacks the tier= filter.
+        expr: |
+          hyperping_monitor_up{tier="core"} == 0
+          unless on(uuid) hyperping_monitor_in_maintenance == 1
         for: 1m
         labels:
           severity: critical
@@ -66,6 +77,75 @@ groups:
             This may indicate a configuration issue, all monitors were deleted, or the API key
             belongs to an account with no monitors. If using --exclude-name-pattern, verify the
             pattern is not matching all monitors.
+
+  - name: hyperping_operations
+    interval: 5m
+    rules:
+      # Open (non-resolved) Hyperping incidents. Triages to the team that owns
+      # the affected services — the alert is informational, not actionable until
+      # someone confirms the root cause.
+      - alert: HyperpingOpenIncidents
+        expr: hyperping_incidents_open > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanize }} open Hyperping incident(s)"
+          description: >-
+            There are {{ $value | humanize }} unresolved incidents on the Hyperping account.
+            Visit the Hyperping dashboard to triage.
+
+      # Fires when a monitor is down in some regions but up in others. Indicates
+      # a regional infrastructure issue (e.g., one cloud region) rather than a
+      # complete service outage. Requires monitors configured with multiple regions.
+      - alert: HyperpingMonitorRegionalOutage
+        expr: |
+          count by (uuid, name, tenant, tier) (hyperping_monitor_up_by_region == 0) > 0
+          and
+          count by (uuid, name, tenant, tier) (hyperping_monitor_up_by_region == 1) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Regional outage detected for {{ $labels.name }}"
+          description: >-
+            Monitor {{ $labels.name }} ({{ $labels.uuid }}) is down in some regions but
+            up in others — likely a regional infrastructure issue rather than a complete
+            outage. Check hyperping_monitor_up_by_region to identify the affected regions.
+
+  # MCP-derived alerts. These require --mcp-url to be configured on the exporter;
+  # without MCP the source metrics are not emitted and the alerts are silently
+  # dormant (no series → no eval → no fire), which is the correct behaviour.
+  - name: hyperping_mcp
+    interval: 5m
+    rules:
+      - alert: HyperpingMonitorAnomalyHigh
+        expr: hyperping_monitor_anomaly_score > 0.8
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Anomalous behavior on {{ $labels.name }}"
+          # printf "%.2f" instead of `humanize` because humanize formats a 0..1
+          # score with SI prefixes (e.g. 0.95 → "950m"), which obscures intent.
+          description: >-
+            Monitor {{ $labels.name }} ({{ $labels.uuid }}) has a sustained anomaly score
+            of {{ $value | printf "%.2f" }} (threshold: 0.80). Check response time trends and
+            recent outage patterns.
+
+      # MTTA in seconds. 600s = 10 minutes is a generous default; tighten for
+      # services that page and need faster acknowledgement.
+      - alert: HyperpingMonitorMTTAHigh
+        expr: hyperping_monitor_mtta_seconds > 600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "High MTTA on {{ $labels.name }}"
+          description: >-
+            Monitor {{ $labels.name }} ({{ $labels.uuid }}) mean time-to-acknowledge is
+            {{ $value | humanizeDuration }} (threshold: 10m). On-call response may need
+            attention.
 
   - name: hyperping_monitor_ssl
     interval: 1h

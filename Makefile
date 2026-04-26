@@ -12,7 +12,10 @@ build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X main.revision=$(REVISION)" -o $(BINARY) .
 
 test:
-	go test -race -coverprofile=coverage.out ./...
+	go test -race -coverprofile=coverage.out -coverpkg=./internal/... ./...
+	@pct=$$(go tool cover -func=coverage.out | awk '/^total:/{gsub(/%/,""); print $$3}'); \
+		echo "Coverage: $${pct}%"; \
+		awk -v p="$$pct" 'BEGIN { if (p+0 < 90) { print "FAIL: coverage " p "% is below 90%"; exit 1 } }'
 
 lint:
 	golangci-lint run ./...

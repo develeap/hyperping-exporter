@@ -4,6 +4,75 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Maintenance-window suppression** for `HyperpingMonitorDown`, `HyperpingMonitorActiveOutage`, and `HyperpingCoreMonitorDown`. Each alert now has `unless on(uuid) hyperping_monitor_in_maintenance == 1` appended, so monitors covered by an active maintenance window do not page during the planned downtime.
+- **`HyperpingOpenIncidents`** alert: fires when there are unresolved Hyperping incidents for more than 30 minutes.
+- **`HyperpingMonitorRegionalOutage`** alert: fires when a monitor is down in some regions but up in others (partial regional infrastructure failure rather than complete outage). Requires monitors configured with multiple regions.
+- **`HyperpingMonitorAnomalyHigh`** alert: fires when MCP-derived anomaly score is sustained above 0.8 for 15 minutes. Requires `--mcp-url`.
+- **`HyperpingMonitorMTTAHigh`** alert: fires when MCP-derived MTTA exceeds 10 minutes for over an hour. Requires `--mcp-url`.
+- **`hyperping:fleet:anomalies_high`** recording rule: count of monitors currently above the 0.8 anomaly threshold; useful for fleet-wide trend panels.
+- **promtool unit tests** for bundled alerts (`deploy/prometheus/tests/alerts.test.yml`). Verifies maintenance suppression, regional outage detection, anomaly threshold behaviour, and recording-rule output. New CI job runs `promtool test rules` on every PR.
+- **Sanity assertion in `TestPrometheusRulesReferenceOnlyEmittedMetrics`**: asserts at least 30 metric names were extracted, catching the case where the underlying `Desc.String()` regex silently breaks in a future client_golang upgrade.
+
+### Changed
+
+- **BREAKING (small impact): `hyperping_monitors_excluded` renamed to `hyperping_excluded_monitors`.** The metric was introduced in v1.3.0 (one day before v1.3.1) and the new name reads more naturally ("excluded monitors" parses cleanly as adjective + noun). Anyone who already started using the v1.3.0 name needs to update dashboards/alerts. No backwards-compatibility shim is shipped.
+- **`avgSLAForPeriod` now returns `(float64, bool)`.** When no report's monitor is in the index (e.g., `--exclude-name-pattern` removes every monitor that has reports), the function returns `(0, false)` and the caller skips emitting `hyperping_tenant_health_score` rather than emitting a misleadingly low value. Internal API change; not user-facing.
+- **`HyperpingMonitorAnomalyHigh` annotation** uses `printf "%.2f"` instead of `humanize` for the score. Prevents the score 0.95 from rendering as "950m" (SI prefix).
+- CI's `prom/prometheus` Docker image is now pinned by digest (`@sha256:378f4e...`) for supply-chain reproducibility, matching the rest of the workflow's habit of pinning actions by SHA.
+- CI's `promtool` job no longer waits on `verify`; it can run in parallel with the Go module check.
+- `deploy/k8s/deployment.yaml` example image tag changed from `:<VERSION>` to `:REPLACE_ME` for unambiguous "fill this in" semantics.
+- Makefile `test` target now enforces the same 90% coverage threshold as CI, so locally-run tests fail in the same conditions as CI.
+
+## [1.3.1] - 2026-04-26
+
+### Fixed
+
+- **Tenant SLA aggregates ignored `--exclude-name-pattern`.** `hyperping_tenant_avg_sla_ratio` summed only visible monitors' SLA but divided by `len(reports)` (which still counted excluded monitors), and `hyperping_tenant_health_score`'s `avgSLAForPeriod` summed reports for every monitor unconditionally. Both metrics were systematically pulled down by the visible/total ratio. `hyperping_tenant_active_outages` and `hyperping_tenant_monitors_up_ratio` were unaffected.
+- **Bundled alerts that never fired.** `HyperpingMultipleActiveOutages` and `HyperpingNoMonitors` referenced `hyperping_monitors_total`, but the exporter emits `hyperping_monitors` (no `_total` suffix). Dividing by an absent series produced no result, so the alerts were silent in v1.3.0. Fixed by using the correct metric name. Users who deployed v1.3.0 alerts must redeploy `alerts.yml`.
+- Removed unreachable `if coreErr != nil` branch after the lock in `Refresh()`; the early return at the top of the function already handles this case.
+- `fetchMcpData` MTTA branch logged "failed to fetch" debug lines even when the API legitimately returned `(nil, nil)` with no error. Mirrored the Response Time branch's `else if err != nil` to silence noise on empty results.
+
+### Added
+
+- `filterReportsByMonitorUUID` (private) applied in `Refresh()` alongside the existing outage filter, using the same `includedUUIDs` set. Root-cause fix for the SLA aggregate bug above.
+- Defensive `slaCount` counter in `emitReportMetrics` so the tenant SLA average can never again be divided by a count larger than what was actually summed.
+- `TestPrometheusRulesReferenceOnlyEmittedMetrics`: walks `deploy/prometheus/alerts.yml` and `recording-rules.yml`, extracts every `hyperping_*` / `hyperping:*` identifier from each `expr:` field, and asserts each one is either an emitted Prometheus descriptor or a recording-rule output. Catches the typo class of bug that `promtool check rules` cannot.
+- New `promtool` CI job that validates rule syntax on every PR.
+
+### Changed
+
+- `avgSLAForPeriod` now requires the `monitorIndex` and skips reports whose UUID is absent. The function is correct independently of upstream filtering, so a future caller cannot reintroduce the bug by passing unfiltered reports.
+- `fetchMcpData` short-circuits with an explicit early return when `len(monitors) == 0`, instead of relying on `numWorkers=0` to coincidentally produce the same outcome.
+- `hyperping_monitors_excluded` help text now states the relationship with `hyperping_monitors` explicitly: "...hyperping_monitors counts the visible remainder."
+- `validateNamespace` now documents why the 64-character cap exists (downstream Kubernetes label and storage backend limits, not a Prometheus protocol requirement).
+- Per-tier `hyperping:tier:monitors_up_ratio` recording rule now documents that the `* 0` zero-guard cannot synthesise an empty tier — if every monitor for a tier is removed, no series is emitted (which is correct).
+- CI no longer ignores `deploy/prometheus/**` paths. Changes to alert and recording rules now trigger the full CI matrix, including the new metric-reference and promtool checks.
+- `deploy/k8s/deployment.yaml` example image tag changed from `:latest` to a `:<VERSION>` placeholder so an unmodified `kubectl apply -f` fails with a clear `ImagePullBackOff` instead of silently following whatever tag is current.
+
+## [1.3.0] - 2026-04-25
+
+### Added
+
+- **`--exclude-name-pattern` flag**: RE2 regex that filters monitors by name before any metric computation. Excluded monitors are dropped from all `hyperping_monitor_*` metrics and from tenant aggregates (`up_ratio`, `active_outages`, `health_score`). Outages belonging to excluded monitors are filtered out too, so synthetic drill monitors no longer inflate fleet health dashboards. Typical use: `--exclude-name-pattern='\[DRILL|\[TEST'`.
+- **`hyperping_cache_ttl_seconds`** constant gauge exposing the configured `--cache-ttl` value. Enables the bundled `HyperpingDataStale` alert to self-configure its threshold (`2 × cache_ttl`) without manual updates when the flag changes.
+- **`hyperping_monitors_excluded`** gauge: count of monitors filtered out by `--exclude-name-pattern` on the last refresh; always emitted (value 0 when no pattern is configured) so exclusions are observable in Prometheus without log scraping.
+- New `HyperpingNoMonitors` alert: fires when scrape succeeds but the API returns zero monitors (deleted monitors, API key mismatch, or an over-aggressive `--exclude-name-pattern`).
+- Alertmanager inhibition rule examples added as comments in `alerts.yml`, including a multi-cluster `equal: [cluster]` note.
+
+### Changed
+
+- **`HyperpingMultipleActiveOutages`**: replaced absolute `> 3` threshold with a fleet-size-aware ratio (`> 10% of monitors`) plus a division-by-zero guard. (Note: this alert and `HyperpingNoMonitors` referenced an incorrect metric name in v1.3.0 and were silent in production. Fixed in v1.3.1.)
+- **`HyperpingDataStale`**: threshold is now `2 * hyperping_cache_ttl_seconds` instead of a hardcoded value, adapting automatically when `--cache-ttl` is changed.
+- **Recording rules** (`deploy/prometheus/recording-rules.yml`): fleet counts (`monitors_up`, `monitors_down`, `monitors_paused`) and SLA breach counts now use `or vector(0)` so they return 0 instead of disappearing when all monitors match the filter condition. Per-tier `monitors_up_ratio` numerator uses a label-preserving `* 0` pattern so the ratio evaluates to 0 (not absent) when all monitors in a tier are down.
+- **Grafana dashboards** (`fleet-overview`, `shared-infrastructure`, `tenant-health`): can now be imported directly via the Grafana UI ("Dashboards → Import → Upload JSON file"). Added `__inputs` block and replaced all 43 bare datasource references with `${DS_PROMETHEUS}`.
+- Provisioning datasource pinned to a stable `uid: hyperping-prometheus` so dashboards can reference it by ID across redeploys.
+
+### Fixed
+
+- **Nil pointer panic in `fetchMcpData` (intermittent).** `GetMonitorResponseTime` and `GetMonitorMtta` could return `(nil, nil)`; accessing fields on the nil pointer crashed the scrape. The v1.2.1 release claimed this fix but the guard was never actually added. Now correctly guarded with `report != nil` alongside the existing `err == nil` check.
+
 ## [1.2.1] - 2026-04-25
 
 ### Fixed

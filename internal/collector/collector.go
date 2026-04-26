@@ -173,7 +173,7 @@ func newCollectorDescs(ns string) collectorDescs {
 			nil, nil,
 		),
 		excludedDesc: prometheus.NewDesc(
-			fqn(ns, "monitors", "excluded"),
+			fqn(ns, "excluded", "monitors"),
 			"Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.",
 			nil, nil,
 		),
@@ -932,9 +932,13 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	// Health score requires 30d SLA data; omit until reports are loaded to avoid
 	// misleadingly low scores (upRatio×60 + 0×40 = 60 even for a healthy fleet).
 	if reports30d := snap.reports["30d"]; len(reports30d) > 0 {
-		avg30dSLA := avgSLAForPeriod(reports30d, snap.monitorIndex)
-		ch <- prometheus.MustNewConstMetric(c.tenantHealthScore, prometheus.GaugeValue,
-			computeHealthScore(upRatio, avg30dSLA, len(snap.outageIndex), len(snap.monitors)))
+		// Only emit health score when at least one visible monitor has a 30d
+		// report. Otherwise avg30dSLA would be 0, collapsing the score to
+		// upRatio*60 - penalty for an otherwise-healthy fleet.
+		if avg30dSLA, ok := avgSLAForPeriod(reports30d, snap.monitorIndex); ok {
+			ch <- prometheus.MustNewConstMetric(c.tenantHealthScore, prometheus.GaugeValue,
+				computeHealthScore(upRatio, avg30dSLA, len(snap.outageIndex), len(snap.monitors)))
+		}
 	}
 
 	// EXP-04: open incidents and active maintenance windows.
@@ -1074,7 +1078,13 @@ func escalationTier(m hyperping.Monitor) string {
 // silently include monitors that should be excluded (e.g. by --exclude-name-pattern):
 // summing over reports while dividing by len(reports) was the original bug shape,
 // and trusting "the caller filters first" was the way that bug crept in.
-func avgSLAForPeriod(reports []hyperping.MonitorReport, monitorIndex map[string]hyperping.Monitor) float64 {
+//
+// Returns (avg, true) when at least one report matched, or (0, false) when no
+// report's UUID was in monitorIndex. The boolean lets the caller distinguish
+// "average is 0" from "no input to average" — the difference matters for
+// derived metrics like hyperping_tenant_health_score, which would otherwise
+// emit a misleadingly low score for an empty-but-healthy fleet.
+func avgSLAForPeriod(reports []hyperping.MonitorReport, monitorIndex map[string]hyperping.Monitor) (float64, bool) {
 	sum := 0.0
 	count := 0
 	for _, r := range reports {
@@ -1085,9 +1095,9 @@ func avgSLAForPeriod(reports []hyperping.MonitorReport, monitorIndex map[string]
 		count++
 	}
 	if count == 0 {
-		return 0
+		return 0, false
 	}
-	return sum / float64(count)
+	return sum / float64(count), true
 }
 
 // computeHealthScore returns a composite 0–100 health score.

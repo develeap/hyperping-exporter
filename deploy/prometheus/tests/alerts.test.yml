@@ -1,0 +1,212 @@
+# promtool test rules deploy/prometheus/tests/alerts.test.yml
+#
+# Validates that bundled alerts fire (or correctly DO NOT fire) under
+# representative input series. Catches the class of bug where an `unless`
+# clause or `and` filter is malformed and either suppresses too much or
+# fires when it should not.
+#
+# Run locally with:
+#   docker run --rm --entrypoint promtool \
+#     -v $(pwd)/deploy/prometheus:/rules:ro \
+#     prom/prometheus:v2.55.0 \
+#     test rules /rules/tests/alerts.test.yml
+#
+# Rule files are referenced relative to THIS file's directory.
+
+rule_files:
+  - ../alerts.yml
+  - ../recording-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # --- Maintenance window suppression --------------------------------------
+
+  - name: monitor down with active maintenance window does NOT fire
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_up{uuid="m1",name="api",tenant="t1",tier="core"}'
+        values: '0x10'
+      - series: 'hyperping_monitor_paused{uuid="m1",name="api",tenant="t1",tier="core"}'
+        values: '0x10'
+      - series: 'hyperping_monitor_in_maintenance{uuid="m1",name="api",tenant="t1",tier="core"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HyperpingMonitorDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: HyperpingCoreMonitorDown
+        exp_alerts: []
+
+  - name: monitor down without maintenance DOES fire after 2m
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_up{uuid="m2",name="api",tenant="t1",tier="core"}'
+        values: '0x10'
+      - series: 'hyperping_monitor_paused{uuid="m2",name="api",tenant="t1",tier="core"}'
+        values: '0x10'
+      - series: 'hyperping_monitor_in_maintenance{uuid="m2",name="api",tenant="t1",tier="core"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HyperpingMonitorDown
+        exp_alerts:
+          - exp_labels:
+              alertname: HyperpingMonitorDown
+              severity: critical
+              uuid: m2
+              name: api
+              tenant: t1
+              tier: core
+            exp_annotations:
+              summary: "Monitor api is DOWN"
+              description: "Monitor api (m2) has been down for more than 2 minutes."
+              runbook: "https://wiki.internal/runbooks/hyperping-monitor-down"
+
+  - name: active outage during maintenance does NOT fire
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_outage_active{uuid="m3",name="db",tenant="t1",tier="core"}'
+        values: '1x5'
+      - series: 'hyperping_monitor_in_maintenance{uuid="m3",name="db",tenant="t1",tier="core"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HyperpingMonitorActiveOutage
+        exp_alerts: []
+
+  # --- New alerts: HyperpingNoMonitors + HyperpingMultipleActiveOutages ---
+
+  - name: HyperpingNoMonitors fires only when scrape succeeds with zero monitors
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitors'
+        values: '0x15'
+      - series: 'hyperping_scrape_success'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HyperpingNoMonitors
+        exp_alerts:
+          - exp_labels:
+              alertname: HyperpingNoMonitors
+              severity: warning
+            exp_annotations:
+              summary: "No monitors reported by Hyperping"
+              description: >-
+                The exporter is successfully scraping the Hyperping API but reports zero monitors. This may indicate a configuration issue, all monitors were deleted, or the API key belongs to an account with no monitors. If using --exclude-name-pattern, verify the pattern is not matching all monitors.
+
+  - name: HyperpingNoMonitors does NOT fire when scrape failed
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitors'
+        values: '0x15'
+      - series: 'hyperping_scrape_success'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HyperpingNoMonitors
+        exp_alerts: []
+
+  # --- HyperpingMonitorRegionalOutage ---
+
+  - name: regional outage fires when some regions down and some up
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_up_by_region{uuid="m4",name="api",tenant="",tier="core",region="eu-west"}'
+        values: '0x10'
+      - series: 'hyperping_monitor_up_by_region{uuid="m4",name="api",tenant="",tier="core",region="us-east"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HyperpingMonitorRegionalOutage
+        exp_alerts:
+          # Empty-string labels (tenant="") are dropped from alert label sets
+          # by Prometheus, so we don't list tenant here.
+          - exp_labels:
+              alertname: HyperpingMonitorRegionalOutage
+              severity: warning
+              uuid: m4
+              name: api
+              tier: core
+            exp_annotations:
+              summary: "Regional outage detected for api"
+              description: >-
+                Monitor api (m4) is down in some regions but up in others — likely a regional infrastructure issue rather than a complete outage. Check hyperping_monitor_up_by_region to identify the affected regions.
+
+  - name: regional outage does NOT fire when all regions are down
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_up_by_region{uuid="m5",name="api",tenant="",tier="core",region="eu-west"}'
+        values: '0x10'
+      - series: 'hyperping_monitor_up_by_region{uuid="m5",name="api",tenant="",tier="core",region="us-east"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HyperpingMonitorRegionalOutage
+        exp_alerts: []
+
+  # --- MCP alerts: anomaly + MTTA ---
+
+  - name: HyperpingMonitorAnomalyHigh fires after 15m above threshold
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_anomaly_score{uuid="m6",name="checkout",tenant="t1",tier="core"}'
+        values: '0.95x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HyperpingMonitorAnomalyHigh
+        exp_alerts:
+          - exp_labels:
+              alertname: HyperpingMonitorAnomalyHigh
+              severity: warning
+              uuid: m6
+              name: checkout
+              tenant: t1
+              tier: core
+            exp_annotations:
+              summary: "Anomalous behavior on checkout"
+              description: >-
+                Monitor checkout (m6) has a sustained anomaly score of 0.95 (threshold: 0.80). Check response time trends and recent outage patterns.
+
+  - name: HyperpingMonitorAnomalyHigh does NOT fire below threshold
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_anomaly_score{uuid="m7",name="api",tenant="",tier="core"}'
+        values: '0.5x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HyperpingMonitorAnomalyHigh
+        exp_alerts: []
+
+  # --- Recording rule sanity ---
+
+  - name: hyperping_fleet_anomalies_high counts monitors above threshold
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_anomaly_score{uuid="a"}'
+        values: '0.9x10'
+      - series: 'hyperping_monitor_anomaly_score{uuid="b"}'
+        values: '0.85x10'
+      - series: 'hyperping_monitor_anomaly_score{uuid="c"}'
+        values: '0.5x10'
+    promql_expr_test:
+      - expr: hyperping:fleet:anomalies_high
+        eval_time: 5m
+        exp_samples:
+          # Recording rule outputs always carry __name__ as a label.
+          - value: 2
+            labels: '{__name__="hyperping:fleet:anomalies_high"}'
+
+  - name: hyperping_fleet_anomalies_high returns 0 when no monitors above threshold
+    interval: 1m
+    input_series:
+      - series: 'hyperping_monitor_anomaly_score{uuid="a"}'
+        values: '0.5x10'
+    promql_expr_test:
+      - expr: hyperping:fleet:anomalies_high
+        eval_time: 5m
+        exp_samples:
+          - value: 0
+            labels: '{__name__="hyperping:fleet:anomalies_high"}'

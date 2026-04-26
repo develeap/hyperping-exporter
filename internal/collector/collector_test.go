@@ -780,8 +780,13 @@ func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 }
 
 func TestAvgSLAForPeriod_Empty(t *testing.T) {
-	assert.Equal(t, 0.0, avgSLAForPeriod(nil, nil))
-	assert.Equal(t, 0.0, avgSLAForPeriod([]hyperping.MonitorReport{}, map[string]hyperping.Monitor{}))
+	avg, ok := avgSLAForPeriod(nil, nil)
+	assert.Equal(t, 0.0, avg)
+	assert.False(t, ok, "no reports → ok=false")
+
+	avg, ok = avgSLAForPeriod([]hyperping.MonitorReport{}, map[string]hyperping.Monitor{})
+	assert.Equal(t, 0.0, avg)
+	assert.False(t, ok)
 }
 
 func TestAvgSLAForPeriod_FiltersByMonitorIndex(t *testing.T) {
@@ -794,7 +799,8 @@ func TestAvgSLAForPeriod_FiltersByMonitorIndex(t *testing.T) {
 		"a": {UUID: "a"},
 		"c": {UUID: "c"},
 	}
-	avg := avgSLAForPeriod(reports, index)
+	avg, ok := avgSLAForPeriod(reports, index)
+	require.True(t, ok)
 	// Visible-only avg = (1.0 + 0.99) / 2 = 0.995. Bug-prone path summed
 	// (1.0 + 0.5 + 0.99) / 3 ≈ 0.83, dragging the value down by 16 percentage
 	// points just because an excluded monitor was present in the input.
@@ -805,8 +811,39 @@ func TestAvgSLAForPeriod_NilIndexIncludesNothing(t *testing.T) {
 	reports := []hyperping.MonitorReport{
 		{UUID: "a", SLA: 100.0},
 	}
-	assert.Equal(t, 0.0, avgSLAForPeriod(reports, nil),
-		"a nil index has no entries, so no report can match — average is undefined → 0")
+	avg, ok := avgSLAForPeriod(reports, nil)
+	assert.Equal(t, 0.0, avg)
+	assert.False(t, ok, "a nil index has no entries, so no report can match — caller must skip emitting")
+}
+
+// Bug class: when --exclude-name-pattern is active and every visible monitor
+// happens to lack reports (e.g., new fleet, all reports are for excluded
+// drill monitors), the previous avgSLAForPeriod returned 0 and the caller
+// emitted hyperping_tenant_health_score = upRatio*60 + 0*40 - penalty,
+// collapsing to 60 for an otherwise-healthy fleet. The (float64, bool)
+// return makes the caller skip emission in this case.
+func TestRefresh_HealthScore_NotEmittedWhenNoVisibleReports(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		// Reports only for the excluded monitor — visible monitor has none.
+		reports: []hyperping.MonitorReport{
+			{UUID: "drill-1", Name: "[DRILL]-NOOP", SLA: 0.0},
+		},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	// hyperping_tenant_health_score must NOT be emitted: every visible monitor
+	// lacks a report so the average is undefined. Emitting 0 or 60 would be
+	// misleading.
+	expected := ``
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_health_score")
+	require.NoError(t, err)
 }
 
 func TestComputeHealthScore_CapAtMax(t *testing.T) {
@@ -1464,11 +1501,11 @@ func TestCollect_MonitorsExcluded(t *testing.T) {
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
-# TYPE hyperping_monitors_excluded gauge
-hyperping_monitors_excluded 2
+# HELP hyperping_excluded_monitors Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
+# TYPE hyperping_excluded_monitors gauge
+hyperping_excluded_monitors 2
 `
-		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_excluded_monitors")
 		require.NoError(t, err)
 	})
 
@@ -1477,11 +1514,11 @@ hyperping_monitors_excluded 2
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
-# TYPE hyperping_monitors_excluded gauge
-hyperping_monitors_excluded 0
+# HELP hyperping_excluded_monitors Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
+# TYPE hyperping_excluded_monitors gauge
+hyperping_excluded_monitors 0
 `
-		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_excluded_monitors")
 		require.NoError(t, err)
 	})
 
@@ -1498,11 +1535,11 @@ hyperping_monitors_excluded 0
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
-# TYPE hyperping_monitors_excluded gauge
-hyperping_monitors_excluded 0
+# HELP hyperping_excluded_monitors Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
+# TYPE hyperping_excluded_monitors gauge
+hyperping_excluded_monitors 0
 `
-		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_excluded_monitors")
 		require.NoError(t, err)
 	})
 }
