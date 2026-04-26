@@ -69,6 +69,8 @@ All flags can also be set via environment variables.
 | `--log-format` | `(flag only)` | `text` | Log format: `text` or `json` |
 | `--namespace` | `HYPERPING_EXPORTER_NAMESPACE` | `hyperping` | Metric name prefix. Must match `[a-zA-Z_][a-zA-Z0-9_]{0,63}`. |
 | `--mcp-url` | `(flag only)` | `(official)` | Custom Hyperping MCP server URL. |
+| `--exclude-name-pattern` | `(flag only)` | *(none)* | RE2 regex; monitors whose name matches are dropped from all per-monitor metrics and tenant aggregates. Typical use: `'\[DRILL\|\[TEST'` to keep synthetic monitors out of fleet health. |
+| `--web.config.file` | `(flag only)` | *(none)* | Path to web config file for TLS / basic auth. See [exporter-toolkit web-configuration](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md). |
 
 > Only `HYPERPING_API_KEY` is read from the environment by default;
 > all other options use CLI flags, which map cleanly to Docker `command:`
@@ -125,16 +127,19 @@ All flags can also be set via environment variables.
 |--------|------|-------------|--------|
 | `hyperping_tenant_monitors_up_ratio` | Gauge | Fraction of monitors up (0–1). | |
 | `hyperping_tenant_active_outages` | Gauge | Total active outages. | |
+| `hyperping_tenant_avg_sla_ratio` | Gauge | Average SLA ratio across visible monitors for the labelled period. | `period` |
 | `hyperping_tenant_health_score` | Gauge | Composite health score (0–100). | |
 | `hyperping_incidents_open` | Gauge | Count of open incidents. | |
 | `hyperping_maintenance_windows_active` | Gauge | Active maintenance windows. | |
 | `hyperping_incident_active` | Gauge | 1 per active incident. | `tenant`, `tier`, `severity` |
 | `hyperping_maintenance_active` | Gauge | 1 per active maintenance window. | `tenant`, `tier`, `severity` |
-| `hyperping_monitors` | Gauge | Total monitors discovered. | |
+| `hyperping_monitors` | Gauge | Visible monitors (post `--exclude-name-pattern`). | |
+| `hyperping_excluded_monitors` | Gauge | Monitors filtered out by `--exclude-name-pattern` (0 when no pattern set). | |
 | `hyperping_healthchecks` | Gauge | Total healthchecks discovered. | |
 | `hyperping_scrape_success` | Gauge | 1 if last API scrape succeeded. | |
 | `hyperping_scrape_duration_seconds` | Gauge | Duration of last scrape. | |
 | `hyperping_data_age_seconds` | Gauge | Seconds since last successful scrape. | |
+| `hyperping_cache_ttl_seconds` | Gauge | Cache refresh interval as configured via `--cache-ttl`. Used by `HyperpingDataStale` for self-configuring thresholds. | |
 
 ---
 
@@ -188,10 +193,13 @@ Pre-configured rules in `deploy/prometheus/alerts.yml`:
 
 | Alert | Severity | Condition |
 |-------|----------|-----------|
-| `HyperpingMonitorDown` | critical | Monitor down for > 2 min |
-| `HyperpingMonitorActiveOutage` | critical | Active outage for > 1 min |
-| `HyperpingMultipleActiveOutages` | critical | > 3 concurrent active outages |
-| `HyperpingCoreMonitorDown` | critical | Core-tier monitor down for > 1 min |
+| `HyperpingMonitorDown` | critical | Monitor down for > 2 min (suppressed during active maintenance) |
+| `HyperpingMonitorActiveOutage` | critical | Active outage for > 1 min (suppressed during active maintenance) |
+| `HyperpingMultipleActiveOutages` | critical | > 10% of monitors with concurrent active outages |
+| `HyperpingCoreMonitorDown` | critical | Core-tier monitor down for > 1 min (suppressed during active maintenance) |
+| `HyperpingNoMonitors` | warning | Scrape succeeds but API returns zero monitors for > 10 min |
+| `HyperpingOpenIncidents` | warning | Unresolved Hyperping incidents > 0 for 30 min |
+| `HyperpingMonitorRegionalOutage` | warning | Monitor down in some regions but up in others (partial regional failure) for > 5 min |
 | `HyperpingSSLExpiryWarning` | warning | SSL cert expiry < 14 days |
 | `HyperpingSSLExpiryCritical` | critical | SSL cert expiry < 3 days |
 | `HyperpingMonitorSLABreach24h` | warning | 24h SLA < 99% |
@@ -200,8 +208,10 @@ Pre-configured rules in `deploy/prometheus/alerts.yml`:
 | `HyperpingHealthcheckDown` | warning | Healthcheck missed for > 5 min |
 | `HyperpingTenantHealthDegraded` | warning | Health score < 80 |
 | `HyperpingTenantHealthCritical` | critical | Health score < 60 |
+| `HyperpingMonitorAnomalyHigh` | warning | MCP anomaly score > 0.8 for > 15 min (requires `--mcp-url`) |
+| `HyperpingMonitorMTTAHigh` | warning | MCP MTTA > 10 min for 1 hr (requires `--mcp-url`) |
 | `HyperpingExporterScrapeFailure` | warning | API unreachable for > 5 min |
-| `HyperpingDataStale` | warning | Data age > 120s (2× cache TTL) |
+| `HyperpingDataStale` | warning | Data age > 2× `hyperping_cache_ttl_seconds` (auto-adapts to `--cache-ttl`) |
 
 ---
 

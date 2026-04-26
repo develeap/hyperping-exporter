@@ -107,18 +107,26 @@ jobs:
   promtool:
     name: Validate Prometheus rules
     runs-on: ubuntu-latest
-    needs: verify
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      # promtool only validates PromQL syntax; reference correctness against
-      # actual emitted metrics is enforced by TestPrometheusRulesReferenceOnlyEmittedMetrics
-      # in the build-test job.
+      # Image pinned by digest for supply-chain reproducibility, matching the
+      # rest of the workflow's habit of pinning actions by SHA.
+      # promtool check rules validates PromQL syntax. promtool test rules
+      # validates alert behaviour with mock series. Reference correctness
+      # against the exporter's actual emitted metrics is enforced by
+      # TestPrometheusRulesReferenceOnlyEmittedMetrics in the build-test job.
       - name: promtool check rules
         run: |
           docker run --rm --entrypoint promtool \
             -v "${{ github.workspace }}/deploy/prometheus:/rules:ro" \
-            prom/prometheus:v2.55.0 \
+            prom/prometheus@sha256:378f4e03703557d1c6419e6caccf922f96e6d88a530f7431d66a4c4f4b1000fe \
             check rules /rules/recording-rules.yml /rules/alerts.yml
+      - name: promtool test rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "${{ github.workspace }}/deploy/prometheus:/rules:ro" \
+            prom/prometheus@sha256:378f4e03703557d1c6419e6caccf922f96e6d88a530f7431d66a4c4f4b1000fe \
+            test rules /rules/tests/alerts.test.yml
 
   cross-compile:
     name: Cross-compile check

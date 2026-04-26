@@ -79,3 +79,14 @@ groups:
 
       - record: hyperping:sla:breach_count_30d
         expr: count(hyperping_monitor_sla_ratio{period="30d"} < 0.999) or vector(0)
+
+  # MCP-derived fleet aggregates. Only populated when --mcp-url is configured
+  # on the exporter; otherwise the source metric is absent and the recording
+  # rule emits 0 via the `or vector(0)` fallback.
+  - name: hyperping_mcp_fleet
+    interval: 5m
+    rules:
+      # Count of monitors currently above the high-anomaly threshold (0.8).
+      # Useful for fleet-wide trend panels and capacity planning.
+      - record: hyperping:fleet:anomalies_high
+        expr: count(hyperping_monitor_anomaly_score > 0.8) or vector(0)

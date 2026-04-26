@@ -76,6 +76,13 @@ func TestPrometheusRulesReferenceOnlyEmittedMetrics(t *testing.T) {
 		require.NotNil(t, m, "could not parse fqName from %s", d.String())
 		known[m[1]] = struct{}{}
 	}
+	// Sanity check: the regex depends on prometheus/client_golang's Desc.String()
+	// format, which is not a documented stability guarantee. If a future client
+	// upgrade silently changes the format in a way the regex still matches but
+	// extracts garbage, we'd lose all known names and every reference would
+	// register as "undefined". This bound catches that failure mode early.
+	require.GreaterOrEqual(t, len(known), 30,
+		"extracted only %d metric names from Desc.String(); the parsing regex may have stopped working — check client_golang format", len(known))
 
 	root := repoRoot(t)
 	rules := loadRuleFile(t, filepath.Join(root, "deploy", "prometheus", "recording-rules.yml"))

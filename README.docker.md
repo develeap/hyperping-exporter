@@ -93,8 +93,8 @@ scrape_configs:
 
 | Tag | Description |
 |-----|-------------|
-| `latest` | Latest stable release |
-| `1.0.1`, `1.0.0` | Pinned version |
+| `latest` | Latest stable release (currently `1.3.1`) |
+| `1.3.1`, `1.3.0`, ... | Pinned version |
 | `v1` | Latest 1.x release |
 
 Multi-arch: `linux/amd64` and `linux/arm64`.
