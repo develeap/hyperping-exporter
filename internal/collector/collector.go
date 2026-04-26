@@ -538,14 +538,16 @@ func (c *Collector) Refresh(ctx context.Context) {
 
 	// Apply name exclusion filter before any downstream processing.
 	monitors, excluded := filterMonitorsByName(core.monitors, c.excludePattern)
+	var includedUUIDs map[string]struct{}
 	if len(excluded) > 0 {
 		names := make([]string, len(excluded))
 		for i, m := range excluded {
 			names[i] = m.Name
 		}
 		c.logger.Debug("excluded monitors by name pattern", "count", len(excluded), "names", names)
-		// Filter outages so tenant aggregates don't count excluded monitors.
-		includedUUIDs := make(map[string]struct{}, len(monitors))
+		// Build inclusion set once and reuse it to filter outages now and
+		// reports after the parallel fetch completes below.
+		includedUUIDs = make(map[string]struct{}, len(monitors))
 		for _, m := range monitors {
 			includedUUIDs[m.UUID] = struct{}{}
 		}
@@ -571,6 +573,16 @@ func (c *Collector) Refresh(ctx context.Context) {
 		mcp, mcpErr = c.fetchMcpData(ctx, core.monitors)
 	}()
 	wg.Wait()
+
+	// ListMonitorReports returns reports for every monitor in the account, so
+	// the same exclusion filter has to be applied here. Without this, excluded
+	// monitors would inflate len(reports) in the tenant SLA average denominator
+	// and would be summed into avgSLAForPeriod for the health score.
+	if includedUUIDs != nil {
+		for period, reports := range reportResults {
+			reportResults[period] = filterReportsByMonitorUUID(reports, includedUUIDs)
+		}
+	}
 
 	dur := time.Since(start)
 
@@ -850,6 +862,11 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 	for _, period := range reportPeriods {
 		reports := snap.reports[period]
 		slaSum := 0.0
+		// slaCount tracks reports actually summed (visible monitors only); using
+		// len(reports) as the denominator silently skews the average whenever a
+		// report's monitor is absent from the index, e.g. excluded by
+		// --exclude-name-pattern or removed between fetches.
+		slaCount := 0
 		for _, r := range reports {
 			mon, ok := snap.monitorIndex[r.UUID]
 			if !ok {
@@ -871,10 +888,11 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 					float64(r.MTTR), r.UUID, r.Name, tenant, tier, period)
 			}
 			slaSum += sla
+			slaCount++
 		}
-		if len(reports) > 0 {
+		if slaCount > 0 {
 			ch <- prometheus.MustNewConstMetric(c.tenantAvgSLA, prometheus.GaugeValue,
-				slaSum/float64(len(reports)), period)
+				slaSum/float64(slaCount), period)
 		}
 	}
 }
