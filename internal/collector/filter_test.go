@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	hyperping "github.com/develeap/hyperping-go"
 )
@@ -125,5 +126,44 @@ func TestFilterOutagesByMonitorUUID_AllExcluded(t *testing.T) {
 	}
 	included := map[string]struct{}{"prod-1": {}}
 	result := filterOutagesByMonitorUUID(outages, included)
+	assert.Empty(t, result)
+}
+
+// --- filterReportsByMonitorUUID ---
+
+func TestFilterReportsByMonitorUUID_AllIncluded(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "a", Name: "Alpha", SLA: 99.0},
+		{UUID: "b", Name: "Beta", SLA: 100.0},
+	}
+	included := map[string]struct{}{"a": {}, "b": {}}
+	result := filterReportsByMonitorUUID(reports, included)
+	assert.Equal(t, reports, result)
+}
+
+func TestFilterReportsByMonitorUUID_PartialInclusion(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "prod-1", Name: "prod-api", SLA: 99.0},
+		{UUID: "drill-1", Name: "[DRILL]", SLA: 50.0},
+		{UUID: "prod-2", Name: "prod-db", SLA: 100.0},
+	}
+	included := map[string]struct{}{"prod-1": {}, "prod-2": {}}
+	result := filterReportsByMonitorUUID(reports, included)
+	require.Len(t, result, 2)
+	assert.Equal(t, "prod-1", result[0].UUID)
+	assert.Equal(t, "prod-2", result[1].UUID)
+}
+
+func TestFilterReportsByMonitorUUID_AllExcluded(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "drill-1"},
+		{UUID: "drill-2"},
+	}
+	result := filterReportsByMonitorUUID(reports, map[string]struct{}{"prod-1": {}})
+	assert.Empty(t, result)
+}
+
+func TestFilterReportsByMonitorUUID_EmptyReports(t *testing.T) {
+	result := filterReportsByMonitorUUID(nil, map[string]struct{}{"prod-1": {}})
 	assert.Empty(t, result)
 }

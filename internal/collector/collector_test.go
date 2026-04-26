@@ -780,8 +780,33 @@ func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 }
 
 func TestAvgSLAForPeriod_Empty(t *testing.T) {
-	assert.Equal(t, 0.0, avgSLAForPeriod(nil))
-	assert.Equal(t, 0.0, avgSLAForPeriod([]hyperping.MonitorReport{}))
+	assert.Equal(t, 0.0, avgSLAForPeriod(nil, nil))
+	assert.Equal(t, 0.0, avgSLAForPeriod([]hyperping.MonitorReport{}, map[string]hyperping.Monitor{}))
+}
+
+func TestAvgSLAForPeriod_FiltersByMonitorIndex(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "a", SLA: 100.0},
+		{UUID: "b", SLA: 50.0}, // not in index — must be ignored
+		{UUID: "c", SLA: 99.0},
+	}
+	index := map[string]hyperping.Monitor{
+		"a": {UUID: "a"},
+		"c": {UUID: "c"},
+	}
+	avg := avgSLAForPeriod(reports, index)
+	// Visible-only avg = (1.0 + 0.99) / 2 = 0.995. Bug-prone path summed
+	// (1.0 + 0.5 + 0.99) / 3 ≈ 0.83, dragging the value down by 16 percentage
+	// points just because an excluded monitor was present in the input.
+	assert.InDelta(t, 0.995, avg, 0.001)
+}
+
+func TestAvgSLAForPeriod_NilIndexIncludesNothing(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "a", SLA: 100.0},
+	}
+	assert.Equal(t, 0.0, avgSLAForPeriod(reports, nil),
+		"a nil index has no entries, so no report can match — average is undefined → 0")
 }
 
 func TestComputeHealthScore_CapAtMax(t *testing.T) {
@@ -1439,7 +1464,7 @@ func TestCollect_MonitorsExcluded(t *testing.T) {
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_monitors_excluded gauge
 hyperping_monitors_excluded 2
 `
@@ -1452,7 +1477,7 @@ hyperping_monitors_excluded 2
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_monitors_excluded gauge
 hyperping_monitors_excluded 0
 `
@@ -1473,11 +1498,82 @@ hyperping_monitors_excluded 0
 		c.Refresh(context.Background())
 
 		expected := `
-# HELP hyperping_monitors_excluded Number of monitors excluded by --exclude-name-pattern on the last cache refresh.
+# HELP hyperping_monitors_excluded Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_monitors_excluded gauge
 hyperping_monitors_excluded 0
 `
 		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitors_excluded")
 		require.NoError(t, err)
 	})
+}
+
+// Bug: hyperping_tenant_avg_sla_ratio used to divide by len(reports) which
+// included excluded monitors in the denominator while the numerator only
+// summed visible monitors' SLA, dragging the average down by visible/total.
+// See https://github.com/develeap/hyperping-exporter for the original report.
+func TestRefresh_ExcludePattern_TenantAvgSLAExcludesDrillReports(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "prod-2", Name: "prod-db", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL]-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		reports: []hyperping.MonitorReport{
+			{UUID: "prod-1", Name: "prod-api", SLA: 99.0},
+			{UUID: "prod-2", Name: "prod-db", SLA: 100.0},
+			{UUID: "drill-1", Name: "[DRILL]-NOOP", SLA: 50.0},
+		},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	// Correct: avg over visible = (0.99 + 1.0) / 2 = 0.995
+	// Bug-prone path produced (0.99 + 1.0 + 0) / 3 = 0.6633...
+	expected := `
+# HELP hyperping_tenant_avg_sla_ratio Average SLA ratio across all monitors for the labelled period.
+# TYPE hyperping_tenant_avg_sla_ratio gauge
+hyperping_tenant_avg_sla_ratio{period="24h"} 0.995
+hyperping_tenant_avg_sla_ratio{period="30d"} 0.995
+hyperping_tenant_avg_sla_ratio{period="7d"} 0.995
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_avg_sla_ratio")
+	require.NoError(t, err)
+}
+
+// Bug: hyperping_tenant_health_score's avgSLAForPeriod summed all reports
+// without checking the monitor index, so excluded monitors' SLA dragged the
+// composite score down for users of --exclude-name-pattern.
+func TestRefresh_ExcludePattern_TenantHealthScoreExcludesDrillReports(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "prod-1", Name: "prod-api", Status: "up", HTTPMethod: "GET"},
+			{UUID: "prod-2", Name: "prod-db", Status: "up", HTTPMethod: "GET"},
+			{UUID: "drill-1", Name: "[DRILL]-NOOP", Status: "down", HTTPMethod: "GET"},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+		reports: []hyperping.MonitorReport{
+			{UUID: "prod-1", Name: "prod-api", SLA: 100.0},
+			{UUID: "prod-2", Name: "prod-db", SLA: 100.0},
+			{UUID: "drill-1", Name: "[DRILL]-NOOP", SLA: 0.0},
+		},
+	}
+
+	rx := regexp.MustCompile(`\[DRILL`)
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping", WithExcludePattern(rx))
+	c.Refresh(context.Background())
+
+	// upRatio = 2/2 = 1.0 (visible only, drill not counted)
+	// avg30dSLA over visible = 1.0; outages = 0; monitors = 2
+	// health = 1.0 * 60 + 1.0 * 40 - 0 = 100
+	// Bug-prone path computed avg30dSLA = (1.0 + 1.0 + 0.0) / 3 = 0.6667 → health = 60 + 26.67 = 86.67
+	expected := `
+# HELP hyperping_tenant_health_score Composite tenant health score from 0 to 100.
+# TYPE hyperping_tenant_health_score gauge
+hyperping_tenant_health_score 100
+`
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_health_score")
+	require.NoError(t, err)
 }

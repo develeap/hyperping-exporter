@@ -174,7 +174,7 @@ func newCollectorDescs(ns string) collectorDescs {
 		),
 		excludedDesc: prometheus.NewDesc(
 			fqn(ns, "monitors", "excluded"),
-			"Number of monitors excluded by --exclude-name-pattern on the last cache refresh.",
+			"Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.",
 			nil, nil,
 		),
 	}
@@ -427,14 +427,20 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 		mu.Unlock()
 	}()
 
-	// 2. Fetch per-monitor metrics using a worker pool
+	// 2. Fetch per-monitor metrics using a worker pool. Skip the pool entirely
+	// when there are no monitors to process; the alert-fetch goroutine added
+	// above is independent and will be drained by the wg.Wait() below.
+	if len(monitors) == 0 {
+		wg.Wait()
+		return res, nil
+	}
 	monitorChan := make(chan hyperping.Monitor, len(monitors))
 	for _, m := range monitors {
 		monitorChan <- m
 	}
 	close(monitorChan)
 
-	// Limit concurrency to 10 workers
+	// Limit concurrency to 10 workers (or fewer if fewer monitors).
 	numWorkers := 10
 	if len(monitors) < numWorkers {
 		numWorkers = len(monitors)
@@ -485,7 +491,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
-						} else {
+						} else if err != nil {
 							c.logger.Debug("failed to fetch mtta", "uuid", uuid, "error", err)
 						}
 					}
@@ -538,14 +544,16 @@ func (c *Collector) Refresh(ctx context.Context) {
 
 	// Apply name exclusion filter before any downstream processing.
 	monitors, excluded := filterMonitorsByName(core.monitors, c.excludePattern)
+	var includedUUIDs map[string]struct{}
 	if len(excluded) > 0 {
 		names := make([]string, len(excluded))
 		for i, m := range excluded {
 			names[i] = m.Name
 		}
 		c.logger.Debug("excluded monitors by name pattern", "count", len(excluded), "names", names)
-		// Filter outages so tenant aggregates don't count excluded monitors.
-		includedUUIDs := make(map[string]struct{}, len(monitors))
+		// Build inclusion set once and reuse it to filter outages now and
+		// reports after the parallel fetch completes below.
+		includedUUIDs = make(map[string]struct{}, len(monitors))
 		for _, m := range monitors {
 			includedUUIDs[m.UUID] = struct{}{}
 		}
@@ -572,17 +580,22 @@ func (c *Collector) Refresh(ctx context.Context) {
 	}()
 	wg.Wait()
 
+	// ListMonitorReports returns reports for every monitor in the account, so
+	// the same exclusion filter has to be applied here. Without this, excluded
+	// monitors would inflate len(reports) in the tenant SLA average denominator
+	// and would be summed into avgSLAForPeriod for the health score.
+	if includedUUIDs != nil {
+		for period, reports := range reportResults {
+			reportResults[period] = filterReportsByMonitorUUID(reports, includedUUIDs)
+		}
+	}
+
 	dur := time.Since(start)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.lastScrapeDur = dur
-
-	if coreErr != nil {
-		c.lastScrapeOK = false
-		return
-	}
 
 	if core.outages != nil {
 		c.outages = core.outages
@@ -850,6 +863,11 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 	for _, period := range reportPeriods {
 		reports := snap.reports[period]
 		slaSum := 0.0
+		// slaCount tracks reports actually summed (visible monitors only); using
+		// len(reports) as the denominator silently skews the average whenever a
+		// report's monitor is absent from the index, e.g. excluded by
+		// --exclude-name-pattern or removed between fetches.
+		slaCount := 0
 		for _, r := range reports {
 			mon, ok := snap.monitorIndex[r.UUID]
 			if !ok {
@@ -871,10 +889,11 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 					float64(r.MTTR), r.UUID, r.Name, tenant, tier, period)
 			}
 			slaSum += sla
+			slaCount++
 		}
-		if len(reports) > 0 {
+		if slaCount > 0 {
 			ch <- prometheus.MustNewConstMetric(c.tenantAvgSLA, prometheus.GaugeValue,
-				slaSum/float64(len(reports)), period)
+				slaSum/float64(slaCount), period)
 		}
 	}
 }
@@ -913,7 +932,7 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	// Health score requires 30d SLA data; omit until reports are loaded to avoid
 	// misleadingly low scores (upRatio×60 + 0×40 = 60 even for a healthy fleet).
 	if reports30d := snap.reports["30d"]; len(reports30d) > 0 {
-		avg30dSLA := avgSLAForPeriod(reports30d)
+		avg30dSLA := avgSLAForPeriod(reports30d, snap.monitorIndex)
 		ch <- prometheus.MustNewConstMetric(c.tenantHealthScore, prometheus.GaugeValue,
 			computeHealthScore(upRatio, avg30dSLA, len(snap.outageIndex), len(snap.monitors)))
 	}
@@ -1050,16 +1069,25 @@ func escalationTier(m hyperping.Monitor) string {
 	return "core"
 }
 
-// avgSLAForPeriod computes the mean SLA ratio (0-1) across a set of reports.
-func avgSLAForPeriod(reports []hyperping.MonitorReport) float64 {
-	if len(reports) == 0 {
+// avgSLAForPeriod computes the mean SLA ratio (0-1) over reports whose monitor
+// is present in monitorIndex. The index parameter exists so the function cannot
+// silently include monitors that should be excluded (e.g. by --exclude-name-pattern):
+// summing over reports while dividing by len(reports) was the original bug shape,
+// and trusting "the caller filters first" was the way that bug crept in.
+func avgSLAForPeriod(reports []hyperping.MonitorReport, monitorIndex map[string]hyperping.Monitor) float64 {
+	sum := 0.0
+	count := 0
+	for _, r := range reports {
+		if _, ok := monitorIndex[r.UUID]; !ok {
+			continue
+		}
+		sum += r.SLA / 100.0
+		count++
+	}
+	if count == 0 {
 		return 0
 	}
-	sum := 0.0
-	for _, r := range reports {
-		sum += r.SLA / 100.0
-	}
-	return sum / float64(len(reports))
+	return sum / float64(count)
 }
 
 // computeHealthScore returns a composite 0–100 health score.

@@ -43,3 +43,19 @@ func filterOutagesByMonitorUUID(outages []hyperping.Outage, includedUUIDs map[st
 	}
 	return result
 }
+
+// filterReportsByMonitorUUID returns only reports whose UUID is present in
+// includedUUIDs. Used so excluded monitors do not contribute to per-period
+// SLA averages or to the tenant health score.
+func filterReportsByMonitorUUID(reports []hyperping.MonitorReport, includedUUIDs map[string]struct{}) []hyperping.MonitorReport {
+	if len(reports) == 0 {
+		return reports
+	}
+	result := make([]hyperping.MonitorReport, 0, len(reports))
+	for _, r := range reports {
+		if _, ok := includedUUIDs[r.UUID]; ok {
+			result = append(result, r)
+		}
+	}
+	return result
+}
