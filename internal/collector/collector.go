@@ -931,7 +931,7 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	// Health score requires 30d SLA data; omit until reports are loaded to avoid
 	// misleadingly low scores (upRatio×60 + 0×40 = 60 even for a healthy fleet).
 	if reports30d := snap.reports["30d"]; len(reports30d) > 0 {
-		avg30dSLA := avgSLAForPeriod(reports30d)
+		avg30dSLA := avgSLAForPeriod(reports30d, snap.monitorIndex)
 		ch <- prometheus.MustNewConstMetric(c.tenantHealthScore, prometheus.GaugeValue,
 			computeHealthScore(upRatio, avg30dSLA, len(snap.outageIndex), len(snap.monitors)))
 	}
@@ -1068,16 +1068,25 @@ func escalationTier(m hyperping.Monitor) string {
 	return "core"
 }
 
-// avgSLAForPeriod computes the mean SLA ratio (0-1) across a set of reports.
-func avgSLAForPeriod(reports []hyperping.MonitorReport) float64 {
-	if len(reports) == 0 {
+// avgSLAForPeriod computes the mean SLA ratio (0-1) over reports whose monitor
+// is present in monitorIndex. The index parameter exists so the function cannot
+// silently include monitors that should be excluded (e.g. by --exclude-name-pattern):
+// summing over reports while dividing by len(reports) was the original bug shape,
+// and trusting "the caller filters first" was the way that bug crept in.
+func avgSLAForPeriod(reports []hyperping.MonitorReport, monitorIndex map[string]hyperping.Monitor) float64 {
+	sum := 0.0
+	count := 0
+	for _, r := range reports {
+		if _, ok := monitorIndex[r.UUID]; !ok {
+			continue
+		}
+		sum += r.SLA / 100.0
+		count++
+	}
+	if count == 0 {
 		return 0
 	}
-	sum := 0.0
-	for _, r := range reports {
-		sum += r.SLA / 100.0
-	}
-	return sum / float64(len(reports))
+	return sum / float64(count)
 }
 
 // computeHealthScore returns a composite 0–100 health score.

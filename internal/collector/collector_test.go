@@ -780,8 +780,33 @@ func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
 }
 
 func TestAvgSLAForPeriod_Empty(t *testing.T) {
-	assert.Equal(t, 0.0, avgSLAForPeriod(nil))
-	assert.Equal(t, 0.0, avgSLAForPeriod([]hyperping.MonitorReport{}))
+	assert.Equal(t, 0.0, avgSLAForPeriod(nil, nil))
+	assert.Equal(t, 0.0, avgSLAForPeriod([]hyperping.MonitorReport{}, map[string]hyperping.Monitor{}))
+}
+
+func TestAvgSLAForPeriod_FiltersByMonitorIndex(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "a", SLA: 100.0},
+		{UUID: "b", SLA: 50.0}, // not in index — must be ignored
+		{UUID: "c", SLA: 99.0},
+	}
+	index := map[string]hyperping.Monitor{
+		"a": {UUID: "a"},
+		"c": {UUID: "c"},
+	}
+	avg := avgSLAForPeriod(reports, index)
+	// Visible-only avg = (1.0 + 0.99) / 2 = 0.995. Bug-prone path summed
+	// (1.0 + 0.5 + 0.99) / 3 ≈ 0.83, dragging the value down by 16 percentage
+	// points just because an excluded monitor was present in the input.
+	assert.InDelta(t, 0.995, avg, 0.001)
+}
+
+func TestAvgSLAForPeriod_NilIndexIncludesNothing(t *testing.T) {
+	reports := []hyperping.MonitorReport{
+		{UUID: "a", SLA: 100.0},
+	}
+	assert.Equal(t, 0.0, avgSLAForPeriod(reports, nil),
+		"a nil index has no entries, so no report can match — average is undefined → 0")
 }
 
 func TestComputeHealthScore_CapAtMax(t *testing.T) {
