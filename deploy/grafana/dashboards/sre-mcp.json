@@ -217,7 +217,7 @@
       "id": 12,
       "type": "table",
       "title": "Top 10 Slowest Monitors",
-      "description": "Highest response time per monitor. Click name to drill into the per-monitor timeseries below.",
+      "description": "Highest response time per monitor at the current scrape. Pair with the Per-Monitor Response Time panel below for the trend.",
       "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
       "options": {
         "sortBy": [{ "displayName": "Response Time", "desc": true }],
