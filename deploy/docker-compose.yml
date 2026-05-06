@@ -4,6 +4,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        # Local builds copy the binary from the project root; goreleaser's
+        # multi-arch buildx path uses the platform-prefixed default instead.
+        BIN_PATH: hyperping-exporter
     environment:
       HYPERPING_API_KEY: "${HYPERPING_API_KEY}"
     command:
