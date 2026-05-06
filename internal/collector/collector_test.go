@@ -1198,11 +1198,11 @@ type mockMCPTransport struct {
 	errors  map[string]error
 }
 
-func (m *mockMCPTransport) Initialize(ctx context.Context) (map[string]any, error) {
+func (m *mockMCPTransport) Initialize(_ context.Context) (map[string]any, error) {
 	return nil, nil
 }
 
-func (m *mockMCPTransport) CallTool(ctx context.Context, toolName string, args map[string]any) (any, error) {
+func (m *mockMCPTransport) CallTool(_ context.Context, toolName string, args map[string]any) (any, error) {
 	if err, ok := m.errors[toolName]; ok {
 		return nil, err
 	}
