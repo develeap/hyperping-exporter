@@ -4,6 +4,7 @@
 package collector
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	hyperping "github.com/develeap/hyperping-go"
 )
 
 // ruleFile mirrors the subset of Prometheus rule-file schema we care about for
@@ -63,26 +66,12 @@ func loadRuleFile(t *testing.T, path string) ruleFile {
 // each one is either an emitted Prometheus descriptor or a recording-rule
 // output name.
 func TestPrometheusRulesReferenceOnlyEmittedMetrics(t *testing.T) {
-	// Collect emitted metric fqNames from the live collector descriptors.
-	c := NewCollector(&mockAPI{}, nil, 60*time.Second, newTestLogger(), "hyperping")
-	ch := make(chan *prometheus.Desc, 64)
-	c.Describe(ch)
-	close(ch)
-
-	fqNameRx := regexp.MustCompile(`fqName:\s*"([^"]+)"`)
-	known := make(map[string]struct{})
-	for d := range ch {
-		m := fqNameRx.FindStringSubmatch(d.String())
-		require.NotNil(t, m, "could not parse fqName from %s", d.String())
-		known[m[1]] = struct{}{}
-	}
-	// Sanity check: the regex depends on prometheus/client_golang's Desc.String()
-	// format, which is not a documented stability guarantee. If a future client
-	// upgrade silently changes the format in a way the regex still matches but
-	// extracts garbage, we'd lose all known names and every reference would
-	// register as "undefined". This bound catches that failure mode early.
-	require.GreaterOrEqual(t, len(known), 30,
-		"extracted only %d metric names from Desc.String(); the parsing regex may have stopped working — check client_golang format", len(known))
+	// Build a populated collector covering every metric family emitted by the
+	// codebase. Any descriptor whose emission depends on data presence (SSL,
+	// regions, MCP indexes, reports, etc.) needs at least one entity here, or
+	// Gather() will silently drop that family and the rules audit below will
+	// flag valid alert references as "undefined".
+	known := gatherEmittedMetricNames(t)
 
 	root := repoRoot(t)
 	rules := loadRuleFile(t, filepath.Join(root, "deploy", "prometheus", "recording-rules.yml"))
@@ -131,4 +120,94 @@ func TestPrometheusRulesReferenceOnlyEmittedMetrics(t *testing.T) {
 		t.Errorf("%d undefined metric reference(s) in deploy/prometheus/:\n  %s",
 			len(problems), strings.Join(problems, "\n  "))
 	}
+}
+
+// gatherEmittedMetricNames builds a fully-populated collector, registers it
+// with a pedantic registry, calls Gather(), and returns the set of emitted
+// metric family names. Compared to parsing prometheus.Desc.String(), this
+// reads names through client_golang's documented public API and does not
+// depend on internal Desc formatting.
+func gatherEmittedMetricNames(t *testing.T) map[string]struct{} {
+	t.Helper()
+
+	sslDays := 30
+	endTime := "2026-04-26T11:00:00Z"
+	monitor := hyperping.Monitor{
+		UUID:           "mon_1",
+		Name:           "[acme]-Web",
+		URL:            "https://example.com",
+		Protocol:       "http",
+		HTTPMethod:     "GET",
+		ProjectUUID:    "proj_1",
+		Status:         "down",
+		CheckFrequency: 60,
+		SSLExpiration:  &sslDays,
+		Regions:        []string{"us-east", "eu-west"},
+		EscalationPolicy: &hyperping.EscalationPolicyRef{
+			UUID: "ep_1",
+			Name: "Core",
+		},
+	}
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{monitor},
+		healthchecks: []hyperping.Healthcheck{{UUID: "hc_1", Name: "Backup", Period: 300}},
+		outages: []hyperping.Outage{{
+			UUID:               "out_1",
+			StartDate:          "2026-04-26T10:00:00Z",
+			EndDate:            nil,
+			StatusCode:         500,
+			IsResolved:         false,
+			DetectedLocation:   "us-east",
+			ConfirmedLocations: "us-east",
+			Monitor:            hyperping.MonitorReference{UUID: "mon_1", Name: "[acme]-Web"},
+		}},
+		maintenanceWindows: []hyperping.Maintenance{{
+			UUID:     "mw_1",
+			Name:     "Planned",
+			Status:   "ongoing",
+			Monitors: []string{"mon_1"},
+		}},
+		incidents: []hyperping.Incident{{UUID: "inc_1", Type: "investigating"}},
+		reports: []hyperping.MonitorReport{{
+			UUID:     "mon_1",
+			Name:     "[acme]-Web",
+			Protocol: "http",
+			Period:   hyperping.ReportPeriod{From: "2026-03-27T00:00:00Z", To: endTime},
+			SLA:      99.5,
+			MTTR:     120,
+			Outages: hyperping.OutageStats{
+				Count:         1,
+				TotalDowntime: 60,
+				LongestOutage: 60,
+			},
+		}},
+	}
+
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	// MCP-derived metric families are emitted only when the per-monitor index
+	// has data. The MCP client is a concrete *hyperping.MCPClient (not an
+	// interface), so populate the cache directly to make those families appear.
+	// Refresh() with mcp == nil overwrites the indexes with nil maps via the
+	// (mcpData{}, nil) return from fetchMcpData; reallocate before writing.
+	c.mu.Lock()
+	c.responseTimeIndex = map[string]float64{"mon_1": 0.42}
+	c.mttaIndex = map[string]float64{"mon_1": 30.0}
+	c.anomalyCountIndex = map[string]int{"mon_1": 1}
+	c.anomalyScoreIndex = map[string]float64{"mon_1": 0.5}
+	c.totalAlerts = 1
+	c.mu.Unlock()
+
+	registry := prometheus.NewPedanticRegistry()
+	require.NoError(t, registry.Register(c))
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+
+	known := make(map[string]struct{}, len(families))
+	for _, mf := range families {
+		known[mf.GetName()] = struct{}{}
+	}
+	return known
 }
