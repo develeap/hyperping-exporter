@@ -1,0 +1,430 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "title": "Hyperping SRE: MCP Metrics",
+  "uid": "hyperping-sre-mcp",
+  "description": "Visibility into MCP-derived metrics (response time, MTTA, anomalies, alerts) that back the v1.4.0 alerts HyperpingMonitorAnomalyHigh and HyperpingMonitorMTTAHigh. Requires --mcp-url.",
+  "tags": ["hyperping", "sre", "mcp"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "graphTooltip": 1,
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "tier",
+        "label": "Tier",
+        "type": "custom",
+        "query": "core,noncore,unknown",
+        "current": { "value": "$__all", "text": "All" },
+        "includeAll": true,
+        "multi": false
+      },
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(hyperping_monitor_response_time_seconds, tenant)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": false,
+        "current": { "value": "$__all", "text": "All" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "High-Anomaly Monitors",
+      "description": "Count of monitors currently above the 0.8 anomaly threshold (matches HyperpingMonitorAnomalyHigh alert).",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping:fleet:anomalies_high",
+          "legendFormat": "Above 0.8",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Recent Alerts (snapshot)",
+      "description": "Snapshot count of alerts in MCP history.",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping_alerts",
+          "legendFormat": "Alerts",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Fleet Avg MTTA",
+      "description": "Mean MTTA across all monitors with MCP data.",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 300 },
+              { "color": "orange", "value": 600 },
+              { "color": "red", "value": 1200 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "avg(hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "legendFormat": "Avg MTTA",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Fleet p95 Response Time",
+      "description": "Current p95 response time across the fleet.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 3 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "quantile(0.95, hyperping_monitor_response_time_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "legendFormat": "p95",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Response Time",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Fleet Response Time p95",
+      "description": "p95 of hyperping_monitor_response_time_seconds across the selected scope.",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "quantile(0.95, hyperping_monitor_response_time_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "quantile(0.50, hyperping_monitor_response_time_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "legendFormat": "p50"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Top 10 Slowest Monitors",
+      "description": "Highest response time per monitor. Click name to drill into the per-monitor timeseries below.",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
+      "options": {
+        "sortBy": [{ "displayName": "Response Time", "desc": true }],
+        "footer": { "show": false }
+      },
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Tier" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "core":    { "text": "CORE",    "color": "red" } } },
+                  { "type": "value", "options": { "noncore": { "text": "noncore", "color": "blue" } } }
+                ]
+              },
+              { "id": "custom.displayMode", "value": "color-background" }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value": "Response Time",
+              "name": "Monitor",
+              "tier": "Tier",
+              "tenant": "Tenant"
+            },
+            "excludeByName": { "Time": true, "job": true, "instance": true, "uuid": true, "__name__": true }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "topk(10, hyperping_monitor_response_time_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Per-Monitor Response Time",
+      "description": "All hyperping_monitor_response_time_seconds series within the selected scope.",
+      "gridPos": { "x": 0, "y": 13, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 1, "fillOpacity": 0 }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping_monitor_response_time_seconds{tier=~\"$tier\",tenant=~\"$tenant\"}",
+          "legendFormat": "{{name}}"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "MTTA",
+      "gridPos": { "x": 0, "y": 21, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "MTTA per Monitor",
+      "description": "hyperping_monitor_mtta_seconds. The HyperpingMonitorMTTAHigh alert fires above 600s sustained for 1h.",
+      "gridPos": { "x": 0, "y": 22, "w": 16, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 1, "fillOpacity": 0 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 600 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"}",
+          "legendFormat": "{{name}}"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "histogram",
+      "title": "MTTA Distribution",
+      "description": "Distribution of current MTTA values across monitors.",
+      "gridPos": { "x": 16, "y": 22, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Anomalies",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Top 10 Anomaly Scores",
+      "description": "topk(10, hyperping_monitor_anomaly_score). HyperpingMonitorAnomalyHigh fires above 0.8 for 15m.",
+      "gridPos": { "x": 0, "y": 31, "w": 16, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.8 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "topk(10, hyperping_monitor_anomaly_score{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "legendFormat": "{{name}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Fleet High-Anomaly Count",
+      "description": "Trend of monitors above the 0.8 anomaly threshold (recording rule hyperping:fleet:anomalies_high).",
+      "gridPos": { "x": 16, "y": 31, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 20 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping:fleet:anomalies_high",
+          "legendFormat": "Above 0.8"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Anomaly Count per Monitor",
+      "description": "hyperping_monitor_anomaly_count over time.",
+      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 0 }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "hyperping_monitor_anomaly_count{tier=~\"$tier\",tenant=~\"$tenant\"}",
+          "legendFormat": "{{name}}"
+        }
+      ]
+    }
+  ],
+  "annotations": { "list": [] }
+}
