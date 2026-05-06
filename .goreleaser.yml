@@ -70,7 +70,7 @@ changelog:
       - Merge branch
 
 dockers_v2:
-  - dockerfile: Dockerfile.goreleaser
+  - dockerfile: Dockerfile
     ids:
       - hyperping-exporter
     images:
