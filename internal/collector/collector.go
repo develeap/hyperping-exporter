@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Develeap
 // SPDX-License-Identifier: MIT
 
+// Package collector implements a Prometheus collector that exposes Hyperping
+// monitor, healthcheck, outage, SLA, and MCP-derived metrics.
 package collector
 
 import (
@@ -38,11 +40,11 @@ const (
 	CacheModeTiered
 )
 
-// CollectorOption configures a Collector after construction.
-type CollectorOption func(*Collector)
+// Option configures a Collector after construction.
+type Option func(*Collector)
 
 // WithCacheMode selects the cache refresh strategy.
-func WithCacheMode(m CacheMode) CollectorOption {
+func WithCacheMode(m CacheMode) Option {
 	return func(c *Collector) {
 		c.cacheMode = m
 	}
@@ -53,7 +55,7 @@ func WithCacheMode(m CacheMode) CollectorOption {
 // the Helm chart's validateTierTTLs (hot >= 30s, warm >= 60s, cold >= 300s);
 // the floors are intentionally NOT re-enforced here because legitimate test
 // callers need millisecond-scale TTLs.
-func WithTierTTLs(hot, warm, cold time.Duration) CollectorOption {
+func WithTierTTLs(hot, warm, cold time.Duration) Option {
 	return func(c *Collector) {
 		c.hotTTL = hot
 		c.warmTTL = warm
@@ -72,7 +74,7 @@ func WithTierTTLs(hot, warm, cold time.Duration) CollectorOption {
 // disabled would produce no scrape and trap /readyz at "not ready"
 // forever. The hot parameter is accepted for symmetry and is enforced
 // at parse time by the operator-facing config layer (main.parseConfig).
-func WithTierEnable(hot, warm, cold bool) CollectorOption {
+func WithTierEnable(hot, warm, cold bool) Option {
 	return func(c *Collector) {
 		c.hotEnabled = hot
 		c.warmEnabled = warm
@@ -84,7 +86,7 @@ func WithTierEnable(hot, warm, cold bool) CollectorOption {
 // WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
 // is dropped from the monitor list immediately after the API fetch, before any
 // metric computation or tenant aggregate calculation.
-func WithExcludePattern(rx *regexp.Regexp) CollectorOption {
+func WithExcludePattern(rx *regexp.Regexp) Option {
 	return func(c *Collector) {
 		c.excludePattern = rx
 	}
@@ -94,7 +96,7 @@ func WithExcludePattern(rx *regexp.Regexp) CollectorOption {
 // refresh, rate-limit, partial refresh). The same MCPMetrics value should be
 // supplied to NewObservedTransport so transport-layer and refresh-layer
 // counters share one registration.
-func WithMCPMetrics(m *MCPMetrics) CollectorOption {
+func WithMCPMetrics(m *MCPMetrics) Option {
 	return func(c *Collector) {
 		c.mcpMetrics = m
 	}
@@ -104,7 +106,7 @@ func WithMCPMetrics(m *MCPMetrics) CollectorOption {
 // metric Desc this Collector produces. Empty string collapses to "default"
 // so legacy single-project deployments still see a stable label set on
 // every series.
-func WithProject(id string) CollectorOption {
+func WithProject(id string) Option {
 	return func(c *Collector) {
 		c.project = id
 	}
@@ -117,7 +119,7 @@ func WithProject(id string) CollectorOption {
 // an unknown-period label. Callers that don't supply WithPeriods inherit
 // defaultReportPeriods (["24h","7d","30d"]) which preserves the legacy
 // fetch/emit behaviour byte-for-byte.
-func WithPeriods(periods []string) CollectorOption {
+func WithPeriods(periods []string) Option {
 	return func(c *Collector) {
 		// Defensive copy so a caller mutating their slice after
 		// constructing the Collector does not silently change emission.
@@ -466,7 +468,7 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...CollectorOption) *Collector {
+func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...Option) *Collector {
 	c := &Collector{
 		api:               api,
 		mcp:               mcp,

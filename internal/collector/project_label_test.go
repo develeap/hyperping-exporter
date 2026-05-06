@@ -103,10 +103,10 @@ func TestNewCollector_AddsProjectConstLabel(t *testing.T) {
 func TestNewCollector_DefaultProjectWhenUnset(t *testing.T) {
 	cases := []struct {
 		name string
-		opts []CollectorOption
+		opts []Option
 	}{
 		{"no WithProject option", nil},
-		{"empty string WithProject", []CollectorOption{WithProject("")}},
+		{"empty string WithProject", []Option{WithProject("")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

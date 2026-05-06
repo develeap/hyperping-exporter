@@ -1,6 +1,9 @@
 // Copyright (c) 2026 Develeap
 // SPDX-License-Identifier: MIT
 
+// Command hyperping-exporter is a Prometheus exporter for the Hyperping
+// monitoring service. It serves Hyperping monitor health, SLA, outage, and
+// MCP-derived metrics on /metrics.
 package main
 
 import (
@@ -318,21 +321,23 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	// carries the secret. Process accounting or kernel logs that captured argv
 	// before this scrub are still a leak, hence "best-effort".
 	apiKeyFromFlag := cfg.apiKey
-	if cfg.projectsFile != "" {
-		// Skip the single-key resolution path entirely.
-	} else if cfg.apiKeyFile != "" {
-		data, err := os.ReadFile(cfg.apiKeyFile)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
-			return cfg, false
+	// projectsFile mode skips the single-key resolution path entirely; the
+	// per-project keys are loaded later from the YAML.
+	if cfg.projectsFile == "" {
+		if cfg.apiKeyFile != "" {
+			data, err := os.ReadFile(cfg.apiKeyFile)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
+				return cfg, false
+			}
+			// Strip any trailing CR/LF combo so Unix LF, Windows CRLF, and
+			// classic-Mac CR endings all yield the same key. Multiple trailing
+			// newlines (e.g. "key\n\n" from a here-doc) are also tolerated.
+			// Internal and leading whitespace is preserved verbatim.
+			cfg.apiKey = strings.TrimRight(string(data), "\r\n")
+		} else if cfg.apiKey == "" {
+			cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 		}
-		// Strip any trailing CR/LF combo so Unix LF, Windows CRLF, and
-		// classic-Mac CR endings all yield the same key. Multiple trailing
-		// newlines (e.g. "key\n\n" from a here-doc) are also tolerated.
-		// Internal and leading whitespace is preserved verbatim.
-		cfg.apiKey = strings.TrimRight(string(data), "\r\n")
-	} else if cfg.apiKey == "" {
-		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
 	if cfg.projectsFile == "" && cfg.apiKey == "" {
 		_, _ = fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, --api-key, or --projects-file)")
@@ -957,7 +962,7 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 
 	for _, q := range queue {
 		mcpClient := hyperping.NewMCPClient(q.transport)
-		opts := []collector.CollectorOption{
+		opts := []collector.Option{
 			collector.WithProject(q.project.ID),
 			collector.WithExcludePattern(q.excludeRx),
 			collector.WithMCPMetrics(q.mcpMx),
