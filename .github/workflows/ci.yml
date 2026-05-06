@@ -87,15 +87,30 @@ jobs:
           cache: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
       - name: License compliance
         run: |
           go mod download
+          # Capture explicitly so a `go list` failure aborts the step. Without
+          # this, an empty substitution would silently produce a 0-iteration
+          # loop and a false PASS.
+          if ! mods=$(go list -m -f '{{.Dir}}' all); then
+            echo "FAIL: could not list dependency modules"
+            exit 1
+          fi
           FAIL=0
-          for dir in $(go list -m -f '{{.Dir}}' all 2>/dev/null | grep -v '^$'); do
+          for dir in $mods; do
             for f in "$dir/LICENSE" "$dir/LICENCE" "$dir/LICENSE.md" "$dir/LICENCE.md" "$dir/LICENSE.txt" "$dir/COPYING"; do
-              if [ -f "$f" ] && grep -qliE 'GNU GENERAL PUBLIC LICENSE.*Version 3|GNU AFFERO|SSPL|EUPL' "$f" 2>/dev/null; then
+              # head -20 limits the regex to the license header. Without this
+              # bound, MPL 2.0 license bodies false-match because their
+              # "Secondary License" section names AGPL by reference (line ~71).
+              # The regex intentionally drops the "Version 3" qualifier on GPL
+              # (any GPL version is copyleft for our purposes; the title and
+              # version sit on different lines so the qualifier never matched
+              # anyway) and uses the SSPL full name; EUPL is matched by
+              # abbreviation, which appears on the title line of standard files.
+              if [ -f "$f" ] && head -20 "$f" | grep -qiE 'GNU GENERAL PUBLIC LICENSE|GNU AFFERO|Server Side Public License|EUPL' 2>/dev/null; then
                 echo "FAIL: copyleft license detected in $f"
                 FAIL=1
               fi
