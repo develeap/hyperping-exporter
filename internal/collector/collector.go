@@ -752,6 +752,21 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 					}
 					uuid := m.UUID
 
+					// Buffer per-monitor results in stack-local vars so the
+					// shared mu is taken once per monitor instead of once per
+					// fetch. The `OK` flags distinguish "fetched zero" from
+					// "did not fetch", which matters because an unsuccessful
+					// call must not overwrite a previously-cached value.
+					var (
+						rtVal     float64
+						rtOK      bool
+						mttaVal   float64
+						mttaOK    bool
+						anomCount int
+						anomScore float64
+						anomOK    bool
+					)
+
 					// 1. Response Time
 					//
 					// v0.7.0 BREAKING: GetMonitorResponseTime now takes
@@ -763,9 +778,8 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						report, err := c.mcp.GetMonitorResponseTime(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
-							mu.Lock()
-							res.responseTime[uuid] = report.AvgResponseTime
-							mu.Unlock()
+							rtVal = report.AvgResponseTime
+							rtOK = true
 						} else if ctx.Err() != nil {
 							return
 						} else if err != nil {
@@ -787,9 +801,8 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						report, err := c.mcp.GetMonitorMtta(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
-							mu.Lock()
-							res.mtta[uuid] = report.Mtta
-							mu.Unlock()
+							mttaVal = report.Mtta
+							mttaOK = true
 						} else if ctx.Err() != nil {
 							return
 						} else if err != nil {
@@ -804,16 +817,13 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						anomalies, err := c.mcp.GetMonitorAnomalies(opCtx, uuid)
 						cancel()
 						if err == nil {
-							mu.Lock()
-							res.anomalyCount[uuid] = len(anomalies)
-							maxScore := 0.0
+							anomCount = len(anomalies)
 							for _, a := range anomalies {
-								if a.Score > maxScore {
-									maxScore = a.Score
+								if a.Score > anomScore {
+									anomScore = a.Score
 								}
 							}
-							res.anomalyScore[uuid] = maxScore
-							mu.Unlock()
+							anomOK = true
 						} else if ctx.Err() != nil {
 							return
 						} else {
@@ -821,6 +831,22 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 							c.logger.Debug("failed to fetch anomalies", "uuid", uuid, "error", err)
 						}
 					}
+
+					if !rtOK && !mttaOK && !anomOK {
+						continue
+					}
+					mu.Lock()
+					if rtOK {
+						res.responseTime[uuid] = rtVal
+					}
+					if mttaOK {
+						res.mtta[uuid] = mttaVal
+					}
+					if anomOK {
+						res.anomalyCount[uuid] = anomCount
+						res.anomalyScore[uuid] = anomScore
+					}
+					mu.Unlock()
 				}
 			}
 		}()
