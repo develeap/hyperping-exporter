@@ -21,7 +21,7 @@ lint:
 	golangci-lint run ./...
 
 docker-build: build
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	docker build --build-arg BIN_PATH=$(BINARY) -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 docker-run:
 	docker run --rm -p 9312:9312 \
