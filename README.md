@@ -215,6 +215,21 @@ Pre-configured rules in `deploy/prometheus/alerts.yml`:
 
 ---
 
+## Grafana dashboards
+
+Importable JSON in `deploy/grafana/dashboards/`. Each dashboard declares a `DS_PROMETHEUS` input and can be loaded via Grafana's "Dashboards → Import → Upload JSON file":
+
+| File | UID | Purpose |
+|------|-----|---------|
+| `fleet-overview.json` | `hyperping-fleet-overview` | Live UP/DOWN counts, active outages, tier SLA comparison for on-call. |
+| `shared-infrastructure.json` | `hyperping-shared-infra` | Error-code breakdown and 422 anomaly detection across monitors. |
+| `tenant-health.json` | `hyperping-tenant-health` | Per-tenant health score, SLA gauge, all-tenants ranking. |
+| `sre-mcp.json` | `hyperping-sre-mcp` | MCP-derived response time, MTTA, anomaly score, and recent alerts. Backs `HyperpingMonitorAnomalyHigh` / `HyperpingMonitorMTTAHigh`; requires `--mcp-url`. |
+
+The full Docker Compose stack auto-provisions all four via `deploy/grafana/provisioning/`.
+
+---
+
 ## Relationship to terraform-provider-hyperping
 
 This exporter shares the same API client as [develeap/terraform-provider-hyperping](https://github.com/develeap/terraform-provider-hyperping) via the [`github.com/develeap/hyperping-go`](https://github.com/develeap/hyperping-go) module. There is no runtime dependency on the provider.
