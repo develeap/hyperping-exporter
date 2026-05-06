@@ -122,6 +122,26 @@ func TestPrometheusRulesReferenceOnlyEmittedMetrics(t *testing.T) {
 	}
 }
 
+// stubMCPClient is a deterministic mcpClient for tests that need every
+// MCP-derived metric family present in Gather() output.
+type stubMCPClient struct{}
+
+func (stubMCPClient) GetMonitorResponseTime(_ context.Context, uuid string) (*hyperping.ResponseTimeReport, error) {
+	return &hyperping.ResponseTimeReport{UUID: uuid, Avg: 0.42, Min: 0.10, Max: 1.20}, nil
+}
+
+func (stubMCPClient) GetMonitorMtta(_ context.Context, uuid string) (*hyperping.MttaReport, error) {
+	return &hyperping.MttaReport{UUID: uuid, AvgWait: 30.0}, nil
+}
+
+func (stubMCPClient) GetMonitorAnomalies(_ context.Context, uuid string) ([]hyperping.MonitorAnomaly, error) {
+	return []hyperping.MonitorAnomaly{{UUID: "a1", MonitorUUID: uuid, Score: 0.5}}, nil
+}
+
+func (stubMCPClient) ListRecentAlerts(_ context.Context) (*hyperping.AlertHistory, error) {
+	return &hyperping.AlertHistory{Total: 1}, nil
+}
+
 // gatherEmittedMetricNames builds a fully-populated collector, registers it
 // with a pedantic registry, calls Gather(), and returns the set of emitted
 // metric family names. Compared to parsing prometheus.Desc.String(), this
@@ -183,21 +203,8 @@ func gatherEmittedMetricNames(t *testing.T) map[string]struct{} {
 		}},
 	}
 
-	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c := NewCollector(api, stubMCPClient{}, 60*time.Second, newTestLogger(), "hyperping")
 	c.Refresh(context.Background())
-
-	// MCP-derived metric families are emitted only when the per-monitor index
-	// has data. The MCP client is a concrete *hyperping.MCPClient (not an
-	// interface), so populate the cache directly to make those families appear.
-	// Refresh() with mcp == nil overwrites the indexes with nil maps via the
-	// (mcpData{}, nil) return from fetchMcpData; reallocate before writing.
-	c.mu.Lock()
-	c.responseTimeIndex = map[string]float64{"mon_1": 0.42}
-	c.mttaIndex = map[string]float64{"mon_1": 30.0}
-	c.anomalyCountIndex = map[string]int{"mon_1": 1}
-	c.anomalyScoreIndex = map[string]float64{"mon_1": 0.5}
-	c.totalAlerts = 1
-	c.mu.Unlock()
 
 	registry := prometheus.NewPedanticRegistry()
 	require.NoError(t, registry.Register(c))

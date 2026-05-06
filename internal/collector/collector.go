@@ -49,6 +49,16 @@ type HyperpingAPI interface {
 	ListIncidents(ctx context.Context) ([]hyperping.Incident, error)
 }
 
+// mcpClient is the subset of *hyperping.MCPClient that the collector calls.
+// Defined as an interface so tests can supply a deterministic fake without
+// reaching into the collector's private cache.
+type mcpClient interface {
+	GetMonitorResponseTime(ctx context.Context, monitorUUID string) (*hyperping.ResponseTimeReport, error)
+	GetMonitorMtta(ctx context.Context, monitorUUID string) (*hyperping.MttaReport, error)
+	GetMonitorAnomalies(ctx context.Context, monitorUUID string) ([]hyperping.MonitorAnomaly, error)
+	ListRecentAlerts(ctx context.Context) (*hyperping.AlertHistory, error)
+}
+
 // collectorDescs holds all Prometheus metric descriptor fields.
 type collectorDescs struct {
 	monitorUp                 *prometheus.Desc
@@ -210,7 +220,7 @@ type collectorSnapshot struct {
 // cached results as Prometheus metrics. It implements prometheus.Collector.
 type Collector struct {
 	api            HyperpingAPI
-	mcp            *hyperping.MCPClient
+	mcp            mcpClient
 	cacheTTL       time.Duration
 	logger         *slog.Logger
 	excludePattern *regexp.Regexp
@@ -243,7 +253,7 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...CollectorOption) *Collector {
+func NewCollector(api HyperpingAPI, mcp mcpClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...CollectorOption) *Collector {
 	c := &Collector{
 		api:               api,
 		mcp:               mcp,
