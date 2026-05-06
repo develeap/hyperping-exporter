@@ -226,6 +226,13 @@
       "fieldConfig": {
         "overrides": [
           {
+            "matcher": { "id": "byName", "options": "Response Time" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 3 }
+            ]
+          },
+          {
             "matcher": { "id": "byName", "options": "Tier" },
             "properties": [
               {
@@ -325,21 +332,37 @@
     },
     {
       "id": 22,
-      "type": "histogram",
-      "title": "MTTA Distribution",
-      "description": "Distribution of current MTTA values across monitors.",
+      "type": "bargauge",
+      "title": "Top 10 MTTA",
+      "description": "Highest MTTA per monitor at the current scrape; the HyperpingMonitorMTTAHigh alert fires above 600s sustained for 1h.",
       "gridPos": { "x": 16, "y": 22, "w": 8, "h": 8 },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showUnfilled": true
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 300 },
+              { "color": "orange", "value": 600 },
+              { "color": "red", "value": 1200 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
         }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"}",
-          "instant": true,
-          "format": "table"
+          "expr": "topk(10, hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "legendFormat": "{{name}}",
+          "instant": true
         }
       ]
     },
