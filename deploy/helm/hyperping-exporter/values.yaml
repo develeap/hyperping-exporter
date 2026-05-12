@@ -59,13 +59,24 @@ serviceMonitor:
   scrapeTimeout: "30s"
   additionalLabels: {}
 
+# Resource requests/limits empirically grounded by a 30-minute Docker
+# observation on 2026-05-12 against the live Hyperping API. The exporter ran
+# with `--read-only --user 65534:65534 --tmpfs /tmp` to match the chart's
+# runtime envelope (PSS-restricted; container SecurityContext below). Sample
+# data (60 samples at 30s cadence) lives at
+# `tests/artifacts/rss-cpu.txt`. Peak RSS observed: 11.47 MiB; peak CPU
+# observed: 6.33% (~63 millicores burst during scrape; most samples 0.00%).
+# The defaults below carry roughly 30% headroom above the measured peaks for
+# request floors and ~4x headroom on limits to absorb GC bursts and tenant
+# growth past the measurement window (rounded up to the nearest 10m / 16Mi
+# step). Operators with very large tenant footprints should override these.
 resources:
   requests:
-    cpu: 10m
-    memory: 32Mi
+    cpu: 50m
+    memory: 64Mi
   limits:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 200m
+    memory: 256Mi
 
 securityContext:
   readOnlyRootFilesystem: true
