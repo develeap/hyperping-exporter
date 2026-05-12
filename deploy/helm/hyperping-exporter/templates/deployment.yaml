@@ -51,6 +51,12 @@ spec:
             {{- if .Values.config.namespace }}
             - "--namespace={{ .Values.config.namespace }}"
             {{- end }}
+            {{- with .Values.config.excludeNamePattern }}
+            - {{ printf "--exclude-name-pattern=%s" . | toJson }}
+            {{- end }}
+            {{- with .Values.config.mcpUrl }}
+            - {{ printf "--mcp-url=%s" . | toJson }}
+            {{- end }}
           env:
             - name: HYPERPING_API_KEY
               valueFrom:

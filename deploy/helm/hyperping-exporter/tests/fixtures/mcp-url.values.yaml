@@ -1,0 +1,3 @@
+config:
+  apiKey: x
+  mcpUrl: https://mcp.example.com/v1/mcp
