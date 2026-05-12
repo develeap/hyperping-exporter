@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-12
+
 ### Added
 
 - **`config.excludeNamePattern`** (RE2 regex) and **`config.mcpUrl`** Helm chart values, rendered into the Deployment container args via `toJson` so backslash-bearing regexes round-trip byte-for-byte through Kubernetes' YAML decoder.
