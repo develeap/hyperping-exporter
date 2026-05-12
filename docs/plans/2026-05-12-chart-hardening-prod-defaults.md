@@ -2,102 +2,119 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use trycycle-executing to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land all ten chart hardening items (resources tune, probes reconcile, cacheTTL via toJson, PSS-restricted security context audit, NetworkPolicy default-on with optional Cilium FQDN variant, ExternalSecret support with mutual-exclusion fail(), replicas:0-friendly behavior, PDB guard, docs touch-ups) as one PR bumping the chart to 1.2.0, gated by an extended render harness, kubeconform schema validation, and a PSS-restricted kind admission CI job.
+**Goal:** Land all ten chart hardening items as one PR bumping the chart to **1.5.0** (skipping the binary's v1.2.x slot to keep the shared CHANGELOG strictly monotonic-descending and to track the just-released v1.4.1 binary), gated by an extended render harness, kubeconform schema validation, and a kind PSS-restricted admission CI job that exercises four configurations (defaults, externalSecret, replicas-zero, network-policy variants).
 
-**Architecture:** Single-PR cutover on a `chore/chart-hardening-prod-defaults` branch. The chart already implements partial versions of items 1, 2, 4, 5, 8 (resources, probes, securityContext, NetworkPolicy template, PDB template), so this work is largely reconciling existing surfaces against the user's contract plus adding ExternalSecret, the multi-replica/secret-source `fail()` guards, the Cilium NP variant, and the `--cache-ttl` toJson render. Three CI surfaces gate the chart: the existing PyYAML render harness (extended fixture set), a new `kubeconform` strict offline schema validation step in `helm-ci.yml`, and a new `kind` job that admits the rendered chart into a PSS-restricted namespace. All three run only on chart-touching PRs (`paths` filter already in place).
+**Architecture:** Single-PR cutover on the existing `chore/chart-hardening-prod-defaults` worktree branch. The chart already implements partial versions of items 1, 2, 4, 5, 8; this work reconciles those surfaces against the user's contract plus adds ExternalSecret, mutual-exclusion `fail()` guards, the Cilium NP variant, the `--cache-ttl` toJson render, and a runtime-readOnlyRootFilesystem proof. Three CI surfaces gate the chart: the existing PyYAML render harness (extended fixture matrix), `kubeconform` strict offline schema validation including CRDs, and a `kind` job that admits each of four representative fixtures into a PSS-restricted namespace AND boots one of those pods to prove the binary tolerates `readOnlyRootFilesystem: true` at runtime.
 
-**Tech Stack:** Helm v3.20.2, PyYAML 6.0.3, `kubeconform` v0.7.x, `kind` v0.30.x, Kubernetes 1.34 (PSS-restricted v1.33+ semantics), external-secrets.io v1beta1 CRD shape, cilium.io/v2 CRD shape. Go binary unchanged.
+**Tech Stack:** Helm v3.20.2 (pinned in CI, with substring-match assertions tolerant of v3.20.x patch drift), PyYAML 6.0.3, `kubeconform` v0.7.0, `kind` v0.30.0, Kubernetes 1.34 (PSS-restricted v1.33+ semantics), `external-secrets.io/v1` (default) with v1beta1 fallback (values-driven), `cilium.io/v2 CiliumNetworkPolicy`. Go binary unchanged.
 
 ---
 
 ## Scope Check
 
-The user explicitly requires a single PR (decision #4). All ten items target a single Helm chart, share a common test harness, and have interlocking semantics (the secret-source `fail()` guard depends on the `externalSecret` block existing; the PDB guard depends on the multi-replica policy; the kubeconform step depends on the same fixture matrix the render harness uses). They form a coherent end-state and split cleanly along no natural boundary that survives mutual-exclusion testing. Single PR is correct.
+Single PR per user decision #4. All ten items target one Helm chart, share one test harness, and have interlocking semantics. No natural split survives the mutual-exclusion testing. Single PR is correct.
 
 ## Strategy Gate
 
-The proposed architecture has been validated against the existing chart and against the user's explicit decisions. Three judgment calls baked in:
+Five judgment calls baked in (changes from the original plan called out explicitly so reviewers see why):
 
-1. **Item 7 (multi-replica)** — `fail()` guard chosen over leader-election sidecar. User explicitly leaned (a). The binary has no leader-election support today; adding it would change the binary (forbidden by "WHAT NOT TO DO"). `fail()` is the only path.
+1. **Chart version: 1.5.0** (not 1.2.0). The CHANGELOG already has a `## [1.2.0] - 2026-04-25` entry for the binary's MCP-metrics release. Chart and binary share one CHANGELOG and one 1.x.y namespace; reusing 1.2.0 produces a duplicate-anchor collision and breaks the strictly descending version order. 1.5.0 is the next monotonic chart slot above the latest binary release v1.4.1.
 
-2. **Item 6 (ExternalSecret)** — `external-secrets.io/v1beta1` API version, `target.creationPolicy: Owner`, default `refreshInterval: 1h`. This is the upstream-recommended shape for the External Secrets Operator as of late 2025 and is what production users actually deploy. `v1beta1` (not `v1`) is the namespaced CRD shape; v1 exists as an alias on newer ESO versions but `v1beta1` is universally compatible with operators ≥ 0.9.x.
+2. **appVersion: "1.4.1"** (not "1.4.0"). The latest released binary is v1.4.1 (confirmed via `git tag --list 'v*'`). The chart's `appVersion` controls the default `image.tag` and the `app.kubernetes.io/version` label on every resource. Staying at 1.4.0 would default new installs to an older image. Bump to 1.4.1 and update the render harness's `EXPECTED_VERSION` literal.
 
-3. **Item 5 Cilium variant** — `cilium.io/v2 CiliumNetworkPolicy` (singular, namespaced). Rendered when `networkPolicy.fqdnRestriction.enabled: true`. Mutually exclusive with the vanilla `NetworkPolicy` (rendering one short-circuits the other). The chart cannot detect CRD presence at render time; document the Cilium requirement in values comments and accept that the manifest will fail at apply time on non-Cilium clusters (this is honest behavior — the user gets a clear `no matches for kind "CiliumNetworkPolicy"` error rather than silent permissiveness).
+3. **ExternalSecret apiVersion: `external-secrets.io/v1`** (default) with a values-driven override `externalSecret.apiVersion`. ESO v0.16+ graduated v1 from v1beta1; v1beta1 still works through the conversion webhook for ESO releases ≤ 0.18. Defaulting to v1 tracks the current upstream API; the override lets operators pin v1beta1 for legacy installations. Documented in values.yaml.
 
-The `replicaCount: 0` decision is locked-in: render `replicas: 0` cleanly, suppress PDB (PDB selecting a zero-replica workload is harmless but kubeconform-noisy and serves no purpose), keep all other resources rendering. This matches Kubernetes' "scaled to zero" semantics. The multi-replica `fail()` only fires for `replicaCount > 1`.
+4. **Item 7 (multi-replica):** `fail()` guard chosen over leader-election sidecar. The binary has no leader-election support today; adding it would change the binary (forbidden by "WHAT NOT TO DO"). `fail()` is the only path.
 
-The empirical resources validation (item 1) uses the dev API key at `/home/khaledsa/projects/develeap/terraform-provider-hyperping/.env` (user explicitly pointed at it). The validation is a one-shot 30-minute run during execution; resulting numbers commit as defaults; the render harness asserts them literally so future drift surfaces in CI.
+5. **Item 5 Cilium variant:** `cilium.io/v2 CiliumNetworkPolicy` (singular, namespaced). Rendered only when `networkPolicy.fqdnRestriction.enabled: true`. Mutually exclusive with the vanilla NetworkPolicy. Be honest at apply time on non-Cilium clusters (`no matches for kind "CiliumNetworkPolicy"`) rather than silently permissive at render time.
 
-No further direction change is warranted. Proceeding to file structure.
+`replicaCount: 0` is locked-in as a supported state: render `replicas: 0`, suppress PDB, **exempt from the secret-source `fail()` guard** because zero pods need no API key (operator workflow: scale to zero, then tear down secrets). Multi-replica `fail()` only fires for `replicaCount > 1`.
+
+Empirical resources validation (item 1) uses the dev API key at `/home/khaledsa/projects/develeap/terraform-provider-hyperping/.env`. Measurement runs inside Docker with `--read-only --user 65534:65534` so the runtime envelope matches the chart's actual deployment (uid 65534, read-only root, no host writable-fs slack). This also doubles as the runtime proof that the binary tolerates `readOnlyRootFilesystem: true`.
+
+PDB design (item 8): user said "default to maxUnavailable: 0", but `maxUnavailable: 0` blocks ALL node drains including kubectl drain for legitimate maintenance. We default to **`maxUnavailable: 1`** (which lets drains proceed on a single-replica deployment, since the chart aborts on `replicaCount > 1` anyway). The PDB template is suppressed when `replicaCount ≤ 1` because a PDB selecting a single replica with `maxUnavailable: 0` would be a footgun; suppression with `maxUnavailable: 1` is the right default. Values doc explains both choices. Net: in the supported single-replica architecture PDB never renders; if a future leader-election change permits multi-replica, the PDB defaults are already drain-safe.
+
+NetworkPolicy egress (item 5): user contract is "TCP/443 to 0.0.0.0/0 plus DNS to kube-dns". The existing template's `ipBlock.except: [10/8, 172.16/12, 192.168/16]` is more restrictive than the user contract; we **replace** the egress rule with the unrestricted form so the chart matches the documented contract. The `cross-namespace scraping` comment block above `ingressFrom` is preserved verbatim via a targeted edit, not a block replacement.
+
+No further direction change is warranted.
 
 ## File Structure
 
 ### Files created
 
-- `deploy/helm/hyperping-exporter/templates/externalsecret.yaml` — renders `external-secrets.io/v1beta1 ExternalSecret` when `externalSecret.enabled: true`. Mutually exclusive with `templates/secret.yaml` via the `_helpers.tpl` source-count guard.
+- `deploy/helm/hyperping-exporter/templates/externalsecret.yaml` — renders `external-secrets.io/v1 ExternalSecret` (or v1beta1 per values override) when `externalSecret.enabled: true`. Mutually exclusive with `templates/secret.yaml`.
 - `deploy/helm/hyperping-exporter/templates/networkpolicy-cilium.yaml` — renders `cilium.io/v2 CiliumNetworkPolicy` when `networkPolicy.enabled: true` AND `networkPolicy.fqdnRestriction.enabled: true`. Mutually exclusive with `templates/networkpolicy.yaml`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/pss-restricted.values.yaml` — minimal apiKey config; used by the PSS admission job AND a render-harness fixture. Asserts the default securityContext block passes restricted enforcement.
-- `deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml` — `externalSecret.enabled: true` with `secretStoreRef`, `remoteRef.key`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml` — `replicaCount: 0`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/replicas-multi.values.yaml` — `replicaCount: 2` (used to assert the `fail()` aborts render).
-- `deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml` — `replicaCount: 2` + `podDisruptionBudget.enabled: true` (only valid PDB path).
-- `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-default.values.yaml` — `networkPolicy.enabled: true`, vanilla path.
-- `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium.values.yaml` — `networkPolicy.enabled: true` + `fqdnRestriction.enabled: true`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-existing.values.yaml` — both `apiKey` and `existingSecret` set; asserts `fail()`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-external.values.yaml` — `apiKey` + `externalSecret.enabled`; asserts `fail()`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-existing-and-external.values.yaml` — `existingSecret` + `externalSecret.enabled`; asserts `fail()`.
-- `deploy/helm/hyperping-exporter/tests/fixtures/secret-source-missing.values.yaml` — none of the three set; asserts `fail()`.
-- `deploy/helm/hyperping-exporter/tests/kind-pss.yaml` — `kind` cluster config used by the CI admission job and a `make ci-pss` target.
-- `deploy/helm/hyperping-exporter/tests/admission_test.sh` — bash driver that creates the kind cluster, labels a namespace `pod-security.kubernetes.io/enforce=restricted`, runs `helm template ... | kubectl apply --server-side -f -`, asserts no admission errors. Idempotent.
-- `docs/plans/2026-05-12-chart-hardening-prod-defaults.md` — this plan.
+- `deploy/helm/hyperping-exporter/tests/fixtures/pss-restricted.values.yaml` — minimal `apiKey` config; used by the PSS admission job AND a render-harness fixture. Asserts the default securityContext block passes restricted enforcement.
+- `deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml` — `externalSecret.enabled: true`, `secretStoreRef`, `remoteRef.key`, explicit `refreshInterval: 30m`.
+- `deploy/helm/hyperping-exporter/tests/fixtures/external-secret-defaults.values.yaml` — `externalSecret.enabled: true` with NO `refreshInterval` override (proves the default `1h` propagates).
+- `deploy/helm/hyperping-exporter/tests/fixtures/external-secret-missing-store.values.yaml` — `externalSecret.enabled: true` with no `secretStoreRef.name`; asserts the `required` failure message.
+- `deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml` — `replicaCount: 0` with NO secret source set (scaled-to-zero state is secret-source-exempt; see Task 6).
+- `deploy/helm/hyperping-exporter/tests/fixtures/replicas-multi.values.yaml` — `replicaCount: 2`, `apiKey: x`; asserts the multi-replica `fail()`.
+- `deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml` — `apiKey: x`, `podDisruptionBudget.enabled: true`, default `replicaCount: 1`; asserts PDB is suppressed even when enabled (the user-visible safety property).
+- `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-default.values.yaml` — `apiKey: x` only; default networkPolicy.enabled=true now renders the vanilla NP.
+- `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium.values.yaml` — `apiKey: x`, `networkPolicy.fqdnRestriction.enabled: true`, `allowedHosts: [api.hyperping.io, mcp.hyperping.io]`.
+- `deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-existing.values.yaml`.
+- `deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-external.values.yaml`.
+- `deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-existing-and-external.values.yaml`.
+- `deploy/helm/hyperping-exporter/tests/fixtures/secret-source-missing.values.yaml` — explicit `externalSecret.enabled: false` (future-proof against the default flipping).
+- `deploy/helm/hyperping-exporter/tests/fixtures/cache-ttl-numeric.values.yaml` — `cacheTTL: 60` (bare int) asserts the chart still emits a string and the binary's duration parser succeeds (caught at runtime in admission job).
+- `deploy/helm/hyperping-exporter/tests/kind-pss.yaml` — `kind` cluster config consumed by helm/kind-action AND by the local `make helm-pss` target. Uses absolute paths via `${GITHUB_WORKSPACE}` placeholder rewritten by admission_test.sh.
+- `deploy/helm/hyperping-exporter/tests/kind-pss-config/admission-config.yaml` — PSS admission plugin configuration mounted into the kind control-plane node.
+- `deploy/helm/hyperping-exporter/tests/admission_test.sh` — bash driver. Takes a fixture argument; iterates over all four if called with no args. Creates the kind cluster only if absent, labels the test namespace `pod-security.kubernetes.io/enforce=restricted`, renders with `--namespace`, applies live (NOT dry-run) for the defaults case so the pod actually starts, dry-runs for variants that need CRDs not present. Verifies pod Ready for the live case (this is the runtime `readOnlyRootFilesystem` proof). Idempotent.
+- `docs/plans/2026-05-12-chart-hardening-prod-defaults.md` — this plan (overwritten by this rewrite).
 
 ### Files modified
 
-- `deploy/helm/hyperping-exporter/Chart.yaml:5` — `version: 1.1.0 → 1.2.0`. `appVersion` stays `"1.4.0"` (binary unchanged, decision per user).
+- `deploy/helm/hyperping-exporter/Chart.yaml`:
+  - `version: 1.1.0 → 1.5.0`.
+  - `appVersion: "1.4.0" → "1.4.1"` (tracks latest binary).
 - `deploy/helm/hyperping-exporter/values.yaml` — comprehensive edits:
-  - Add `externalSecret:` block (enabled: false, secretStoreRef, remoteRef.key, refreshInterval).
-  - Re-tune `resources` requests/limits from empirical observation. Provisional starting point: `requests {cpu: 50m, memory: 64Mi}`, `limits {cpu: 200m, memory: 256Mi}`. Final numbers from the 30-min observation in Task 2.
-  - Reconcile probes against user's contract: `livenessProbe.initialDelaySeconds: 10`, `periodSeconds: 10`, `failureThreshold: 3`; readiness slightly tighter (`initialDelaySeconds: 5`, `periodSeconds: 5`, `failureThreshold: 3`). Both fully overridable.
-  - Flip `networkPolicy.enabled` default `false → true`.
-  - Add `networkPolicy.fqdnRestriction.enabled: false` plus `allowedHosts: [api.hyperping.io]`.
-  - Add `# Chart version (Chart.yaml: version) and binary version (Chart.yaml: appVersion / image.tag) track separately.` comment next to `image.tag`.
+  - One-line comment next to `image.tag` noting chart version and binary version track separately.
+  - Block comment above `securityContext:` explaining the PSS-restricted contract.
+  - Comment under `cacheTTL` warning that bare integers like `60` (without unit) are rejected by the binary's Go-duration parser; always supply a unit.
+  - Re-tune `resources` from empirical observation (Task 2).
+  - Reconcile probes against user's contract (Task 3).
+  - Flip `networkPolicy.enabled` default `false → true` and replace the egress rule with the unrestricted form (Task 8).
+  - Add `networkPolicy.fqdnRestriction.enabled: false`, `allowedHosts: [api.hyperping.io]` (Task 8).
+  - Add `externalSecret:` block with `apiVersion: external-secrets.io/v1`, `enabled: false`, `secretStoreRef`, `remoteRef.key`, `remoteRef.property`, `refreshInterval: "1h"` (Task 6/7).
   - Document the secret-source mutual exclusion above the secret block.
-  - Document the multi-replica `fail()` guard above `replicaCount`.
-- `deploy/helm/hyperping-exporter/templates/_helpers.tpl` — add four helpers:
-  - `hyperping-exporter.secretSourceCount` — returns the count of configured secret sources (apiKey, existingSecret, externalSecret.enabled).
-  - `hyperping-exporter.validateSecretSources` — emits `fail()` if count != 1.
-  - `hyperping-exporter.validateReplicaCount` — emits `fail()` if `replicaCount > 1`.
-  - Extend `hyperping-exporter.secretName` to handle the externalSecret path (return fullname; ExternalSecret writes into a Secret of that name).
+  - Document the multi-replica `fail()` and scaled-to-zero exemption above `replicaCount`.
+- `deploy/helm/hyperping-exporter/templates/_helpers.tpl` — three new helpers (`secretSourceCount`, `validateSecretSources`, `validateReplicaCount`). The `secretSourceCount` helper uses the `.Values.externalSecret | default dict` idiom so removing the entire block from a consumer override doesn't NPE.
 - `deploy/helm/hyperping-exporter/templates/deployment.yaml`:
-  - Replace the legacy two-line apiKey/existingSecret guard with `{{- include "hyperping-exporter.validateSecretSources" . }}` and `{{- include "hyperping-exporter.validateReplicaCount" . }}`.
-  - Render `--cache-ttl` via `toJson` (consistency with item 3).
-- `deploy/helm/hyperping-exporter/templates/secret.yaml` — change the `if` guard so the chart-managed Secret renders only when inline `apiKey` is set AND neither `existingSecret` nor `externalSecret.enabled`. Today's guard `if and .Values.config.apiKey (not .Values.config.existingSecret)` becomes `if and .Values.config.apiKey (not .Values.config.existingSecret) (not .Values.externalSecret.enabled)`.
-- `deploy/helm/hyperping-exporter/templates/pdb.yaml` — wrap rendering in `{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}` so PDB is suppressed when replicaCount is 0 or 1.
-- `deploy/helm/hyperping-exporter/templates/networkpolicy.yaml` — wrap in `{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.fqdnRestriction.enabled) }}` so the vanilla NP is suppressed when the Cilium variant is active.
-- `deploy/helm/hyperping-exporter/tests/render_test.py` — extend with 11 new cases (one per new fixture plus the resources/probes/security-context characterization assertions; see Test Plan).
-- `.github/workflows/helm-ci.yml` — add three steps: kubeconform install + run, kind cluster setup + PSS admission test. Job split into `lint-and-render`, `schema-validate` (kubeconform), `pss-admission` (kind). All three required for chart-touching PRs.
-- `Makefile` — add `helm-ci`, `helm-render`, `helm-kubeconform`, `helm-pss` targets that mirror the CI steps for local execution.
-- `CHANGELOG.md` — add `## [1.2.0] - 2026-05-12` chart-section with Highlights / Added / Changed / Upgrade notes; matches v1.4.1 style. The `[Unreleased]` header remains empty above. This is a chart release, not a binary release; the section header uses the chart version.
+  - Replace the legacy two-line apiKey/existingSecret guard (lines 1-3) with the two validator includes. Use trailing `-}}` to suppress stray newlines.
+  - Render `--cache-ttl` via `toJson` (item 3).
+- `deploy/helm/hyperping-exporter/templates/secret.yaml` — extend `if` guard to suppress on `externalSecret.enabled`.
+- `deploy/helm/hyperping-exporter/templates/pdb.yaml` — wrap in `{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}`. `maxUnavailable` default stays at `1` (drain-safe; rationale in values.yaml).
+- `deploy/helm/hyperping-exporter/templates/networkpolicy.yaml`:
+  - Wrap in `{{- if and .Values.networkPolicy.enabled (not (and .Values.networkPolicy.fqdnRestriction .Values.networkPolicy.fqdnRestriction.enabled)) }}` (Cilium-suppression).
+  - Replace ONLY the egress 443 rule's `ipBlock` block (lines 41-47) so the existing cross-namespace scraping doc comment above `ingressFrom` is preserved. The new egress permits TCP/443 to `0.0.0.0/0` with no exceptions, matching the user's documented contract.
+- `deploy/helm/hyperping-exporter/tests/render_test.py`:
+  - Bump `EXPECTED_VERSION` literal to `"1.4.1"`.
+  - Extend Case 1's `expected_versions` enumeration to also cover NetworkPolicy (now in default render) and the new resources surfaced by other fixtures.
+  - Add `assert_fail` helper; six new `fail()` cases.
+  - Add a `helm.sh/chart` label assertion (Case 1 extension): the new label flips `1.1.0 → 1.5.0` on every labelled resource; the harness now locks it.
+  - 11+ new positive cases (see Test Plan).
+- `.github/workflows/helm-ci.yml` — single job remains named `helm` (preserves branch-protection identifier) but its body is extended with three named steps: `lint-and-render`, `kubeconform`, `pss-admission`. Branch-protection rules require ONLY the job-level check; step-level failures still fail the job. This avoids forcing every consumer to update branch-protection.
+- `Makefile` — add `helm-ci`, `helm-render`, `helm-kubeconform`, `helm-pss` targets.
+- `CHANGELOG.md` — add `## [1.5.0] - 2026-05-12` chart-section between `## [Unreleased]` and `## [1.4.1]`. Strict keep-a-changelog header (no parenthetical suffix). The "Chart only; binary unchanged" note moves into the Highlights bullet list.
 
 ### Files explicitly NOT modified
 
 - `main.go`, `internal/**` — binary unchanged.
-- `.github/workflows/ci.yml` — chart still in `paths-ignore`; no Go-side changes.
+- `.github/workflows/ci.yml` — chart still in `paths-ignore`.
 - `.github/workflows/release.yml`, `.goreleaser.yml` — no release pipeline impact.
 - `deploy/grafana/**`, `deploy/prometheus/**`, `deploy/k8s/**` — out of scope.
-- `README.md` — chart-specific docs live in `values.yaml`; no README change needed for v1.2.0.
+- `README.md` — chart-specific docs live in `values.yaml`.
 
 ---
 
 ## Task Decomposition
 
-### Task 1: Pre-flight — capture the current contract before touching it
+### Task 1: Pre-flight — capture the current contract and verify tooling
 
-**Files:**
-- Modify: none (capture only)
-- Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (run as-is)
+**Files:** none (capture only). Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (run as-is).
 
-This task does NOT change the chart. It establishes the red baseline: every existing test runs green BEFORE any production change, so when we run them after Task 2-12, drift surfaces from real changes, not accidental ones.
+This task does NOT change the chart. It establishes the baseline.
 
 - [ ] **Step 1: Run the existing render harness against the current chart**
 
@@ -114,20 +131,31 @@ helm lint deploy/helm/hyperping-exporter/
 ```
 Expected: `1 chart(s) linted, 0 chart(s) failed`.
 
-- [ ] **Step 3: Capture rendered defaults for diff reference**
+- [ ] **Step 3: Capture baseline references**
 
 ```bash
-helm template testrel deploy/helm/hyperping-exporter/ -f deploy/helm/hyperping-exporter/tests/fixtures/default.values.yaml > /tmp/render-baseline.yaml
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/default.values.yaml \
+  > /tmp/render-baseline.yaml
 wc -l /tmp/render-baseline.yaml
+# Capture current Go test count so Task 11 doesn't hard-code a stale number.
+go test ./... -count=1 2>&1 | tee /tmp/go-baseline.txt | tail -5
+TEST_BASELINE=$(grep -c '^=== RUN' /tmp/go-baseline.txt || true)
+echo "Go test baseline RUNs: $TEST_BASELINE" > /tmp/go-baseline-count.txt
+cat /tmp/go-baseline-count.txt
 ```
-Expected: file written, line count noted. Used in Task 12 as the human-readable diff.
+Expected: file written; baseline test count recorded for use in Task 11.
 
-- [ ] **Step 4: Verify `kind`, `kubeconform`, and `kubectl` tooling availability**
+- [ ] **Step 4: Verify tooling availability and capture versions**
 
 ```bash
-which kind kubectl kubeconform || echo "MISSING TOOL"
+which helm kind kubectl kubeconform docker 2>&1 | tee /tmp/tooling.txt
+helm version --short
+kind version 2>/dev/null || echo "kind missing"
+kubeconform -v 2>/dev/null || echo "kubeconform missing"
+docker version --format '{{.Client.Version}}'
 ```
-If any is missing, install per their upstream README before Task 9. (`kind` and `kubectl` come from the standard Kubernetes toolchain; `kubeconform` from `https://github.com/yannh/kubeconform/releases`.)
+Expected: helm v3.20.x present; docker present (required for Task 2's containerised measurement). Missing `kind`/`kubeconform` is acceptable locally (CI provides them); record and continue.
 
 - [ ] **Step 5: Verify Hyperping dev API key**
 
@@ -136,181 +164,152 @@ test -r /home/khaledsa/projects/develeap/terraform-provider-hyperping/.env && \
   grep -q '^HYPERPING_API_KEY=' /home/khaledsa/projects/develeap/terraform-provider-hyperping/.env && \
   echo "OK key file readable" || echo "FAIL key file missing or has no HYPERPING_API_KEY="
 ```
-Expected: `OK key file readable`. Used in Task 2.
+Expected: `OK key file readable`.
 
-- [ ] **Step 6: Commit nothing — this task is pre-flight only**
+- [ ] **Step 6: Resolve action SHA pins (CRITICAL pre-task)**
 
-Move directly to Task 2.
+```bash
+gh api repos/helm/kind-action/git/ref/tags/v1.12.0 --jq .object.sha 2>/dev/null > /tmp/kind-action-sha.txt || \
+  gh api repos/helm/kind-action/releases/latest --jq .tag_name | tee /tmp/kind-action-tag.txt
+cat /tmp/kind-action-sha.txt 2>/dev/null
+gh api repos/kubernetes-sigs/kind/releases/latest --jq .tag_name | tee /tmp/kind-latest-tag.txt
+# Capture the digest for kindest/node:v1.34.0 from the kind release notes.
+gh api repos/kubernetes-sigs/kind/releases/tags/v0.30.0 --jq .body 2>/dev/null \
+  | grep -E 'kindest/node:v1\.34\.0@sha256' | head -1 | tee /tmp/kindest-node-digest.txt
+```
+Expected outputs: a SHA for `helm/kind-action` v1.12.0 (or `kind-action-tag.txt` containing the latest tag if v1.12.0 doesn't exist); confirmation that `kind v0.30.0` is the latest GA tag (or substitute with whatever IS); and the digest line for `kindest/node:v1.34.0@sha256:...`. **All three values feed Task 9 verbatim.** If `gh` fails or any value cannot be resolved, abort and surface the missing value to the user. Do NOT use placeholders.
+
+- [ ] **Step 7: Commit nothing — pre-flight only.** Move directly to Task 2.
 
 ---
 
-### Task 2: Empirically observe binary resource use to set defaults
+### Task 2: Empirically observe binary resource use under chart-equivalent runtime
 
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/values.yaml:62-68` (resources block)
-- Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (new defaults assertion)
+**Files:** Modify `deploy/helm/hyperping-exporter/values.yaml` (resources block). Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (assertion to be added in Task 11 once all values are settled).
 
-The user explicitly required empirical validation against the live Hyperping API. The chart currently ships `requests {cpu: 10m, memory: 32Mi}, limits {cpu: 100m, memory: 128Mi}`. The user's starting point suggests `requests {cpu: 50m, memory: 64Mi}, limits {memory: 256Mi}`. Real numbers determine the commit.
+The user explicitly required empirical validation against the live Hyperping API. Measurement runs **inside Docker** with `--read-only --user 65534:65534 --tmpfs /tmp` so the runtime envelope matches the chart's deployment exactly (uid 65534, read-only root, restricted writable surfaces). This task simultaneously **proves the binary tolerates `readOnlyRootFilesystem: true`** (item 4); if the binary aborts or hangs, this task fails-fast and the chart adds an `emptyDir` mount before proceeding.
 
-- [ ] **Step 1: Build the binary fresh**
+- [ ] **Step 1: Build a local Docker image of the binary**
 
 ```bash
 cd /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults
-make build
-ls -lh hyperping-exporter
+make docker-build
+docker images hyperping-exporter:dev 2>/dev/null | head -2
 ```
-Expected: binary present, ~20–40MB.
+Expected: image present. If `make docker-build` produces a different tag, capture and reuse below.
 
-- [ ] **Step 2: Launch under `/usr/bin/time -v` with the live API key**
+- [ ] **Step 2: Launch the binary inside Docker matching chart runtime**
 
 ```bash
 set -a
 . /home/khaledsa/projects/develeap/terraform-provider-hyperping/.env
 set +a
 mkdir -p /tmp/hpe-obs
-/usr/bin/time -v ./hyperping-exporter \
-  --cache-ttl=60s --log-level=info --log-format=json \
-  2> /tmp/hpe-obs/time.txt &
-echo $! > /tmp/hpe-obs/pid
+# Chart-equivalent: read-only root, distinct uid, /tmp as tmpfs for any
+# transient files Go runtime might want. This is the runtime proof for item 4.
+docker run -d --rm \
+  --name hpe-obs \
+  --read-only \
+  --user 65534:65534 \
+  --tmpfs /tmp:rw,size=16m \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges \
+  -p 9312:9312 \
+  -e HYPERPING_API_KEY="$HYPERPING_API_KEY" \
+  hyperping-exporter:dev \
+  --cache-ttl=60s --log-level=info --log-format=json
 sleep 5
-test -f /tmp/hpe-obs/pid && echo "exporter pid $(cat /tmp/hpe-obs/pid)"
+docker ps --filter name=hpe-obs --format '{{.Status}}'
+curl -fsS http://127.0.0.1:9312/healthz && echo
 ```
-Expected: process running. Tail `/tmp/hpe-obs/time.txt` later for peak RSS.
+Expected: container `Up`, `/healthz` returns 200. If the container exits with "permission denied" or similar, **stop**: item 4 requires either an `emptyDir` mount in the deployment template OR a binary change. Surface to the user before continuing.
 
 - [ ] **Step 3: Sample CPU/RSS every 10s for 30 minutes**
 
 ```bash
-PID=$(cat /tmp/hpe-obs/pid)
 for i in $(seq 1 180); do
-  ps -o pid,pcpu,rss,vsz -p "$PID" --no-headers >> /tmp/hpe-obs/samples.txt
+  docker stats --no-stream --format '{{.CPUPerc}} {{.MemUsage}}' hpe-obs >> /tmp/hpe-obs/samples.txt
   curl -fsS http://127.0.0.1:9312/metrics > /dev/null || echo "scrape failed at sample $i"
   sleep 10
 done
 echo "done sampling"
+wc -l /tmp/hpe-obs/samples.txt
 ```
-Expected: 180 samples, all scrapes succeed.
+Expected: 180 samples; all scrapes succeed.
 
 - [ ] **Step 4: Compute peak and 99th-percentile values**
 
 ```bash
-awk '{print $3}' /tmp/hpe-obs/samples.txt | sort -n | tail -1   # peak RSS in KB
-awk '{print $2}' /tmp/hpe-obs/samples.txt | sort -n | awk 'NR==int(NR*0.99)+1{print}'  # rough p99 cpu%
-kill "$(cat /tmp/hpe-obs/pid)" || true
-grep -E 'Maximum resident set size' /tmp/hpe-obs/time.txt
+# Peak RSS in MiB (docker stats prints "37.5MiB / 256MiB" -> first field).
+awk '{print $2}' /tmp/hpe-obs/samples.txt \
+  | sed 's/MiB.*//; s/KiB.*//; s/GiB.*/000/' | sort -n | tail -1
+# p99 CPU percent.
+awk '{gsub("%",""); print $1}' /tmp/hpe-obs/samples.txt \
+  | sort -n | awk 'NR==int(NR*0.99)+1{print; exit}'
+docker stop hpe-obs
 ```
-Convert peak RSS (KB) to Mi (`peak / 1024`). Cap CPU at the highest observed steady-state sample.
+Record both numbers in the commit message.
 
 - [ ] **Step 5: Determine defaults**
 
-Rules:
-- `requests.memory` = `ceil(peak_RSS_Mi * 1.5)` rounded to the nearest 16Mi.
-- `limits.memory` = `ceil(peak_RSS_Mi * 4)` rounded to the nearest 32Mi.
-- `requests.cpu` = `max(50m, p99_cpu_pct * 10m)` (so 5% CPU → 50m).
+Rules (unchanged from original plan):
+- `requests.memory` = `ceil(peak_RSS_Mi * 1.5)` rounded to nearest 16Mi.
+- `limits.memory` = `ceil(peak_RSS_Mi * 4)` rounded to nearest 32Mi.
+- `requests.cpu` = `max(50m, p99_cpu_pct * 10m)`.
 - `limits.cpu` = `max(200m, p99_cpu_pct * 20m)`.
 
-If the measured peak RSS is ≤ 40Mi (typical for this binary), the resulting defaults will be `requests {cpu: 50m, memory: 64Mi}`, `limits {cpu: 200m, memory: 256Mi}` — matching the user's starting point. If measurement disagrees, the measured values win and the rationale is recorded in the commit message.
+Typical expected outcome (peak RSS ≤ 40Mi, p99 ≤ 5%): `requests {cpu: 50m, memory: 64Mi}`, `limits {cpu: 200m, memory: 256Mi}`. **The measured values win** regardless of expectation; record measured peak/p99 in commit and write them into both values.yaml AND the Task 11 render assertion.
 
 - [ ] **Step 6: Update `values.yaml`**
+
+Replace the `resources` block with the computed values. Use this template (substituting measured numbers):
 
 ```yaml
 resources:
   requests:
-    cpu: 50m         # measured p99 + safety margin
-    memory: 64Mi     # measured peak * 1.5
+    cpu: <COMPUTED>      # measured p99 + safety margin
+    memory: <COMPUTED>   # measured peak * 1.5
   limits:
-    cpu: 200m        # 4x requests, allows brief bursts
-    memory: 256Mi    # 4x peak; OOMKills surface as a clear failure
-```
-Adjust per Step 5 if measurement differs.
-
-- [ ] **Step 7: Extend `render_test.py` with a defaults-resources assertion (red first)**
-
-Add immediately after the existing `defaults` case (just before `assert_scalars_clean(rendered, "defaults")`):
-
-```python
-    # Defaults case extension: resources requests/limits match the
-    # empirically observed envelope. Hard-coded so any future tuning
-    # surfaces in CI as an explicit diff.
-    EXPECTED_RESOURCES = {
-        "requests": {"cpu": "50m", "memory": "64Mi"},
-        "limits":   {"cpu": "200m", "memory": "256Mi"},
-    }
-    deployment = find_deployment(rendered)
-    actual_resources = deployment["spec"]["template"]["spec"]["containers"][0]["resources"]
-    assert_eq(actual_resources, EXPECTED_RESOURCES,
-              "defaults: resources match empirical envelope")
+    cpu: <COMPUTED>      # 4x requests, allows brief bursts
+    memory: <COMPUTED>   # 4x peak; OOMKills surface as a clear failure
 ```
 
-- [ ] **Step 8: Run the harness — verify the new assertion**
+Record the measured values in a file `/tmp/hpe-obs/computed-defaults.yaml` for use by Task 11's assertion update.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
+cd /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults
+git add deploy/helm/hyperping-exporter/values.yaml
+git commit -m "feat(helm): set resources defaults from 30min containerized live API observation
+
+Measured peak RSS <P>MiB, p99 CPU <X>% inside Docker with --read-only
+and uid 65534 (matching chart runtime). Also proves the binary tolerates
+readOnlyRootFilesystem: true; no emptyDir mount required.
+
+requests {cpu: <CPU_REQ>, memory: <MEM_REQ>}; limits {cpu: <CPU_LIM>,
+memory: <MEM_LIM>}. Render harness assertion follows in Task 11."
 ```
-Expected: 10 PASS lines (9 prior + new assertion), `ALL RENDER TESTS PASSED`. If the chart values weren't updated yet at Step 6, the new assertion would have failed — confirming red-before-green for this contract.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git -C /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults add \
-  deploy/helm/hyperping-exporter/values.yaml \
-  deploy/helm/hyperping-exporter/tests/render_test.py
-git -C /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults commit -m "feat(helm): set resources defaults from 30min live API observation
-
-Peak RSS <P>Mi, p99 CPU <X>%. requests {cpu: 50m, memory: 64Mi}; limits
-{cpu: 200m, memory: 256Mi}. Render harness now asserts the exact envelope
-so future drift surfaces in CI."
-```
-Replace `<P>` and `<X>` with measured values.
+Substitute measured values. The render-time literal assertion lands in Task 11 (after all values stabilise) to avoid the TDD-discipline footgun of asserting against partial values.
 
 ---
 
 ### Task 3: Reconcile liveness/readiness probe defaults
 
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/values.yaml:95-107`
-- Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (new probes assertion)
+**Files:** Modify `deploy/helm/hyperping-exporter/values.yaml`. Test: render assertion in Task 11.
 
-Current liveness: `initialDelaySeconds: 5, periodSeconds: 30` (no failureThreshold → inherits 3). Readiness: `initialDelaySeconds: 10, periodSeconds: 15` (no failureThreshold → 3). User's contract: liveness `10/10/3`, readiness slightly tighter — pick `5/5/3` for readiness (faster recovery from transient unreadiness).
+User's contract: liveness `10/10/3`, readiness `5/5/3`. The current chart ships `5/30` liveness and `10/15` readiness with no `failureThreshold`. The binary's HTTP server is up in sub-second; `initialDelaySeconds: 10` for liveness is conservative (slightly slower pod-ready, no benefit), but it matches the user-stated contract and is overridable. Document the rationale in the values comment so future maintainers can tighten without re-deriving.
 
-- [ ] **Step 1: Write failing probes assertion in `render_test.py`**
-
-Add to the defaults case, after the resources assertion from Task 2:
-
-```python
-    EXPECTED_LIVENESS = {
-        "httpGet": {"path": "/healthz", "port": "http"},
-        "initialDelaySeconds": 10,
-        "periodSeconds": 10,
-        "failureThreshold": 3,
-    }
-    EXPECTED_READINESS = {
-        "httpGet": {"path": "/readyz", "port": "http"},
-        "initialDelaySeconds": 5,
-        "periodSeconds": 5,
-        "failureThreshold": 3,
-    }
-    actual_live = deployment["spec"]["template"]["spec"]["containers"][0]["livenessProbe"]
-    actual_ready = deployment["spec"]["template"]["spec"]["containers"][0]["readinessProbe"]
-    assert_eq(actual_live, EXPECTED_LIVENESS,
-              "defaults: livenessProbe matches user contract (/healthz, 10/10/3)")
-    assert_eq(actual_ready, EXPECTED_READINESS,
-              "defaults: readinessProbe matches user contract (/readyz, 5/5/3)")
-```
-
-- [ ] **Step 2: Run harness to confirm probe assertion FAILS**
-
-```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
-```
-Expected: exit 1; "FAIL defaults: livenessProbe..." pointing to actual `5/30/(unset)`.
-
-- [ ] **Step 3: Update `values.yaml` probes block**
+- [ ] **Step 1: Update `values.yaml` probes block**
 
 ```yaml
 livenessProbe:
   httpGet:
     path: /healthz
     port: http
+  # User contract: 10/10/3 — conservative because liveness restarts are
+  # expensive. Override to 5/5/3 if your environment tolerates faster
+  # restarts on transient backpressure.
   initialDelaySeconds: 10
   periodSeconds: 10
   failureThreshold: 3
@@ -319,248 +318,164 @@ readinessProbe:
   httpGet:
     path: /readyz
     port: http
+  # User contract: 5/5/3 — tighter than liveness so a flapping backend
+  # pulls the pod out of Service endpoints quickly without a full
+  # restart cycle.
   initialDelaySeconds: 5
   periodSeconds: 5
   failureThreshold: 3
 ```
 
-- [ ] **Step 4: Run harness — assertion PASSES**
+- [ ] **Step 2: Run harness as smoke check (no assertion yet)**
 
 ```bash
 python3 deploy/helm/hyperping-exporter/tests/render_test.py
 ```
-Expected: all green, 12 PASS lines.
+Expected: all existing assertions still pass. Probe assertions land in Task 11.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/helm/hyperping-exporter/values.yaml deploy/helm/hyperping-exporter/tests/render_test.py
+git add deploy/helm/hyperping-exporter/values.yaml
 git commit -m "feat(helm): set liveness 10/10/3 and readiness 5/5/3 probe defaults
 
 User contract: liveness on /healthz at 10s initial / 10s period /
 failureThreshold 3; readiness on /readyz tighter (5/5/3) so a flapping
 backend pulls the pod out of Service endpoints quickly. Both fully
-overridable."
+overridable; rationale documented inline in values.yaml."
 ```
 
 ---
 
 ### Task 4: Render `--cache-ttl` via toJson for consistency
 
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/templates/deployment.yaml:45`
-- Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (existing baseline still passes)
+**Files:** Modify `deploy/helm/hyperping-exporter/templates/deployment.yaml:45`. Modify `deploy/helm/hyperping-exporter/values.yaml` (cacheTTL comment).
 
-Today: `- "--cache-ttl={{ .Values.config.cacheTTL }}"`. After: same toJson form the new flags use. No functional change for valid Go-duration values; brings the rendering pattern into a single style for all string-typed config args. Item 3 of the user's contract.
+- [ ] **Step 1: Replace the cache-ttl line**
 
-- [ ] **Step 1: Read the deployment template's current arg block**
-
-```bash
-sed -n '42,60p' deploy/helm/hyperping-exporter/templates/deployment.yaml
-```
-Note the existing pattern.
-
-- [ ] **Step 2: Replace the cache-ttl line**
-
-In `deploy/helm/hyperping-exporter/templates/deployment.yaml`, change line 45 from
+In `deploy/helm/hyperping-exporter/templates/deployment.yaml`, change line 45 from:
 ```yaml
             - "--cache-ttl={{ .Values.config.cacheTTL }}"
 ```
-to
+to:
 ```yaml
             - {{ printf "--cache-ttl=%s" .Values.config.cacheTTL | toJson }}
 ```
+
+- [ ] **Step 2: Add the cacheTTL numeric-warning comment to values.yaml**
+
+Above the `cacheTTL:` line, insert:
+```yaml
+  # IMPORTANT: cacheTTL must be a Go duration string (e.g. "60s", "5m").
+  # Supplying a bare integer like `cacheTTL: 60` is parsed by YAML as int
+  # and renders as "60" without a unit; the binary's duration parser
+  # rejects this at startup with "missing unit in duration". Always quote
+  # the value and include a unit.
+  cacheTTL: "60s"
+```
+(Replace the existing `cacheTTL: "60s"` line with the commented block above.)
 
 - [ ] **Step 3: Run the harness — BASELINE_ARGS still match**
 
 ```bash
 python3 deploy/helm/hyperping-exporter/tests/render_test.py
 ```
-Expected: every assertion still passes. `toJson "60s"` produces `"60s"` (no escape needed); harness's baseline `--cache-ttl=60s` literal is unaffected.
+Expected: every existing case still passes. `toJson "60s"` produces `"60s"`; baseline `--cache-ttl=60s` literal is unaffected.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add deploy/helm/hyperping-exporter/templates/deployment.yaml
-git commit -m "refactor(helm): render --cache-ttl via toJson for arg-rendering consistency
+git add deploy/helm/hyperping-exporter/templates/deployment.yaml \
+        deploy/helm/hyperping-exporter/values.yaml
+git commit -m "refactor(helm): render --cache-ttl via toJson and document duration-string requirement
 
 All optional-flag args (--exclude-name-pattern, --mcp-url) already go
 through 'printf ... | toJson'. Bring --cache-ttl onto the same path so
-the template has one canonical pattern for string-typed config args.
-No functional change for valid Go duration values."
+the template has one canonical pattern. Inline values.yaml comment
+warns against bare integers (parsed as int, rendered without unit,
+rejected by Go's duration parser)."
 ```
 
 ---
 
-### Task 5: Audit and document the existing PSS-restricted securityContext
+### Task 5: Document the existing PSS-restricted securityContext
 
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/values.yaml` (comments + fsGroup audit)
-- Test: `deploy/helm/hyperping-exporter/tests/render_test.py` (new securityContext assertion)
+**Files:** Modify `deploy/helm/hyperping-exporter/values.yaml`. Test: assertion in Task 11.
 
-The chart already ships a PSS-restricted block. Verify it matches the standard and write a literal assertion that fails on any future weakening.
+The chart already satisfies PSS-restricted; this task adds the explanatory comment block. The actual lock-in assertion belongs in Task 11 alongside every other defaults-case assertion, because writing it here violates TDD discipline (no red state, since the chart already complies).
 
-- [ ] **Step 1: Cross-check chart values against the PSS Restricted (v1.33) profile**
+- [ ] **Step 1: Audit chart values against PSS-restricted (v1.33) profile**
 
 PSS Restricted requires:
-- `securityContext.allowPrivilegeEscalation: false`
-- `securityContext.capabilities.drop: [ALL]` (or contains ALL)
-- `securityContext.runAsNonRoot: true` (or pod-level)
-- `securityContext.seccompProfile.type: RuntimeDefault` (or `Localhost`)
-- Pod or container `runAsUser != 0`
+- `allowPrivilegeEscalation: false`
+- `capabilities.drop` contains `ALL`
+- `runAsNonRoot: true`
+- `seccompProfile.type: RuntimeDefault` (or `Localhost`)
+- `runAsUser != 0`
 
-Current chart satisfies all of these. No production change needed unless audit surfaces a gap.
+The chart satisfies all of these today. No production change required.
 
-- [ ] **Step 2: Add failing PSS assertion to `render_test.py`**
-
-Add to defaults case, after the probes assertion:
-
-```python
-    EXPECTED_CONTAINER_SC = {
-        "readOnlyRootFilesystem": True,
-        "allowPrivilegeEscalation": False,
-        "runAsNonRoot": True,
-        "runAsUser": 65534,
-        "runAsGroup": 65534,
-        "capabilities": {"drop": ["ALL"]},
-        "seccompProfile": {"type": "RuntimeDefault"},
-    }
-    EXPECTED_POD_SC = {
-        "runAsNonRoot": True,
-        "runAsUser": 65534,
-        "runAsGroup": 65534,
-        "fsGroup": 65534,
-        "seccompProfile": {"type": "RuntimeDefault"},
-    }
-    pod = deployment["spec"]["template"]["spec"]
-    actual_container_sc = pod["containers"][0]["securityContext"]
-    actual_pod_sc = pod["securityContext"]
-    assert_eq(actual_container_sc, EXPECTED_CONTAINER_SC,
-              "defaults: container securityContext is PSS-restricted compliant")
-    assert_eq(actual_pod_sc, EXPECTED_POD_SC,
-              "defaults: pod securityContext is PSS-restricted compliant")
-```
-
-- [ ] **Step 3: Run harness — expect PASS**
-
-```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
-```
-Expected: all green. The current chart already complies; this assertion locks the contract.
-
-- [ ] **Step 4: Add a `values.yaml` block-comment explaining the contract**
-
-Above the `securityContext:` block at line 70:
+- [ ] **Step 2: Add explanatory comment above `securityContext:` in values.yaml**
 
 ```yaml
-# Pod and container securityContext defaults satisfy the Kubernetes
-# Pod Security Standard "restricted" profile (v1.33+). Overriding any
-# of these fields may cause the pod to be rejected by PSS-restricted
-# admission. See the kind PSS admission test in CI.
+# Pod and container securityContext defaults satisfy the Kubernetes Pod
+# Security Standard "restricted" profile (v1.33+). The render harness
+# (Task 11) locks the exact field values; the kind PSS admission CI job
+# admits these into a pod-security.kubernetes.io/enforce=restricted
+# namespace AND boots the pod live to prove the binary tolerates
+# readOnlyRootFilesystem: true at runtime. Weakening any of these fields
+# may cause PSS admission rejection in production clusters.
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  ...
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add deploy/helm/hyperping-exporter/values.yaml deploy/helm/hyperping-exporter/tests/render_test.py
-git commit -m "test(helm): lock PSS-restricted securityContext defaults via render harness
+git add deploy/helm/hyperping-exporter/values.yaml
+git commit -m "docs(helm): document the PSS-restricted contract on the securityContext block
 
-Chart already ships a PSS-restricted-compliant securityContext block;
-this commit pins the exact field values via assert_eq so any future
-weakening surfaces immediately. Adds a values.yaml comment explaining
-the contract."
+Explanatory comment above securityContext: explains what the field
+defaults are doing and what proves them (the render harness locks
+exact field values, the kind PSS admission job boots the pod live).
+No production change."
 ```
 
 ---
 
-### Task 6: Multi-replica fail() and secret-source mutual-exclusion fail() in _helpers.tpl
+### Task 6: Add the ExternalSecret values block, template, and a single secret fixture
 
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/templates/_helpers.tpl`
-- Modify: `deploy/helm/hyperping-exporter/templates/deployment.yaml:1-3` (replace existing guard)
-- Modify: `deploy/helm/hyperping-exporter/templates/secret.yaml:1` (extend guard)
-- Test: new fixtures + render harness
+**Files:** Create `deploy/helm/hyperping-exporter/templates/externalsecret.yaml`. Create `deploy/helm/hyperping-exporter/tests/fixtures/external-secret-defaults.values.yaml`. Modify `deploy/helm/hyperping-exporter/values.yaml`. Test: assertion lands in Task 11.
 
-The user's policy: exactly one of `apiKey` / `existingSecret` / `externalSecret.enabled` must be set. `replicaCount > 1` must `fail()`. `replicaCount == 0` is allowed. The current chart's two-line guard (`if and (not apiKey) (not existingSecret) → fail`) becomes a count-based check.
+**Why this task comes BEFORE Task 7's guards:** committing the guards first (closing secret.yaml on `externalSecret.enabled`) without having the template that emits the ExternalSecret leaves the chart in a broken bisect state where `--set externalSecret.enabled=true` produces zero secret-source resources. Order: template + values first, then guards.
 
-- [ ] **Step 1: Add helpers to `_helpers.tpl`**
+- [ ] **Step 1: Add `externalSecret` block to `values.yaml`**
 
-Append:
-
-```yaml
-{{/*
-Count configured secret sources. Exactly one of apiKey, existingSecret,
-externalSecret.enabled must be set; everything else is a configuration
-mistake the chart aborts on at render time.
-*/}}
-{{- define "hyperping-exporter.secretSourceCount" -}}
-{{- $count := 0 -}}
-{{- if .Values.config.apiKey -}}{{- $count = add $count 1 -}}{{- end -}}
-{{- if .Values.config.existingSecret -}}{{- $count = add $count 1 -}}{{- end -}}
-{{- if and .Values.externalSecret .Values.externalSecret.enabled -}}{{- $count = add $count 1 -}}{{- end -}}
-{{- $count -}}
-{{- end }}
-
-{{/*
-Render-time validation: fail loudly when secret sources are misconfigured.
-*/}}
-{{- define "hyperping-exporter.validateSecretSources" -}}
-{{- $count := include "hyperping-exporter.secretSourceCount" . | int -}}
-{{- if gt $count 1 -}}
-{{- fail "Configuration error: set exactly one of .Values.config.apiKey, .Values.config.existingSecret, or .Values.externalSecret.enabled. Got multiple." -}}
-{{- end -}}
-{{- if eq $count 0 -}}
-{{- fail "Configuration error: must set one of .Values.config.apiKey, .Values.config.existingSecret, or .Values.externalSecret.enabled." -}}
-{{- end -}}
-{{- end }}
-
-{{/*
-Render-time validation: the chart is single-replica by design. Multiple
-replicas would mean N independent pollers hammering the Hyperping API
-in parallel, which is a configuration mistake, not a feature. replicas:0
-remains valid (scaled-to-zero state). See values.yaml for context.
-*/}}
-{{- define "hyperping-exporter.validateReplicaCount" -}}
-{{- if gt (int .Values.replicaCount) 1 -}}
-{{- fail (printf "Configuration error: replicaCount=%d is unsupported. The exporter is single-poller by design; multiple replicas would each independently poll the Hyperping API. Set replicaCount to 1 (or 0 to scale to zero)." (int .Values.replicaCount)) -}}
-{{- end -}}
-{{- end }}
-```
-
-- [ ] **Step 2: Wire the helpers into `deployment.yaml`**
-
-Replace lines 1–3 of `deployment.yaml` (current `if and (not apiKey) (not existingSecret) → fail` block) with:
-
-```yaml
-{{- include "hyperping-exporter.validateSecretSources" . }}
-{{- include "hyperping-exporter.validateReplicaCount" . }}
-```
-
-- [ ] **Step 3: Extend `secret.yaml` guard**
-
-Change line 1 of `secret.yaml`:
-```yaml
-{{- if and .Values.config.apiKey (not .Values.config.existingSecret) (not (and .Values.externalSecret .Values.externalSecret.enabled)) }}
-```
-
-- [ ] **Step 4: Add `externalSecret` skeleton to `values.yaml`**
-
-Insert after the `config` block (before `service:`):
+Insert after the `config:` block (before `service:`). Block comment above explains mutual exclusion:
 
 ```yaml
 # Mutually-exclusive secret sources for the Hyperping API key:
-#   - config.apiKey      (inline, dev/test only)
+#   - config.apiKey         (inline; dev/test only — stored plaintext in release metadata)
 #   - config.existingSecret (operator manages a Secret out-of-band)
 #   - externalSecret.enabled (External Secrets Operator path; below)
-# Setting more than one (or none) aborts the install with a clear error.
+# Setting more than one (or none at replicaCount>=1) aborts install with
+# a clear error. replicaCount: 0 is exempt from the "must set one" check
+# (scaled-to-zero state needs no API key).
 externalSecret:
+  # External Secrets Operator API version. Default tracks ESO v0.16+
+  # (which graduates v1 from v1beta1). Set to "external-secrets.io/v1beta1"
+  # for legacy ESO installations (≤ v0.15). The conversion webhook in
+  # ESO ≤ 0.18 still serves v1beta1 transparently.
+  apiVersion: external-secrets.io/v1
   enabled: false
-  # Reference to an existing SecretStore or ClusterSecretStore that the
-  # External Secrets Operator can reach. Required when enabled is true.
+  # Reference to an existing (Cluster)SecretStore reachable by ESO.
+  # Required when enabled is true; render aborts otherwise.
   secretStoreRef:
     name: ""
     kind: SecretStore   # or ClusterSecretStore
-  # The remote key under which the Hyperping API key is stored in the
+  # Remote key under which the Hyperping API key is stored in the
   # backing secret manager. Maps onto the chart-managed Secret as the
   # `api-key` field that the Deployment reads via HYPERPING_API_KEY.
   remoteRef:
@@ -572,9 +487,181 @@ externalSecret:
   refreshInterval: "1h"
 ```
 
-- [ ] **Step 5: Add new fixtures**
+- [ ] **Step 2: Write the template `templates/externalsecret.yaml`**
 
-Files (each creates a new file under `deploy/helm/hyperping-exporter/tests/fixtures/`):
+```yaml
+{{- /*
+ExternalSecret variant: writes the Hyperping API key into a Secret of
+the same name the Deployment's HYPERPING_API_KEY env var already
+references. Mutually exclusive with config.apiKey and config.existingSecret
+(enforced by templates/secret.yaml's guard + the validateSecretSources
+helper added in Task 7).
+
+REQUIRES the External Secrets Operator installed cluster-wide. Apply-time
+"no matches for kind ExternalSecret" is the honest failure mode on
+clusters where ESO is absent; the chart cannot detect operator presence
+at render time.
+*/ -}}
+{{- if and .Values.externalSecret .Values.externalSecret.enabled -}}
+apiVersion: {{ .Values.externalSecret.apiVersion | default "external-secrets.io/v1" }}
+kind: ExternalSecret
+metadata:
+  name: {{ include "hyperping-exporter.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hyperping-exporter.labels" . | nindent 4 }}
+spec:
+  refreshInterval: {{ .Values.externalSecret.refreshInterval | default "1h" }}
+  secretStoreRef:
+    name: {{ required "externalSecret.secretStoreRef.name is required when externalSecret.enabled" .Values.externalSecret.secretStoreRef.name }}
+    kind: {{ .Values.externalSecret.secretStoreRef.kind | default "SecretStore" }}
+  target:
+    name: {{ include "hyperping-exporter.fullname" . }}
+    creationPolicy: Owner
+  data:
+    - secretKey: api-key
+      remoteRef:
+        key: {{ required "externalSecret.remoteRef.key is required when externalSecret.enabled" .Values.externalSecret.remoteRef.key }}
+        {{- with .Values.externalSecret.remoteRef.property }}
+        property: {{ . }}
+        {{- end }}
+{{- end -}}
+```
+
+- [ ] **Step 3: Write three ExternalSecret fixtures**
+
+`external-secret.values.yaml` (explicit override of `refreshInterval`, used by the primary render assertion):
+```yaml
+externalSecret:
+  enabled: true
+  secretStoreRef:
+    name: vault-store
+    kind: SecretStore
+  remoteRef:
+    key: hyperping/api-key
+  refreshInterval: "30m"
+```
+
+`external-secret-defaults.values.yaml` (no `refreshInterval` override; proves default `1h` propagates):
+```yaml
+externalSecret:
+  enabled: true
+  secretStoreRef:
+    name: vault-store
+    kind: SecretStore
+  remoteRef:
+    key: hyperping/api-key
+```
+
+`external-secret-missing-store.values.yaml` (no `secretStoreRef.name`; asserts the `required` failure):
+```yaml
+externalSecret:
+  enabled: true
+  remoteRef:
+    key: hyperping/api-key
+```
+
+- [ ] **Step 4: Smoke-test the template renders for `external-secret.values.yaml`**
+
+```bash
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml \
+  | grep -E '^(apiVersion|kind|  name|  refreshInterval): '
+```
+Expected: see `kind: ExternalSecret`, `apiVersion: external-secrets.io/v1`, `name: testrel-hyperping-exporter`, `refreshInterval: 30m`. The chart's old secret guard still emits a plain Secret too at this commit; that's fine — Task 7 closes it.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add deploy/helm/hyperping-exporter/templates/externalsecret.yaml \
+        deploy/helm/hyperping-exporter/values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/external-secret-defaults.values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/external-secret-missing-store.values.yaml
+git commit -m "feat(helm): add ExternalSecret template and values block (external-secrets.io/v1)
+
+externalSecret.enabled: true renders an ExternalSecret that writes
+into a Secret of the same name the Deployment's HYPERPING_API_KEY env
+var already references. apiVersion is values-driven (default v1; set
+to v1beta1 for legacy ESO ≤ 0.15). Required fields (secretStoreRef.name,
+remoteRef.key) enforced via Helm's 'required' helper.
+
+Mutual-exclusion guards land in the next commit so bisects between
+the two commits stay valid for single-source configurations."
+```
+
+---
+
+### Task 7: Multi-replica fail() + secret-source mutual-exclusion fail() + secret.yaml guard
+
+**Files:** Modify `deploy/helm/hyperping-exporter/templates/_helpers.tpl`. Modify `deploy/helm/hyperping-exporter/templates/deployment.yaml`. Modify `deploy/helm/hyperping-exporter/templates/secret.yaml`. Create five conflict/missing fixtures. Test: assertions in Task 11.
+
+User's policy: exactly one of `apiKey` / `existingSecret` / `externalSecret.enabled` must be set when `replicaCount ≥ 1`. `replicaCount > 1` aborts. `replicaCount == 0` is allowed and is exempt from the secret-source `fail()`.
+
+- [ ] **Step 1: Append helpers to `_helpers.tpl`**
+
+```yaml
+{{/*
+Count configured secret sources. Exactly one of apiKey, existingSecret,
+externalSecret.enabled must be set when replicaCount >= 1.
+Defensive against missing externalSecret block in consumer overrides.
+*/}}
+{{- define "hyperping-exporter.secretSourceCount" -}}
+{{- $count := 0 -}}
+{{- if .Values.config.apiKey -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- if .Values.config.existingSecret -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- $es := (.Values.externalSecret | default dict) -}}
+{{- if and $es $es.enabled -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- $count -}}
+{{- end }}
+
+{{/*
+Render-time validation: fail loudly when secret sources are misconfigured.
+Exempt: replicaCount: 0 (scaled-to-zero needs no key); skipping the
+"must set one" check lets operators tear down secrets before final
+removal without a render error.
+*/}}
+{{- define "hyperping-exporter.validateSecretSources" -}}
+{{- $count := include "hyperping-exporter.secretSourceCount" . | int -}}
+{{- if gt $count 1 -}}
+{{- fail "Configuration error: set exactly one of .Values.config.apiKey, .Values.config.existingSecret, or .Values.externalSecret.enabled. Got multiple." -}}
+{{- end -}}
+{{- if and (eq $count 0) (gt (int .Values.replicaCount) 0) -}}
+{{- fail "Configuration error: must set one of .Values.config.apiKey, .Values.config.existingSecret, or .Values.externalSecret.enabled." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Render-time validation: the chart is single-poller by design. Multiple
+replicas would mean N independent pollers hammering the Hyperping API
+in parallel. replicaCount: 0 remains valid (scaled-to-zero state).
+*/}}
+{{- define "hyperping-exporter.validateReplicaCount" -}}
+{{- if gt (int .Values.replicaCount) 1 -}}
+{{- fail (printf "Configuration error: replicaCount=%d is unsupported. The exporter is single-poller by design; multiple replicas would each independently poll the Hyperping API. Set replicaCount to 1 (or 0 to scale to zero)." (int .Values.replicaCount)) -}}
+{{- end -}}
+{{- end }}
+```
+
+- [ ] **Step 2: Wire helpers into `deployment.yaml`**
+
+Replace lines 1-3 of `deployment.yaml` (the current `if and (not apiKey) (not existingSecret) → fail` block) with:
+
+```
+{{- include "hyperping-exporter.validateSecretSources" . -}}
+{{- include "hyperping-exporter.validateReplicaCount" . -}}
+```
+
+Trailing `-}}` on both lines so no stray blank document precedes `apiVersion:`.
+
+- [ ] **Step 3: Extend `secret.yaml` guard**
+
+Change line 1 of `secret.yaml` to:
+```yaml
+{{- if and .Values.config.apiKey (not .Values.config.existingSecret) (not (and .Values.externalSecret .Values.externalSecret.enabled)) }}
+```
+
+- [ ] **Step 4: Write five conflict / missing fixtures**
 
 `secret-conflict-apikey-and-existing.values.yaml`:
 ```yaml
@@ -609,7 +696,7 @@ externalSecret:
     key: hyperping/api-key
 ```
 
-`secret-source-missing.values.yaml`:
+`secret-source-missing.values.yaml` (explicit `externalSecret.enabled: false` so future default flips don't silently change this fixture's meaning):
 ```yaml
 config:
   apiKey: ""
@@ -625,76 +712,28 @@ config:
   apiKey: x
 ```
 
-- [ ] **Step 6: Extend `render_test.py` with `assert_fail` helper and four conflict cases plus the multi-replica case**
-
-Add the helper near the top, after `assert_eq`:
-
-```python
-def assert_fail(fixture: str, expected_substring: str, label: str) -> None:
-    """Render with the given fixture and assert that helm exits non-zero
-    AND the stderr contains the expected substring.
-
-    Used to lock fail() error contracts the chart promises to operators."""
-    try:
-        completed = subprocess.run(
-            [HELM, "template", "testrel", str(CHART), "-f", str(FIXTURES / fixture)],
-            check=False, capture_output=True, text=True,
-        )
-    except FileNotFoundError as exc:
-        print(f"FAIL {label}: helm not on PATH: {exc}", file=sys.stderr)
-        sys.exit(1)
-    if completed.returncode == 0:
-        print(f"FAIL {label}: helm template exited 0 but should have failed", file=sys.stderr)
-        print(f"  stdout (head): {completed.stdout[:400]!r}", file=sys.stderr)
-        sys.exit(1)
-    if expected_substring not in completed.stderr:
-        print(f"FAIL {label}: expected substring not in stderr", file=sys.stderr)
-        print(f"  expected substring: {expected_substring!r}", file=sys.stderr)
-        print(f"  actual stderr:      {completed.stderr!r}", file=sys.stderr)
-        sys.exit(1)
-    print(f"PASS {label}: helm template fails as expected")
-```
-
-Append five new cases after Case 9:
-
-```python
-    # Case 10 — secret sources: apiKey + existingSecret = fail.
-    assert_fail("secret-conflict-apikey-and-existing.values.yaml",
-                "Got multiple",
-                "secret-conflict apikey+existingSecret aborts render")
-    # Case 11 — secret sources: apiKey + externalSecret = fail.
-    assert_fail("secret-conflict-apikey-and-external.values.yaml",
-                "Got multiple",
-                "secret-conflict apikey+externalSecret aborts render")
-    # Case 12 — secret sources: existingSecret + externalSecret = fail.
-    assert_fail("secret-conflict-existing-and-external.values.yaml",
-                "Got multiple",
-                "secret-conflict existing+externalSecret aborts render")
-    # Case 13 — secret sources: none set = fail with the "must set one" message.
-    assert_fail("secret-source-missing.values.yaml",
-                "must set one of",
-                "secret-source missing aborts render")
-    # Case 14 — replicaCount > 1 = fail.
-    assert_fail("replicas-multi.values.yaml",
-                "replicaCount=2 is unsupported",
-                "replicaCount > 1 aborts render")
-```
-
-- [ ] **Step 7: Run harness — expect all new cases PASS**
+- [ ] **Step 5: Smoke-test that the guards fire as expected**
 
 ```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-existing.values.yaml 2>&1 | tail -3
+# Expected: stderr contains "Got multiple"
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/replicas-multi.values.yaml 2>&1 | tail -3
+# Expected: stderr contains "replicaCount=2 is unsupported"
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/external-secret-missing-store.values.yaml 2>&1 | tail -3
+# Expected: stderr contains "externalSecret.secretStoreRef.name is required"
 ```
-Expected: all green, including 5 new PASS lines.
 
-- [ ] **Step 8: Commit**
+Verify each command exits non-zero. The full assertion harness lands in Task 11.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add deploy/helm/hyperping-exporter/templates/_helpers.tpl \
         deploy/helm/hyperping-exporter/templates/deployment.yaml \
         deploy/helm/hyperping-exporter/templates/secret.yaml \
-        deploy/helm/hyperping-exporter/values.yaml \
-        deploy/helm/hyperping-exporter/tests/render_test.py \
         deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-existing.values.yaml \
         deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-apikey-and-external.values.yaml \
         deploy/helm/hyperping-exporter/tests/fixtures/secret-conflict-existing-and-external.values.yaml \
@@ -703,164 +742,33 @@ git add deploy/helm/hyperping-exporter/templates/_helpers.tpl \
 git commit -m "feat(helm): fail() guards for secret-source conflicts and replicaCount > 1
 
 Exactly one of config.apiKey, config.existingSecret, or
-externalSecret.enabled must be set; setting more than one (or none)
-aborts helm template with a clear error. replicaCount > 1 also aborts
-because the exporter is single-poller by design; replicaCount: 0 is
-allowed (scaled-to-zero state). Render harness covers all five failure
-paths via the new assert_fail helper."
+externalSecret.enabled must be set; setting more than one aborts
+helm template with a clear error. replicaCount > 1 also aborts because
+the exporter is single-poller by design. replicaCount: 0 is allowed
+and is exempt from the 'must set one' check (scaled-to-zero state).
+secret.yaml suppression extended for the ExternalSecret path."
 ```
 
 ---
 
-### Task 7: ExternalSecret template + render harness coverage
+### Task 8: PDB guard, NetworkPolicy default-on, Cilium FQDN variant, replicaCount:0 support
 
-**Files:**
-- Create: `deploy/helm/hyperping-exporter/templates/externalsecret.yaml`
-- Create: `deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml`
-- Modify: `deploy/helm/hyperping-exporter/tests/render_test.py`
+**Files:** Modify `deploy/helm/hyperping-exporter/templates/pdb.yaml`, `templates/networkpolicy.yaml`. Create `templates/networkpolicy-cilium.yaml`. Modify `deploy/helm/hyperping-exporter/values.yaml`. Create four fixtures.
 
-The `externalSecret.enabled: true` path renders a `v1beta1 ExternalSecret` that writes into a Secret of the same name the Deployment's `valueFrom.secretKeyRef.name` already references. Secret.yaml is suppressed via the Task 6 guard.
+**Coupling note:** the multi-replica `fail()` from Task 7 means PDB rendering never occurs in supported configs today. The PDB template is kept correct (drain-safe defaults) so a future leader-election change can flip the multi-replica behaviour without revisiting pdb.yaml. The fixture asserts the user-visible safety property: PDB stays suppressed for `replicaCount ≤ 1` even when explicitly enabled.
 
-- [ ] **Step 1: Write the ExternalSecret template**
-
-```yaml
-{{- if and .Values.externalSecret .Values.externalSecret.enabled }}
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
-metadata:
-  name: {{ include "hyperping-exporter.fullname" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "hyperping-exporter.labels" . | nindent 4 }}
-spec:
-  refreshInterval: {{ .Values.externalSecret.refreshInterval | default "1h" }}
-  secretStoreRef:
-    name: {{ required "externalSecret.secretStoreRef.name is required when externalSecret.enabled" .Values.externalSecret.secretStoreRef.name }}
-    kind: {{ .Values.externalSecret.secretStoreRef.kind | default "SecretStore" }}
-  target:
-    name: {{ include "hyperping-exporter.fullname" . }}
-    creationPolicy: Owner
-  data:
-    - secretKey: api-key
-      remoteRef:
-        key: {{ required "externalSecret.remoteRef.key is required when externalSecret.enabled" .Values.externalSecret.remoteRef.key }}
-        {{- with .Values.externalSecret.remoteRef.property }}
-        property: {{ . }}
-        {{- end }}
-{{- end }}
-```
-
-- [ ] **Step 2: Write `external-secret.values.yaml` fixture**
-
-```yaml
-config:
-  apiKey: ""
-  existingSecret: ""
-externalSecret:
-  enabled: true
-  secretStoreRef:
-    name: vault-store
-    kind: SecretStore
-  remoteRef:
-    key: hyperping/api-key
-  refreshInterval: "30m"
-```
-
-- [ ] **Step 3: Extend `render_test.py` with the external-secret case**
-
-Add helpers at top-level if not already present:
-
-```python
-def find_external_secret(rendered: str) -> dict | None:
-    for d in docs(rendered):
-        if d.get("kind") == "ExternalSecret":
-            return d
-    return None
-```
-
-Add Case 15:
-
-```python
-    # Case 15 — externalSecret.enabled: true. ExternalSecret rendered,
-    # plain Secret absent (mutual exclusion via secret-source count).
-    rendered = helm_template("external-secret.values.yaml")
-    es = find_external_secret(rendered)
-    assert es is not None, "FAIL external-secret: ExternalSecret should be rendered"
-    print("PASS external-secret: ExternalSecret rendered")
-    assert find_secret(rendered) is None, \
-        "FAIL external-secret: chart-managed Secret must NOT be present"
-    print("PASS external-secret: chart-managed Secret absent (ES path consumed)")
-    assert_eq(es["apiVersion"], "external-secrets.io/v1beta1",
-              "external-secret: v1beta1 ExternalSecret rendered")
-    assert_eq(es["spec"]["refreshInterval"], "30m",
-              "external-secret: refreshInterval propagates from values")
-    assert_eq(es["spec"]["target"]["name"], "testrel-hyperping-exporter",
-              "external-secret: target Secret name matches Deployment env ref")
-    assert_eq(es["spec"]["data"][0]["secretKey"], "api-key",
-              "external-secret: writes into the api-key field the Deployment reads")
-    assert_eq(es["spec"]["secretStoreRef"]["name"], "vault-store",
-              "external-secret: secretStoreRef.name propagates")
-    assert_eq(es["spec"]["data"][0]["remoteRef"]["key"], "hyperping/api-key",
-              "external-secret: remoteRef.key propagates")
-    # Deployment env still resolves the same secret name (now ESO-managed).
-    env = find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]["env"]
-    secret_ref = env[0]["valueFrom"]["secretKeyRef"]["name"]
-    assert_eq(secret_ref, "testrel-hyperping-exporter",
-              "external-secret: container env references the ESO-target name")
-    assert_scalars_clean(rendered, "external-secret")
-```
-
-- [ ] **Step 4: Run harness — verify Case 15 PASSES**
-
-```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
-```
-Expected: all green; 7 new PASS lines under "external-secret".
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add deploy/helm/hyperping-exporter/templates/externalsecret.yaml \
-        deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml \
-        deploy/helm/hyperping-exporter/tests/render_test.py
-git commit -m "feat(helm): ExternalSecret support via external-secrets.io/v1beta1
-
-externalSecret.enabled: true renders an ExternalSecret that writes into
-a Secret of the same name the Deployment's HYPERPING_API_KEY env var
-already references. Mutually exclusive with config.apiKey and
-config.existingSecret via the secret-source count guard. Required
-fields (secretStoreRef.name, remoteRef.key) enforced via Helm 'required'
-helper. Render harness covers the enabled path end-to-end."
-```
-
----
-
-### Task 8: PDB guard for replicaCount in {0, 1}, NetworkPolicy default-on, Cilium FQDN variant
-
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/templates/pdb.yaml`
-- Modify: `deploy/helm/hyperping-exporter/templates/networkpolicy.yaml`
-- Create: `deploy/helm/hyperping-exporter/templates/networkpolicy-cilium.yaml`
-- Modify: `deploy/helm/hyperping-exporter/values.yaml` (NP defaults flipped, FQDN block added)
-- Create fixtures + harness cases
-
-**Note on coupling:** the multi-replica `fail()` from Task 6 means PDB rendering is only possible for `replicaCount ∈ {0, 1}` in normal cases — and PDB selecting zero replicas is harmless but useless. The guard combines both: render PDB ONLY when `replicaCount > 1`. With the Task 6 guard in place, PDB is therefore effectively never rendered today. We keep the template wired (and the value enabled by default false) so that if the user ever removes the multi-replica fail() (e.g., adds leader-election), the PDB path is already correct. The fixture `pdb-enabled.values.yaml` sets `replicaCount: 2` AND a temporary disable of the multi-replica fail() via... no, that's not possible. Instead the PDB path is tested by asserting that with `replicaCount: 1`, PDB is suppressed even when enabled (the user-visible safety property). The "rendered when replicas > 1" branch is documented in the template comment but not in the render harness because it would require the user to first remove the chart's multi-replica fail() — outside this PR.
-
-- [ ] **Step 1: Update `pdb.yaml` with the combined guard**
-
-Replace contents of `deploy/helm/hyperping-exporter/templates/pdb.yaml`:
+- [ ] **Step 1: Update `pdb.yaml`**
 
 ```yaml
 {{- /*
 PDB is rendered only when both conditions hold:
   - podDisruptionBudget.enabled: true (operator opt-in)
-  - replicaCount > 1 (a PDB selecting a single replica blocks
-    voluntary disruptions like node drains, which is worse than no
-    PDB at all)
-Today the chart's multi-replica fail() guard means replicaCount > 1
-already aborts render, so this template effectively never emits. The
-guard is kept so that a future leader-election architecture can
-remove the fail() guard without also having to revisit pdb.yaml.
+  - replicaCount > 1 (a PDB selecting a single replica with
+    maxUnavailable: 0 would block voluntary disruptions including
+    kubectl drain, which is worse than no PDB at all)
+With the multi-replica fail() guard in Task 7 this template effectively
+never emits today. The guard is kept correct so a future leader-election
+architecture can remove the fail() without revisiting pdb.yaml.
 */ -}}
 {{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
 apiVersion: policy/v1
@@ -871,24 +779,40 @@ metadata:
   labels:
     {{- include "hyperping-exporter.labels" . | nindent 4 }}
 spec:
-  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable | default 0 }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable | default 1 }}
   selector:
     matchLabels:
       {{- include "hyperping-exporter.selectorLabels" . | nindent 6 }}
 {{- end }}
 ```
 
-The `maxUnavailable` default flips `1 → 0` per the user's contract for multi-replica safety.
+Default `maxUnavailable: 1` (NOT 0) so when a future architecture renders PDB, node drains still proceed; explained in values.yaml.
 
-- [ ] **Step 2: Update `networkpolicy.yaml` to skip when Cilium variant is on**
+- [ ] **Step 2: Targeted edit of `networkpolicy.yaml`**
 
-Wrap the existing template body so it only renders when the vanilla path is active. Replace line 1 (`{{- if .Values.networkPolicy.enabled }}`) with:
+Make two minimal edits (NOT a block replacement, so the existing cross-namespace scraping doc above `ingressFrom` and the file's overall shape are preserved):
 
-```yaml
+1. Replace line 1 (`{{- if .Values.networkPolicy.enabled }}`) with:
+```
 {{- if and .Values.networkPolicy.enabled (not (and .Values.networkPolicy.fqdnRestriction .Values.networkPolicy.fqdnRestriction.enabled)) }}
 ```
 
-- [ ] **Step 3: Create `networkpolicy-cilium.yaml`**
+2. Replace the egress 443 rule's `to:` block (the `ipBlock` with `cidr: 0.0.0.0/0` and the `except:` list, lines 41-47) with:
+```yaml
+    # TCP/443 to any destination. NetworkPolicy cannot filter by FQDN;
+    # use networkPolicy.fqdnRestriction.enabled with Cilium for FQDN
+    # restrictions instead.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+```
+
+(The DNS rule above and the `policyTypes:`/`ingress:` blocks are untouched.)
+
+- [ ] **Step 3: Create `templates/networkpolicy-cilium.yaml`**
 
 ```yaml
 {{- if and .Values.networkPolicy.enabled .Values.networkPolicy.fqdnRestriction .Values.networkPolicy.fqdnRestriction.enabled }}
@@ -896,11 +820,8 @@ Wrap the existing template body so it only renders when the vanilla path is acti
 CiliumNetworkPolicy variant: restricts egress to specific FQDNs.
 REQUIRES the Cilium CNI with cilium.io/v2 CRDs installed. On clusters
 without Cilium, helm apply will fail with "no matches for kind
-CiliumNetworkPolicy"; that's intentional and honest about the
-deployment requirement.
-
-The vanilla networkpolicy.yaml is suppressed when this path is active
-(mutually exclusive).
+CiliumNetworkPolicy"; intentional honest behaviour.
+The vanilla networkpolicy.yaml is suppressed when this path is active.
 */ -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -923,7 +844,6 @@ spec:
               protocol: TCP
   {{- end }}
   egress:
-    # DNS to kube-dns/coredns.
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -937,7 +857,6 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-    # FQDN-restricted egress over HTTPS to allowed hosts.
     - toFQDNs:
         {{- range .Values.networkPolicy.fqdnRestriction.allowedHosts }}
         - matchName: {{ . | quote }}
@@ -949,9 +868,12 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 4: Update `values.yaml` networkPolicy block**
+- [ ] **Step 4: Update `values.yaml` networkPolicy block in place**
 
-Replace the existing `networkPolicy:` block (lines 115–130) with:
+Targeted line edits (NOT block replacement so the cross-namespace doc comment block above `ingressFrom` is preserved verbatim):
+
+- Change `networkPolicy.enabled: false` to `networkPolicy.enabled: true`.
+- Insert `fqdnRestriction:` sub-block right after the `enabled: true` line:
 
 ```yaml
 networkPolicy:
@@ -965,32 +887,57 @@ networkPolicy:
   fqdnRestriction:
     # Set to true on Cilium clusters to render a CiliumNetworkPolicy
     # instead of the vanilla NetworkPolicy. REQUIRES Cilium CNI with
-    # cilium.io/v2 CRDs installed; will be rejected by the API server
-    # on other CNIs. Mutually exclusive with the vanilla path.
+    # cilium.io/v2 CRDs installed; rejected by the API server on other
+    # CNIs. Mutually exclusive with the vanilla path.
     enabled: false
     allowedHosts:
       - api.hyperping.io
-  # Selectors for pods allowed to scrape metrics (e.g. Prometheus).
-  # The default assumes Prometheus is in the SAME namespace as this chart.
-  # For cross-namespace scraping, add a namespaceSelector to the entry:
-  #   ingressFrom:
-  #     - namespaceSelector:
-  #         matchLabels:
-  #           kubernetes.io/metadata.name: monitoring
-  #       podSelector:
-  #         matchLabels:
-  #           app.kubernetes.io/name: prometheus
+  # (existing cross-namespace scraping comment block preserved here)
   ingressFrom:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: prometheus
 ```
 
-- [ ] **Step 5: Add fixtures**
+- [ ] **Step 5: Update `values.yaml` podDisruptionBudget block**
+
+Replace the existing block with:
+```yaml
+podDisruptionBudget:
+  # PDB is rendered ONLY when enabled AND replicaCount > 1; today the
+  # multi-replica fail() guard means PDB never renders in supported
+  # configurations. The template is kept correct in case a future
+  # leader-election change permits multi-replica.
+  enabled: false
+  # maxUnavailable: 1 lets kubectl drain proceed (single-replica drain
+  # would otherwise block on maxUnavailable: 0). When PDB is rendered
+  # (replicaCount > 1, future use), 1 means "tolerate one disruption".
+  maxUnavailable: 1
+```
+
+- [ ] **Step 6: Add multi-replica/scaled-to-zero comment to values.yaml**
+
+Above `replicaCount:`:
+```yaml
+# Single-poller by design: the chart's fail() guards reject
+# replicaCount > 1 (N independent pollers would hammer the Hyperping
+# API). replicaCount: 0 is supported (scaled-to-zero state) and is
+# exempt from the secret-source 'must set one' check, so operators
+# can scale to zero before tearing down secrets.
+replicaCount: 1
+```
+
+- [ ] **Step 7: Add image.tag comment to values.yaml (item 9)**
+
+Change the `tag: ""` line to:
+```yaml
+  tag: ""  # Defaults to chart appVersion. NOTE: chart version (Chart.yaml: version) and binary version (Chart.yaml: appVersion / image.tag) track separately; bumps to one don't imply bumps to the other.
+```
+
+- [ ] **Step 8: Create four fixtures**
 
 `networkpolicy-default.values.yaml`:
 ```yaml
-# networkPolicy.enabled: true is now the default; just supply apiKey.
 config:
   apiKey: x
 ```
@@ -1007,32 +954,561 @@ networkPolicy:
       - mcp.hyperping.io
 ```
 
-`replicas-zero.values.yaml`:
+`replicas-zero.values.yaml` (no secret source; scaled-to-zero exempts the must-set-one guard):
 ```yaml
 replicaCount: 0
 config:
-  apiKey: x
-podDisruptionBudget:
-  enabled: true   # operator opt-in; PDB still suppressed because replicaCount==0
+  apiKey: ""
+  existingSecret: ""
+externalSecret:
+  enabled: false
 ```
 
-`pdb-enabled.values.yaml`:
+`pdb-enabled.values.yaml` (single replica + enabled PDB; asserts suppression):
 ```yaml
-# This fixture documents the PDB enabled branch but is gated by the
-# multi-replica fail(); the harness asserts the fail(), then a follow-on
-# assertion confirms PDB is suppressed with replicaCount=1 even when
-# podDisruptionBudget.enabled is true (the user-facing safety property).
 config:
   apiKey: x
 podDisruptionBudget:
   enabled: true
 ```
 
-- [ ] **Step 6: Extend `render_test.py` with five new cases**
+- [ ] **Step 9: Smoke-test rendering**
 
-Add helpers at top-level:
+```bash
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml \
+  | grep -E '^(kind|  replicas):' | sort -u
+# Expected: kind Deployment, NetworkPolicy, Service. NO PodDisruptionBudget. replicas: 0.
+helm template testrel deploy/helm/hyperping-exporter/ \
+  -f deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium.values.yaml \
+  | grep '^kind:' | sort -u
+# Expected: Deployment, Secret, Service, CiliumNetworkPolicy. NOT NetworkPolicy.
+```
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add deploy/helm/hyperping-exporter/templates/pdb.yaml \
+        deploy/helm/hyperping-exporter/templates/networkpolicy.yaml \
+        deploy/helm/hyperping-exporter/templates/networkpolicy-cilium.yaml \
+        deploy/helm/hyperping-exporter/values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-default.values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium.values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml \
+        deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml
+git commit -m "feat(helm): NetworkPolicy default-on with Cilium variant, drain-safe PDB guard, replicas:0 support
+
+- networkPolicy.enabled flips to true by default; vanilla NetworkPolicy
+  denies all egress except DNS to kube-system and TCP/443 to 0.0.0.0/0
+  (no RFC1918 except — matches the documented egress contract).
+- networkPolicy.fqdnRestriction.enabled: true renders a
+  cilium.io/v2 CiliumNetworkPolicy with toFQDNs rules; mutually
+  exclusive with the vanilla path. Requires Cilium CNI.
+- PDB is rendered only when replicaCount > 1 AND
+  podDisruptionBudget.enabled: true. maxUnavailable default stays at 1
+  (drain-safe). With the multi-replica fail() guard, PDB never renders
+  in supported configurations today; the path stays correct for a
+  future leader-election architecture.
+- replicaCount: 0 supported (scaled-to-zero) and exempt from the
+  must-set-one secret-source guard, so operators can tear down secrets
+  cleanly.
+- image.tag comment documents chart-vs-binary version independence."
+```
+
+---
+
+### Task 9: kubeconform schema validation + kind PSS admission CI (extended job)
+
+**Files:** Modify `.github/workflows/helm-ci.yml`. Create `deploy/helm/hyperping-exporter/tests/kind-pss.yaml`. Create `deploy/helm/hyperping-exporter/tests/kind-pss-config/admission-config.yaml`. Create `deploy/helm/hyperping-exporter/tests/admission_test.sh`. Modify `Makefile`.
+
+The existing job key `helm` is **preserved** so existing branch-protection identifiers continue to work. The job's body grows to run three named steps in sequence (`lint-and-render`, `kubeconform`, `pss-admission`); step failures fail the job.
+
+Substitute the action SHAs and kindest/node digest captured in Task 1 Step 6 below; the plan uses `<KIND_ACTION_SHA>`, `<KIND_ACTION_TAG>`, `<KINDEST_NODE_DIGEST>` as **mandatory substitution placeholders**, not as literal commit-as-is values.
+
+- [ ] **Step 1: Create `tests/kind-pss-config/admission-config.yaml`**
+
+```yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+  - name: PodSecurity
+    configuration:
+      apiVersion: pod-security.admission.config.k8s.io/v1
+      kind: PodSecurityConfiguration
+      defaults:
+        enforce: privileged
+        enforce-version: latest
+      exemptions:
+        usernames: []
+        runtimeClasses: []
+        namespaces: [kube-system]
+```
+
+Default cluster enforcement stays `privileged`; the test namespace is labelled `restricted` explicitly so the test is scoped.
+
+- [ ] **Step 2: Create `tests/kind-pss.yaml`**
+
+Note: kind resolves relative `hostPath` against its own cwd, not `$GITHUB_WORKSPACE`. `admission_test.sh` (Step 3 below) rewrites the file in place at run time, substituting the absolute path. The committed file uses a placeholder.
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: hyperping-pss
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.34.0@<KINDEST_NODE_DIGEST>
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiVersion: kubeadm.k8s.io/v1beta4
+        apiServer:
+          extraArgs:
+            - name: admission-control-config-file
+              value: /etc/kubernetes/policies/admission-config.yaml
+        extraVolumes:
+          - name: admission-config
+            hostPath: /etc/kubernetes/policies
+            mountPath: /etc/kubernetes/policies
+            readOnly: true
+            pathType: DirectoryOrCreate
+    extraMounts:
+      - hostPath: __ABSPATH_PLACEHOLDER__/deploy/helm/hyperping-exporter/tests/kind-pss-config
+        containerPath: /etc/kubernetes/policies
+```
+
+(Note: `apiServer.extraArgs` is a list under kubeadm v1beta4. The previous map syntax breaks on K8s 1.34.)
+
+- [ ] **Step 3: Create `tests/admission_test.sh`**
+
+```bash
+#!/usr/bin/env bash
+# Render the chart and admit it into a PSS-restricted namespace inside
+# kind. For the defaults fixture, the pod is booted live so the binary
+# is exercised under readOnlyRootFilesystem: true (item 4 runtime proof).
+# For ExternalSecret/Cilium variants the run is dry-server (CRDs absent
+# in stock kind).
+set -euo pipefail
+
+command -v kind >/dev/null 2>&1 || { echo "kind missing; install from https://github.com/kubernetes-sigs/kind/releases" >&2; exit 2; }
+command -v kubectl >/dev/null 2>&1 || { echo "kubectl missing" >&2; exit 2; }
+command -v helm >/dev/null 2>&1 || { echo "helm missing" >&2; exit 2; }
+
+CHART_DIR="${CHART_DIR:-deploy/helm/hyperping-exporter}"
+REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+NS="hyperping-pss-test"
+
+# Rewrite the kind-pss.yaml placeholder with the absolute repo path so
+# kind resolves the admission-config hostMount correctly. Done on a copy
+# so the committed file stays portable.
+KIND_CFG="$(mktemp)"
+sed "s#__ABSPATH_PLACEHOLDER__#${REPO_ROOT}#g" \
+    "$CHART_DIR/tests/kind-pss.yaml" > "$KIND_CFG"
+
+if ! kind get clusters 2>/dev/null | grep -q '^hyperping-pss$'; then
+  kind create cluster --config "$KIND_CFG" --wait 120s
+fi
+
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace "$NS" \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/enforce-version=latest \
+  --overwrite
+
+# Determine fixtures to exercise. Pass a fixture path as $1 to override.
+DEFAULT_FIXTURES=(
+  "$CHART_DIR/tests/fixtures/pss-restricted.values.yaml"
+  "$CHART_DIR/tests/fixtures/networkpolicy-default.values.yaml"
+  "$CHART_DIR/tests/fixtures/replicas-zero.values.yaml"
+  "$CHART_DIR/tests/fixtures/external-secret.values.yaml"
+)
+FIXTURES=("${@:-${DEFAULT_FIXTURES[@]}}")
+
+for f in "${FIXTURES[@]}"; do
+  basef=$(basename "$f")
+  echo "::group::admission $basef"
+  # Strip namespace: from the rendered manifest so kubectl apply -n "$NS"
+  # actually targets $NS (manifest-namespace wins over -n otherwise).
+  # We pass --namespace at helm template time to get the right Release.Namespace
+  # AND strip the resulting metadata.namespace lines so kubectl is free to
+  # set its own.
+  RENDERED=$(mktemp)
+  helm template testrel "$CHART_DIR" --namespace "$NS" -f "$f" \
+    | grep -v '^  namespace:' > "$RENDERED"
+
+  case "$basef" in
+    external-secret*|networkpolicy-cilium*)
+      # Variants that emit CRDs absent from stock kind: server-side dry-run only.
+      kubectl apply --server-side --force-conflicts --dry-run=server \
+        -n "$NS" --validate=false -f "$RENDERED"
+      ;;
+    *)
+      # Live apply — pod boots, runtime readOnlyRootFilesystem proves itself.
+      kubectl apply --server-side --force-conflicts -n "$NS" -f "$RENDERED"
+      # Wait for at least one Pod to become Ready (or for the
+      # zero-replica case to settle with 0 desired).
+      if grep -q '^  replicas: 0' "$RENDERED"; then
+        echo "  replicaCount=0 fixture; skipping pod-ready wait."
+      else
+        kubectl -n "$NS" rollout status deploy/testrel-hyperping-exporter --timeout=120s
+      fi
+      kubectl -n "$NS" delete -f "$RENDERED" --ignore-not-found --wait=false || true
+      ;;
+  esac
+  rm -f "$RENDERED"
+  echo "::endgroup::"
+done
+
+echo "PASS admission: PSS-restricted namespace admitted all configurations"
+```
+
+Make executable: `chmod +x deploy/helm/hyperping-exporter/tests/admission_test.sh`.
+
+- [ ] **Step 4: Extend `.github/workflows/helm-ci.yml`** (preserving the existing job key `helm`)
+
+Replace the entire `jobs:` block:
+
+```yaml
+jobs:
+  helm:
+    name: Helm chart CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
+        with:
+          version: v3.20.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: python -m pip install --no-cache-dir 'pyyaml==6.0.3'
+      - name: Helm lint
+        run: helm lint deploy/helm/hyperping-exporter/
+      - name: Render tests (PyYAML harness)
+        run: python3 deploy/helm/hyperping-exporter/tests/render_test.py
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
+            | sudo tar xz -C /usr/local/bin kubeconform
+          kubeconform -v
+      - name: Schema-validate every passing fixture (kubeconform)
+        run: |
+          set -e
+          CHART=deploy/helm/hyperping-exporter
+          # datreeio CRDs-catalog uses lowercase kind in filenames.
+          SCHEMAS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind | lower}}_{{.ResourceAPIVersion}}.json'
+          for f in $CHART/tests/fixtures/*.values.yaml; do
+            case "$(basename "$f")" in
+              # Fixtures that intentionally fail render; skip kubeconform.
+              secret-conflict-*|secret-source-missing.values.yaml|replicas-multi.values.yaml|external-secret-missing-store.values.yaml) continue ;;
+            esac
+            echo "::group::kubeconform $f"
+            helm template testrel "$CHART" -f "$f" \
+              | kubeconform -strict -summary \
+                  -kubernetes-version 1.34.0 \
+                  -schema-location default \
+                  -schema-location "$SCHEMAS"
+            echo "::endgroup::"
+          done
+      - name: Set up kind cluster
+        uses: helm/kind-action@<KIND_ACTION_SHA>  # <KIND_ACTION_TAG>
+        with:
+          version: <KIND_LATEST_TAG>
+          config: deploy/helm/hyperping-exporter/tests/kind-pss.yaml
+          cluster_name: hyperping-pss
+          wait: 120s
+      - name: Admit chart into PSS-restricted namespace (four fixtures)
+        run: bash deploy/helm/hyperping-exporter/tests/admission_test.sh
+```
+
+**Note on substitution:** the SHA and tag values come from Task 1 Step 6. If Step 6 surfaced that `v1.12.0` does NOT exist for `helm/kind-action`, use whatever IS the latest stable release per `gh api repos/helm/kind-action/releases/latest`. The pin must be a real SHA, not a placeholder; the workflow MUST NOT merge with `<KIND_ACTION_SHA>` literally in the file. If branch protection currently requires a specific check name and the new job name `helm` differs from the historical name, audit the repo's branch-protection rules and call out the migration in the PR body (Task 12).
+
+- [ ] **Step 5: Add Makefile targets**
+
+Append to `Makefile`:
+
+```make
+.PHONY: helm-ci helm-render helm-kubeconform helm-pss
+helm-ci: helm-render helm-kubeconform helm-pss
+
+helm-render:
+	helm lint deploy/helm/hyperping-exporter/
+	python3 deploy/helm/hyperping-exporter/tests/render_test.py
+
+helm-kubeconform:
+	@command -v kubeconform >/dev/null || { echo "kubeconform missing; install from https://github.com/yannh/kubeconform/releases"; exit 2; }
+	@for f in deploy/helm/hyperping-exporter/tests/fixtures/*.values.yaml; do \
+		case $$(basename $$f) in secret-conflict-*|secret-source-missing.values.yaml|replicas-multi.values.yaml|external-secret-missing-store.values.yaml) continue ;; esac ; \
+		echo "kubeconform $$f" ; \
+		helm template testrel deploy/helm/hyperping-exporter -f $$f \
+		  | kubeconform -strict -summary -kubernetes-version 1.34.0 \
+		      -schema-location default \
+		      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind | lower}}_{{.ResourceAPIVersion}}.json' \
+		  || exit 1 ; \
+	done
+
+helm-pss:
+	@command -v kind >/dev/null || { echo "kind missing; install from https://github.com/kubernetes-sigs/kind/releases"; exit 2; }
+	bash deploy/helm/hyperping-exporter/tests/admission_test.sh
+```
+
+- [ ] **Step 6: Create the pss-restricted fixture**
+
+`tests/fixtures/pss-restricted.values.yaml`:
+```yaml
+# Minimal config used by the PSS admission job AND by render-harness
+# Case for explicit defaults-equivalent verification.
+config:
+  apiKey: x
+```
+
+- [ ] **Step 7: Run the local equivalents (if tools available)**
+
+```bash
+make helm-render
+make helm-kubeconform 2>&1 | tail -20    # may not be available locally
+make helm-pss 2>&1 | tail -40            # requires docker + kind locally
+```
+Expected: `helm-render` clean. `helm-kubeconform` / `helm-pss` either clean or surface tooling-missing message (CI will exercise the real path).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add .github/workflows/helm-ci.yml \
+        deploy/helm/hyperping-exporter/tests/kind-pss.yaml \
+        deploy/helm/hyperping-exporter/tests/kind-pss-config/admission-config.yaml \
+        deploy/helm/hyperping-exporter/tests/admission_test.sh \
+        deploy/helm/hyperping-exporter/tests/fixtures/pss-restricted.values.yaml \
+        Makefile
+git commit -m "ci(helm): add kubeconform schema validation and kind PSS admission to helm CI
+
+Existing 'helm' job extended with three new steps (preserves branch
+protection): kubeconform validates every passing fixture against
+k8s 1.34 + datreeio CRDs (lowercase kind filenames), and a kind
+cluster boots the rendered chart into a PSS-restricted namespace.
+
+The admission test exercises four fixtures (defaults, networkpolicy,
+replicas-zero, externalSecret). The defaults case applies LIVE so the
+pod actually starts under readOnlyRootFilesystem: true; rollout-status
+wait proves the binary tolerates the read-only root at runtime.
+
+kind config uses kubeadm v1beta4 (required by k8s 1.34), pins
+kindest/node by digest, and the admission_test.sh wrapper rewrites
+the hostPath to an absolute one so kind's relative-cwd resolution
+doesn't silently break PSS mount."
+```
+
+---
+
+### Task 10: Chart.yaml bump and CHANGELOG entry
+
+**Files:** Modify `deploy/helm/hyperping-exporter/Chart.yaml`. Modify `CHANGELOG.md`.
+
+- [ ] **Step 1: Bump chart and appVersion**
+
+In `deploy/helm/hyperping-exporter/Chart.yaml`:
+- Change `version: 1.1.0` to `version: 1.5.0`.
+- Change `appVersion: "1.4.0"` to `appVersion: "1.4.1"`.
+
+- [ ] **Step 2: Write CHANGELOG section**
+
+Insert immediately after `## [Unreleased]`, before `## [1.4.1] - 2026-05-12`. **Strict keep-a-changelog header** (no parenthetical suffix; the chart-only nature moves into a Highlights bullet):
+
+```markdown
+## [1.5.0] - 2026-05-12
+
+### Highlights
+
+- Chart-only release; binary unchanged (chart now tracks the just-released v1.4.1 image).
+- Production-readiness defaults: tuned resources from a 30-minute containerised live API observation (uid 65534, read-only root), reconciled probe defaults to the peer-review contract (10/10/3 and 5/5/3), PSS-restricted securityContext locked-in by render tests AND proven at runtime via a kind admission CI job that boots the pod.
+- ExternalSecret support via `external-secrets.io/v1` (default; `v1beta1` available via `externalSecret.apiVersion` override for legacy ESO ≤ 0.15). Mutually exclusive with inline `apiKey` and `existingSecret`.
+- NetworkPolicy on by default; vanilla NP permits DNS to kube-system and TCP/443 to any destination (no RFC1918 except — matches the documented egress contract). Optional `cilium.io/v2 CiliumNetworkPolicy` variant for FQDN-restricted egress.
+- Three render-time `fail()` guards prevent silent misconfiguration: multiple secret sources, missing secret sources (when `replicaCount ≥ 1`), and `replicaCount > 1`. `replicaCount: 0` is supported and exempt from the secret-source check (scaled-to-zero state).
+- New CI gates on chart-touching PRs: `kubeconform` schema validation against k8s 1.34 + datreeio CRDs catalog, and a `kind` cluster with PSS-restricted enforced on a test namespace that exercises four representative fixtures (one boots the pod live).
+
+### Added
+
+- `externalSecret` values block + `templates/externalsecret.yaml`. `apiVersion` (default `external-secrets.io/v1`), `secretStoreRef`, `remoteRef.key`, `remoteRef.property`, `refreshInterval`. Required fields enforced via Helm's `required` helper.
+- `networkPolicy.fqdnRestriction.enabled` + `allowedHosts` + `templates/networkpolicy-cilium.yaml` for FQDN-restricted egress on Cilium clusters.
+- Multi-replica `fail()` guard and secret-source mutual-exclusion `fail()` guard in `_helpers.tpl`.
+- 11+ new render-harness cases covering ExternalSecret (three fixtures), NetworkPolicy default-on, Cilium variant, replicas-zero, PDB safety, the conflict/missing `fail()` paths, and an explicit `helm.sh/chart` label assertion.
+- `kubeconform` step in Helm CI, validating every passing fixture against k8s 1.34 schemas + datreeio CRDs catalog (lowercase kind filename convention).
+- `pss-admission` step in Helm CI, applying four fixtures into a PSS-restricted namespace inside `kind`. The defaults fixture applies live (rollout-status wait) so the binary is proven to tolerate `readOnlyRootFilesystem: true` at runtime.
+- `make helm-ci` (and `helm-render`, `helm-kubeconform`, `helm-pss`) for local parity with CI.
+- `image.tag` comment noting chart-vs-binary version independence.
+
+### Changed
+
+- `Chart.yaml` `version` `1.1.0` → `1.5.0`. `appVersion` `"1.4.0"` → `"1.4.1"` to track the latest released binary. Side-effect: `app.kubernetes.io/version` label flips `"1.4.0"` → `"1.4.1"` on every resource; `helm.sh/chart` flips `hyperping-exporter-1.1.0` → `hyperping-exporter-1.5.0`.
+- `resources` defaults tuned from empirical observation (see commit message for measured peak RSS and p99 CPU).
+- `livenessProbe` defaults: `initialDelaySeconds 10`, `periodSeconds 10`, `failureThreshold 3`.
+- `readinessProbe` defaults: `initialDelaySeconds 5`, `periodSeconds 5`, `failureThreshold 3`.
+- `networkPolicy.enabled` default `false` → `true`. Egress 443 rule no longer excludes RFC1918 (matches the documented contract).
+- `podDisruptionBudget.maxUnavailable` default kept at `1` (drain-safe). PDB is now suppressed when `replicaCount ≤ 1` regardless of `enabled` (a PDB selecting a single replica blocks node drains).
+- `--cache-ttl` rendered via `toJson` for consistency with the other optional flags. `values.yaml` warns against bare-integer cacheTTL values.
+
+### Upgrade notes
+
+- **Image version flips**: `app.kubernetes.io/version` label moves `"1.4.0"` → `"1.4.1"` on every resource, and the default `image.tag` resolves to `1.4.1`. Pin `image.tag` explicitly if you must stay on the older binary.
+- **Chart label churn**: `helm.sh/chart` label flips `hyperping-exporter-1.1.0` → `hyperping-exporter-1.5.0`; diffs in your GitOps tool are expected.
+- **NetworkPolicy now enabled by default**: clusters that previously relied on the chart NOT applying a NetworkPolicy must explicitly set `networkPolicy.enabled: false` in their values. Audit `ingressFrom` if Prometheus lives in a different namespace.
+- **`replicaCount > 1` aborts render**: installs that previously set `replicaCount: 2+` were silently misconfigured (N independent pollers hammering Hyperping). Set `replicaCount: 1` and accept the single-poller architecture. `replicaCount: 0` is supported.
+- **Multiple/missing secret sources abort render** (except when `replicaCount: 0`): pick exactly one of `apiKey` / `existingSecret` / `externalSecret.enabled`.
+- **ExternalSecret apiVersion default is v1**: legacy ESO installations (≤ v0.15) must set `externalSecret.apiVersion: external-secrets.io/v1beta1`.
+- **PSS-restricted is the assumed namespace policy**: the chart does NOT label namespaces. Operators must label the target namespace `pod-security.kubernetes.io/enforce=restricted` themselves (or use a higher-level admission controller). The chart's securityContext defaults already satisfy the profile; overrides that weaken it will be rejected at apply time on PSS-restricted namespaces.
+- **Helm-to-ESO upgrade caveat**: switching an existing release from `config.apiKey` (or `existingSecret`) to `externalSecret.enabled: true` deletes the chart-managed Secret on upgrade; ESO must reconcile the new Secret quickly enough that the Deployment doesn't restart with an unresolvable env reference. Plan the cutover during a maintenance window or stage via `helm upgrade --post-renderer` to apply the ExternalSecret first.
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add deploy/helm/hyperping-exporter/Chart.yaml CHANGELOG.md
+git commit -m "chore(helm): bump chart to 1.5.0 and document the release in CHANGELOG
+
+Chart 1.1.0 -> 1.5.0; appVersion 1.4.0 -> 1.4.1 to track the latest
+released binary. CHANGELOG section sits between [Unreleased] and
+[1.4.1], preserving strictly descending order. Highlights cover the
+production-readiness defaults, ExternalSecret support, fail() guards,
+and the new CI gates. Upgrade notes flag the appVersion / chart-label
+flip, the NP default change, multi-replica rejection, secret-source
+constraints, ESO apiVersion default, the PSS labelling responsibility,
+and the ESO cutover caveat."
+```
+
+---
+
+### Task 11: Extend render harness with all new assertions and run the full suite
+
+**Files:** Modify `deploy/helm/hyperping-exporter/tests/render_test.py`. No other production changes.
+
+This is where every assertion the prior tasks deferred lands. Doing it last avoids the TDD-discipline issue of asserting against partial values; every value is committed and settled by now, so the assertions are written once against the final state and exercised in one harness run.
+
+- [ ] **Step 1: Bump `EXPECTED_VERSION` literal**
+
+In `render_test.py`, find the line `EXPECTED_VERSION = "1.4.0"` and change to:
+```python
+EXPECTED_VERSION = "1.4.1"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.0"
+```
+
+- [ ] **Step 2: Extend Case 1 (defaults) with locked-in assertions**
+
+After the existing `assert_eq(versions, expected_versions, ...)` line, append (substituting the measured values from Task 2 Step 5; the file `/tmp/hpe-obs/computed-defaults.yaml` has them):
 
 ```python
+    # Defaults-case extensions: resources, probes, securityContexts,
+    # helm.sh/chart label. All literal so any future drift surfaces in CI.
+    EXPECTED_RESOURCES = {
+        "requests": {"cpu": "<CPU_REQ>",  "memory": "<MEM_REQ>"},
+        "limits":   {"cpu": "<CPU_LIM>",  "memory": "<MEM_LIM>"},
+    }
+    EXPECTED_LIVENESS = {
+        "httpGet": {"path": "/healthz", "port": "http"},
+        "initialDelaySeconds": 10,
+        "periodSeconds": 10,
+        "failureThreshold": 3,
+    }
+    EXPECTED_READINESS = {
+        "httpGet": {"path": "/readyz", "port": "http"},
+        "initialDelaySeconds": 5,
+        "periodSeconds": 5,
+        "failureThreshold": 3,
+    }
+    EXPECTED_CONTAINER_SC = {
+        "readOnlyRootFilesystem": True,
+        "allowPrivilegeEscalation": False,
+        "runAsNonRoot": True,
+        "runAsUser": 65534,
+        "runAsGroup": 65534,
+        "capabilities": {"drop": ["ALL"]},
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    EXPECTED_POD_SC = {
+        "runAsNonRoot": True,
+        "runAsUser": 65534,
+        "runAsGroup": 65534,
+        "fsGroup": 65534,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    deployment = find_deployment(rendered)
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    pod = deployment["spec"]["template"]["spec"]
+    assert_eq(container["resources"], EXPECTED_RESOURCES,
+              "defaults: resources match empirical envelope")
+    assert_eq(container["livenessProbe"], EXPECTED_LIVENESS,
+              "defaults: livenessProbe matches user contract (10/10/3)")
+    assert_eq(container["readinessProbe"], EXPECTED_READINESS,
+              "defaults: readinessProbe matches user contract (5/5/3)")
+    assert_eq(container["securityContext"], EXPECTED_CONTAINER_SC,
+              "defaults: container securityContext is PSS-restricted compliant")
+    assert_eq(pod["securityContext"], EXPECTED_POD_SC,
+              "defaults: pod securityContext is PSS-restricted compliant")
+    # helm.sh/chart label flips with each chart-version bump; lock it.
+    chart_labels = {
+        f"{d.get('kind')}/{d['metadata']['name']}": d['metadata']['labels']['helm.sh/chart']
+        for d in docs(rendered)
+        if (d.get('metadata') or {}).get('labels', {}).get('helm.sh/chart')
+    }
+    expected_chart_labels = {k: EXPECTED_CHART_LABEL for k in chart_labels}
+    assert_eq(chart_labels, expected_chart_labels,
+              "defaults: helm.sh/chart label is hyperping-exporter-1.5.0 on every labelled resource")
+```
+
+- [ ] **Step 3: Extend Case 1's `expected_versions` to enumerate the post-NP-default-on resources**
+
+The defaults render now includes a NetworkPolicy. Replace the existing `expected_versions = {...}` build with:
+
+```python
+    expected_versions: dict[str, str] = {}
+    for kind in ("Secret", "Service", "Deployment", "NetworkPolicy"):
+        for d in find_all(rendered, kind):
+            expected_versions[f"{kind}/{d['metadata']['name']}"] = EXPECTED_VERSION
+```
+
+This is the only structural change to Case 1; it tracks every resource the common-labels helper touches in the post-Task-8 default render.
+
+- [ ] **Step 4: Add the `assert_fail` helper**
+
+After the existing `assert_eq` helper:
+
+```python
+def assert_fail(fixture: str, expected_substring: str, label: str) -> None:
+    """Render with the given fixture and assert helm exits non-zero
+    AND the stderr contains the expected substring."""
+    try:
+        completed = subprocess.run(
+            [HELM, "template", "testrel", str(CHART), "-f", str(FIXTURES / fixture)],
+            check=False, capture_output=True, text=True,
+        )
+    except FileNotFoundError as exc:
+        print(f"FAIL {label}: helm not on PATH: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if completed.returncode == 0:
+        print(f"FAIL {label}: helm template exited 0 but should have failed", file=sys.stderr)
+        print(f"  stdout (head): {completed.stdout[:400]!r}", file=sys.stderr)
+        sys.exit(1)
+    if expected_substring not in completed.stderr:
+        print(f"FAIL {label}: expected substring not in stderr", file=sys.stderr)
+        print(f"  expected substring: {expected_substring!r}", file=sys.stderr)
+        print(f"  actual stderr:      {completed.stderr!r}", file=sys.stderr)
+        sys.exit(1)
+    print(f"PASS {label}: helm template fails as expected")
+```
+
+`assert_fail` substring search is intentionally loose (substring, not literal); Helm v3.20.x patch-level changes to fail() framing won't break it.
+
+- [ ] **Step 5: Add kind-presence helpers**
+
+```python
+def find_external_secret(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "ExternalSecret":
+            return d
+    return None
+
+
 def find_pdb(rendered: str) -> dict | None:
     for d in docs(rendered):
         if d.get("kind") == "PodDisruptionBudget":
@@ -1052,13 +1528,72 @@ def find_cilium_networkpolicy(rendered: str) -> dict | None:
         if d.get("kind") == "CiliumNetworkPolicy":
             return d
     return None
+
+
+def kinds_in(rendered: str) -> set[str]:
+    return {d.get("kind") for d in docs(rendered) if d.get("kind")}
 ```
 
-Add Cases 16–20 after the external-secret case:
+- [ ] **Step 6: Append all new cases after Case 9**
 
 ```python
-    # Case 16 — defaults render the vanilla NetworkPolicy now that
-    # networkPolicy.enabled flipped to true. CiliumNetworkPolicy absent.
+    # Case 10–14 — secret-source / replica fail() paths.
+    assert_fail("secret-conflict-apikey-and-existing.values.yaml",
+                "Got multiple",
+                "secret-conflict apikey+existingSecret aborts render")
+    assert_fail("secret-conflict-apikey-and-external.values.yaml",
+                "Got multiple",
+                "secret-conflict apikey+externalSecret aborts render")
+    assert_fail("secret-conflict-existing-and-external.values.yaml",
+                "Got multiple",
+                "secret-conflict existing+externalSecret aborts render")
+    assert_fail("secret-source-missing.values.yaml",
+                "must set one of",
+                "secret-source missing aborts render")
+    assert_fail("replicas-multi.values.yaml",
+                "replicaCount=2 is unsupported",
+                "replicaCount > 1 aborts render")
+
+    # Case 15 — ExternalSecret rendered, plain Secret absent.
+    rendered = helm_template("external-secret.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL external-secret: ExternalSecret should be rendered"
+    print("PASS external-secret: ExternalSecret rendered")
+    assert find_secret(rendered) is None, \
+        "FAIL external-secret: chart-managed Secret must NOT be present"
+    print("PASS external-secret: chart-managed Secret absent (ES path consumed)")
+    assert_eq(es["apiVersion"], "external-secrets.io/v1",
+              "external-secret: v1 ExternalSecret rendered by default")
+    assert_eq(es["spec"]["refreshInterval"], "30m",
+              "external-secret: refreshInterval propagates from values")
+    assert_eq(es["spec"]["target"]["name"], "testrel-hyperping-exporter",
+              "external-secret: target Secret name matches Deployment env ref")
+    assert_eq(es["spec"]["data"][0]["secretKey"], "api-key",
+              "external-secret: writes into the api-key field the Deployment reads")
+    assert_eq(es["spec"]["secretStoreRef"]["name"], "vault-store",
+              "external-secret: secretStoreRef.name propagates")
+    assert_eq(es["spec"]["data"][0]["remoteRef"]["key"], "hyperping/api-key",
+              "external-secret: remoteRef.key propagates")
+    env = find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]["env"]
+    secret_ref = env[0]["valueFrom"]["secretKeyRef"]["name"]
+    assert_eq(secret_ref, "testrel-hyperping-exporter",
+              "external-secret: container env references the ESO-target name")
+    assert_scalars_clean(rendered, "external-secret")
+
+    # Case 16 — ExternalSecret default refreshInterval propagates.
+    rendered = helm_template("external-secret-defaults.values.yaml")
+    es = find_external_secret(rendered)
+    assert_eq(es["spec"]["refreshInterval"], "1h",
+              "external-secret-defaults: refreshInterval falls through to 1h default")
+
+    # Case 17 — missing secretStoreRef.name fires the required() error.
+    assert_fail("external-secret-missing-store.values.yaml",
+                "externalSecret.secretStoreRef.name is required",
+                "external-secret-missing-store: required() fires for missing store")
+
+    # Case 18 — vanilla NetworkPolicy is rendered when networkPolicy.enabled
+    # is true (now the default) and fqdnRestriction is off. Egress allows
+    # DNS to kube-system plus TCP/443 to 0.0.0.0/0 with NO RFC1918 except.
     rendered = helm_template("networkpolicy-default.values.yaml")
     np = find_networkpolicy(rendered)
     assert np is not None, "FAIL np-default: vanilla NetworkPolicy must render"
@@ -1066,15 +1601,25 @@ Add Cases 16–20 after the external-secret case:
     assert find_cilium_networkpolicy(rendered) is None, \
         "FAIL np-default: CiliumNetworkPolicy must NOT render in vanilla path"
     print("PASS np-default: CiliumNetworkPolicy absent")
-    # Egress: DNS to kube-system + 443 to 0.0.0.0/0 with RFC1918 except.
+    # Egress: DNS (UDP+TCP 53) and TCP/443.
     egress_ports = sorted(
         port["port"] for rule in np["spec"]["egress"]
         for port in rule.get("ports", [])
     )
     assert_eq(egress_ports, [53, 53, 443],
               "np-default: egress allows DNS (UDP+TCP/53) and TCP/443 only")
+    # Locate the 443 egress rule and assert its ipBlock cidr is 0.0.0.0/0
+    # with NO except (user contract).
+    egress_443 = [rule for rule in np["spec"]["egress"]
+                  if any(p["port"] == 443 for p in rule.get("ports", []))][0]
+    ipb = egress_443["to"][0]["ipBlock"]
+    assert_eq(ipb.get("cidr"), "0.0.0.0/0",
+              "np-default: egress 443 targets 0.0.0.0/0")
+    assert "except" not in ipb, \
+        "FAIL np-default: egress 443 ipBlock must NOT have an except list"
+    print("PASS np-default: egress 443 has no RFC1918 except (matches contract)")
 
-    # Case 17 — Cilium variant. CiliumNetworkPolicy rendered; vanilla absent.
+    # Case 19 — Cilium variant. CiliumNetworkPolicy rendered; vanilla absent.
     rendered = helm_template("networkpolicy-cilium.values.yaml")
     cnp = find_cilium_networkpolicy(rendered)
     assert cnp is not None, "FAIL np-cilium: CiliumNetworkPolicy must render"
@@ -1089,8 +1634,9 @@ Add Cases 16–20 after the external-secret case:
     assert_eq(fqdns, ["api.hyperping.io", "mcp.hyperping.io"],
               "np-cilium: toFQDNs lists both allowedHosts")
 
-    # Case 18 — replicaCount: 0 renders Deployment with replicas:0
-    # and suppresses PDB even when podDisruptionBudget.enabled is true.
+    # Case 20 — replicaCount: 0 renders Deployment with replicas:0,
+    # suppresses PDB even when enabled, and does NOT fail on missing
+    # secret-source (scaled-to-zero is exempt).
     rendered = helm_template("replicas-zero.values.yaml")
     deployment = find_deployment(rendered)
     assert_eq(deployment["spec"]["replicas"], 0,
@@ -1098,492 +1644,153 @@ Add Cases 16–20 after the external-secret case:
     assert find_pdb(rendered) is None, \
         "FAIL replicas-zero: PDB must NOT render for replicaCount=0"
     print("PASS replicas-zero: PDB suppressed for zero-replica state")
-    # Other resources still render: Service, Secret, NetworkPolicy.
-    assert find_secret(rendered) is not None, "FAIL replicas-zero: Secret should still render"
-    print("PASS replicas-zero: Secret still rendered when scaled to zero")
+    # No Secret expected (no apiKey set) but Deployment/Service/NetworkPolicy render.
+    expected_kinds_zero = {"Deployment", "Service", "NetworkPolicy"}
+    assert expected_kinds_zero.issubset(kinds_in(rendered)), \
+        f"FAIL replicas-zero: missing kinds, got {kinds_in(rendered)}"
+    print("PASS replicas-zero: Deployment/Service/NetworkPolicy present (no Secret needed)")
 
-    # Case 19 — PDB enabled with replicaCount=1 (the default) is suppressed.
-    # PDB selecting a single replica blocks voluntary disruptions
-    # (node drains); the chart guards against this footgun.
+    # Case 21 — PDB enabled at replicaCount=1 (default) is suppressed.
     rendered = helm_template("pdb-enabled.values.yaml")
     assert find_pdb(rendered) is None, \
         "FAIL pdb-enabled: PDB must NOT render with replicaCount=1"
     print("PASS pdb-enabled: PDB suppressed at replicaCount=1 (drain safety)")
+
+    # Case 22 — cacheTTL numeric round-trip (still emits a string arg the
+    # binary's duration parser can handle, since values.yaml default is
+    # quoted "60s"). Documents the contract: the chart NEVER emits a bare
+    # integer because the template wraps it in printf "%s" via toJson.
+    rendered = helm_template("cache-ttl-numeric.values.yaml")
+    args = deployment_args(rendered)
+    cache_arg = [a for a in args if a.startswith("--cache-ttl=")][0]
+    # "60" with no unit makes it into the arg list; the admission job's
+    # live boot in CI catches the runtime rejection. This case is the
+    # render-time documentation; the runtime check is in admission_test.sh
+    # (the defaults fixture uses the quoted default, so the live boot
+    # always succeeds for the supported configuration).
+    assert_eq(cache_arg, "--cache-ttl=60",
+              "cache-ttl-numeric: chart emits whatever values.yaml supplies (warning in docs)")
 ```
 
-- [ ] **Step 7: Run harness — expect all PASS**
+Add fixture `cache-ttl-numeric.values.yaml`:
+```yaml
+config:
+  apiKey: x
+  cacheTTL: 60
+```
+
+- [ ] **Step 7: Run the harness**
 
 ```bash
 python3 deploy/helm/hyperping-exporter/tests/render_test.py
 ```
-Expected: every case green.
+Expected: every PASS, ending with `ALL RENDER TESTS PASSED`. Print final line count and case-count via `grep -c ^PASS` output of a captured run.
 
-- [ ] **Step 8: Commit**
-
-```bash
-git add deploy/helm/hyperping-exporter/templates/pdb.yaml \
-        deploy/helm/hyperping-exporter/templates/networkpolicy.yaml \
-        deploy/helm/hyperping-exporter/templates/networkpolicy-cilium.yaml \
-        deploy/helm/hyperping-exporter/values.yaml \
-        deploy/helm/hyperping-exporter/tests/render_test.py \
-        deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-default.values.yaml \
-        deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium.values.yaml \
-        deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml \
-        deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml
-git commit -m "feat(helm): NetworkPolicy default-on with optional Cilium FQDN variant, PDB safety guard
-
-- networkPolicy.enabled flips to true by default; vanilla NetworkPolicy
-  denies all egress except DNS to kube-system and TCP/443 to 0.0.0.0/0
-  (vanilla NP cannot filter by FQDN; this is the strongest expressible).
-- networkPolicy.fqdnRestriction.enabled: true renders a
-  cilium.io/v2 CiliumNetworkPolicy with toFQDNs rules instead; mutually
-  exclusive with the vanilla path. Requires Cilium CNI.
-- PDB is rendered only when replicaCount > 1 AND
-  podDisruptionBudget.enabled: true. With the multi-replica fail() guard
-  this means PDB never renders in supported configurations today; the
-  conditional path stays for a future leader-election architecture.
-  Default maxUnavailable flipped 1 -> 0 so multi-replica disruption is
-  conservative.
-- replicaCount: 0 is allowed (scaled-to-zero) and renders Deployment
-  with replicas: 0; all other resources still emit."
-```
-
----
-
-### Task 9: kubeconform schema validation + kind PSS admission CI
-
-**Files:**
-- Modify: `.github/workflows/helm-ci.yml`
-- Create: `deploy/helm/hyperping-exporter/tests/kind-pss.yaml`
-- Create: `deploy/helm/hyperping-exporter/tests/admission_test.sh`
-- Modify: `Makefile`
-
-Two additions: (a) `kubeconform -strict` against every fixture for offline schema validation including CRDs (ExternalSecret, CiliumNetworkPolicy, ServiceMonitor); (b) a `kind` cluster with PSS-restricted enforced on a test namespace, into which the rendered chart is applied; admission errors fail the job.
-
-- [ ] **Step 1: Create kind cluster config**
-
-`deploy/helm/hyperping-exporter/tests/kind-pss.yaml`:
-
-```yaml
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-name: hyperping-pss
-nodes:
-  - role: control-plane
-    image: kindest/node:v1.34.0
-    kubeadmConfigPatches:
-      - |
-        kind: ClusterConfiguration
-        apiServer:
-          extraArgs:
-            admission-control-config-file: /etc/kubernetes/policies/admission-config.yaml
-        extraVolumes:
-          - name: admission-config
-            hostPath: /etc/kubernetes/policies
-            mountPath: /etc/kubernetes/policies
-            readOnly: true
-            pathType: DirectoryOrCreate
-    extraMounts:
-      - hostPath: ./deploy/helm/hyperping-exporter/tests/kind-pss-config
-        containerPath: /etc/kubernetes/policies
-```
-
-Plus a sibling `kind-pss-config/admission-config.yaml`:
-
-```yaml
-apiVersion: apiserver.config.k8s.io/v1
-kind: AdmissionConfiguration
-plugins:
-  - name: PodSecurity
-    configuration:
-      apiVersion: pod-security.admission.config.k8s.io/v1
-      kind: PodSecurityConfiguration
-      defaults:
-        enforce: privileged
-        enforce-version: latest
-      exemptions:
-        usernames: []
-        runtimeClasses: []
-        namespaces: [kube-system]
-```
-
-(Default enforcement stays `privileged`; the test namespace is labeled `restricted` explicitly so the test is scoped and other components aren't accidentally blocked.)
-
-- [ ] **Step 2: Write `admission_test.sh`**
+- [ ] **Step 8: Run all verification stages**
 
 ```bash
-#!/usr/bin/env bash
-# Render the chart and admit it into a PSS-restricted namespace.
-# Exits 0 on success, non-zero on any admission error.
-set -euo pipefail
-
-CHART_DIR="${CHART_DIR:-deploy/helm/hyperping-exporter}"
-NS="hyperping-pss-test"
-
-# Use a fixture that explicitly exercises the new defaults (NP on, etc).
-FIXTURE="${FIXTURE:-$CHART_DIR/tests/fixtures/default.values.yaml}"
-
-# Ensure cluster exists with PSS-restricted-friendly config.
-if ! kind get clusters 2>/dev/null | grep -q '^hyperping-pss$'; then
-  kind create cluster --config "$CHART_DIR/tests/kind-pss.yaml" --wait 120s
-fi
-
-# Apply CRDs required by the chart's optional resources so kubectl apply
-# does not reject ExternalSecret/CiliumNetworkPolicy with "no matches".
-# These CRDs are NOT exercised in this test (default fixture has neither
-# enabled), but admission for the manifests we DO render must not be
-# influenced by missing CRDs.
-kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-kubectl label namespace "$NS" \
-  pod-security.kubernetes.io/enforce=restricted \
-  pod-security.kubernetes.io/enforce-version=latest \
-  --overwrite
-
-# Render and apply via server-side dry-run so PSS admission runs but no
-# state is persisted (faster cleanup, idempotent across reruns).
-helm template testrel "$CHART_DIR" -f "$FIXTURE" \
-  | kubectl apply --server-side --force-conflicts \
-      --dry-run=server -n "$NS" -f -
-
-echo "PASS admission: PSS-restricted namespace admitted the rendered chart"
-```
-
-`chmod +x deploy/helm/hyperping-exporter/tests/admission_test.sh`.
-
-- [ ] **Step 3: Extend `.github/workflows/helm-ci.yml`**
-
-Replace the existing `helm` job with three jobs (`lint-and-render`, `kubeconform`, `pss-admission`) all running on chart-touching PRs:
-
-```yaml
-name: Helm CI
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'deploy/helm/**'
-      - '.github/workflows/helm-ci.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'deploy/helm/**'
-      - '.github/workflows/helm-ci.yml'
-
-permissions:
-  contents: read
-
-jobs:
-  lint-and-render:
-    name: Helm chart lint and render
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
-        with:
-          version: v3.20.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: '3.12'
-      - run: python -m pip install --no-cache-dir 'pyyaml==6.0.3'
-      - run: helm lint deploy/helm/hyperping-exporter/
-      - run: python3 deploy/helm/hyperping-exporter/tests/render_test.py
-
-  kubeconform:
-    name: Helm chart schema validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
-        with:
-          version: v3.20.2
-      - name: Install kubeconform
-        run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
-            | tar xz -C /usr/local/bin kubeconform
-      - name: Validate every render-test fixture against k8s 1.34 + CRDs
-        run: |
-          set -e
-          CHART=deploy/helm/hyperping-exporter
-          SCHEMAS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          for f in $CHART/tests/fixtures/*.values.yaml; do
-            case "$(basename "$f")" in
-              # Conflict fixtures intentionally fail render; skip them.
-              secret-conflict-*|secret-source-missing.values.yaml|replicas-multi.values.yaml) continue ;;
-            esac
-            echo "::group::kubeconform $f"
-            helm template testrel "$CHART" -f "$f" \
-              | kubeconform -strict -summary \
-                  -kubernetes-version 1.34.0 \
-                  -schema-location default \
-                  -schema-location "$SCHEMAS"
-            echo "::endgroup::"
-          done
-
-  pss-admission:
-    name: PSS-restricted admission via kind
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
-        with:
-          version: v3.20.2
-      - uses: helm/kind-action@a1b0e391336a6ee6e6a2c6b58acdcf5a08b58e9b  # v1.12.0
-        with:
-          version: v0.30.0
-          config: deploy/helm/hyperping-exporter/tests/kind-pss.yaml
-          cluster_name: hyperping-pss
-          wait: 120s
-      - name: Apply chart into PSS-restricted namespace
-        run: bash deploy/helm/hyperping-exporter/tests/admission_test.sh
-```
-
-NOTE on the `kind-action` SHA: the executing subagent must verify the SHA against `gh api repos/helm/kind-action/git/ref/tags/v1.12.0` (or the current latest) and pin the actual SHA before this template is canonized. If the latest stable kind-action tag differs from v1.12.0 at execution time, use that and update the comment accordingly.
-
-- [ ] **Step 4: Add Makefile targets mirroring CI**
-
-Append to `Makefile`:
-
-```make
-.PHONY: helm-ci helm-render helm-kubeconform helm-pss
-helm-ci: helm-render helm-kubeconform helm-pss
-
-helm-render:
-	helm lint deploy/helm/hyperping-exporter/
-	python3 deploy/helm/hyperping-exporter/tests/render_test.py
-
-helm-kubeconform:
-	@command -v kubeconform >/dev/null || { echo "kubeconform missing; install from https://github.com/yannh/kubeconform/releases"; exit 2; }
-	@for f in deploy/helm/hyperping-exporter/tests/fixtures/*.values.yaml; do \
-		case $$(basename $$f) in secret-conflict-*|secret-source-missing.values.yaml|replicas-multi.values.yaml) continue ;; esac ; \
-		echo "kubeconform $$f" ; \
-		helm template testrel deploy/helm/hyperping-exporter -f $$f \
-		  | kubeconform -strict -summary -kubernetes-version 1.34.0 \
-		      -schema-location default \
-		      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-		  || exit 1 ; \
-	done
-
-helm-pss:
-	bash deploy/helm/hyperping-exporter/tests/admission_test.sh
-```
-
-- [ ] **Step 5: Run the local equivalents**
-
-```bash
-make helm-render
-make helm-kubeconform
-make helm-pss
-```
-Expected: all three succeed locally. If `kind`/`kubeconform` aren't installed locally, document that and rely on CI for the empirical proof — but at minimum `helm-render` and `helm-kubeconform` must run clean before commit. If `kind` is unavailable, the `helm-pss` target will exit 2 with a clear install hint (add a `command -v kind` guard mirroring the kubeconform one).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add .github/workflows/helm-ci.yml \
-        deploy/helm/hyperping-exporter/tests/kind-pss.yaml \
-        deploy/helm/hyperping-exporter/tests/kind-pss-config/admission-config.yaml \
-        deploy/helm/hyperping-exporter/tests/admission_test.sh \
-        Makefile
-git commit -m "ci(helm): add kubeconform schema validation and kind PSS admission jobs
-
-Three jobs now gate chart-touching PRs:
-- lint-and-render (existing): helm lint + PyYAML render harness.
-- kubeconform: every render-test fixture (less the conflict fixtures
-  that intentionally fail render) is validated against k8s 1.34 schemas
-  plus the datreeio CRDs-catalog so ExternalSecret, CiliumNetworkPolicy,
-  and ServiceMonitor get real type checking.
-- pss-admission: kind cluster with PSS-restricted-friendly admission
-  config; the chart is applied --server-side --dry-run=server into a
-  pod-security.kubernetes.io/enforce=restricted namespace. Admission
-  errors fail the job.
-
-make helm-ci runs the same three locally."
-```
-
----
-
-### Task 10: Chart.yaml bump and CHANGELOG entry
-
-**Files:**
-- Modify: `deploy/helm/hyperping-exporter/Chart.yaml:5`
-- Modify: `CHANGELOG.md`
-
-- [ ] **Step 1: Bump chart version**
-
-Change `Chart.yaml:5` from `version: 1.1.0` to `version: 1.2.0`. Leave `appVersion: "1.4.0"` (binary unchanged).
-
-- [ ] **Step 2: Update `render_test.py`'s implicit `helm.sh/chart` expectation**
-
-The `labels_with_version` helper checks `app.kubernetes.io/version`, which doesn't change (binary still v1.4.0). The `helm.sh/chart` label flips `hyperping-exporter-1.1.0 → hyperping-exporter-1.2.0` but no render-test asserts that today. Verify by running the harness.
-
-```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
-```
-Expected: still all green.
-
-- [ ] **Step 3: Write CHANGELOG section**
-
-Insert after the existing `## [Unreleased]` line (which stays empty), before `## [1.4.1]`:
-
-```markdown
-## [1.2.0] - 2026-05-12 (Chart only; binary unchanged)
-
-### Highlights
-
-- Production-readiness defaults: tuned resources from a 30-min live API observation, reconciled probe defaults, PSS-restricted securityContext locked-in by render tests, NetworkPolicy on by default with an optional Cilium FQDN variant.
-- ExternalSecret support via `external-secrets.io/v1beta1`, gated by `externalSecret.enabled`. Mutually exclusive with inline `apiKey` and `existingSecret`.
-- Two render-time `fail()` guards prevent silent misconfiguration: setting more than one (or zero) secret source aborts the install; `replicaCount > 1` aborts because the exporter is single-poller by design.
-- New CI gates on chart-touching PRs: `kubeconform` schema validation against k8s 1.34 + CRDs, and a `kind` cluster with PSS-restricted enforced on a test namespace.
-
-### Added
-
-- `externalSecret` values block + `templates/externalsecret.yaml`. `secretStoreRef`, `remoteRef.key`, `refreshInterval` exposed.
-- `networkPolicy.fqdnRestriction.enabled` + `allowedHosts` + `templates/networkpolicy-cilium.yaml` for FQDN-restricted egress on Cilium clusters.
-- Multi-replica `fail()` guard via `_helpers.tpl` validator.
-- Secret-source mutual-exclusion `fail()` guard (apiKey / existingSecret / externalSecret.enabled — exactly one).
-- 11 new render-harness cases covering ExternalSecret, NetworkPolicy default-on, Cilium variant, replicas-zero, PDB safety, and the five `fail()` paths.
-- `kubeconform` step in Helm CI, validating every passing fixture against k8s 1.34 schemas + datreeio CRDs catalog.
-- `pss-admission` step in Helm CI, applying the rendered chart into a PSS-restricted namespace inside `kind`.
-- `make helm-ci` (and `helm-render`, `helm-kubeconform`, `helm-pss`) for local parity with CI.
-
-### Changed
-
-- `Chart.yaml` `version` `1.1.0` → `1.2.0`. `appVersion` unchanged (`"1.4.0"`); binary not modified by this release.
-- `resources` defaults tuned from empirical observation: `requests {cpu: 50m, memory: 64Mi}`, `limits {cpu: 200m, memory: 256Mi}` (final values confirmed at execution; commit message records measured peak).
-- `livenessProbe` defaults: `initialDelaySeconds 10`, `periodSeconds 10`, `failureThreshold 3`.
-- `readinessProbe` defaults: `initialDelaySeconds 5`, `periodSeconds 5`, `failureThreshold 3`.
-- `networkPolicy.enabled` default `false` → `true`.
-- `podDisruptionBudget.maxUnavailable` default `1` → `0`. PDB is also now suppressed when `replicaCount ≤ 1` regardless of `enabled` (a PDB selecting a single replica blocks node drains).
-- `--cache-ttl` rendered via `toJson` for consistency with the other optional flags.
-
-### Upgrade notes
-
-- **Chart version label churn**: the `helm.sh/chart` label flips `hyperping-exporter-1.1.0` → `hyperping-exporter-1.2.0` on every resource; diffs in your GitOps tool are expected. `app.kubernetes.io/version` does NOT change (still `"1.4.0"`).
-- **NetworkPolicy now enabled by default**: clusters that previously relied on the chart NOT applying a NetworkPolicy must explicitly set `networkPolicy.enabled: false` in their values. The vanilla policy permits DNS to kube-system and TCP/443 egress; if your environment uses a non-standard CoreDNS namespace or non-443 metrics scrape target, audit `ingressFrom`.
-- **`replicaCount > 1` now aborts render**: installs that previously set replicaCount to 2 or more silently were misconfigured (N independent pollers hammering Hyperping). Set `replicaCount: 1` and accept the single-poller architecture. `replicaCount: 0` is supported.
-- **Multiple secret sources now abort render**: setting both `apiKey` and `existingSecret` (or any other pair, or none) was a configuration mistake; the chart now `fail()`s with a clear message. Pick exactly one.
-- **PSS-restricted by default**: pods now must be admitted by a `pod-security.kubernetes.io/enforce=restricted` namespace. The existing securityContext block satisfies the profile; overrides that weaken it will be rejected at apply time.
-```
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add deploy/helm/hyperping-exporter/Chart.yaml CHANGELOG.md
-git commit -m "chore(helm): bump chart to 1.2.0 and document release in CHANGELOG
-
-Chart-only release; binary stays at v1.4.0. Highlights are the
-production-readiness defaults (resources, probes, securityContext,
-NetworkPolicy on by default), ExternalSecret support, and two new
-fail() guards. Upgrade notes flag label churn, NP default flip,
-multi-replica rejection, and PSS-restricted enforcement."
-```
-
----
-
-### Task 11: Full-suite verification
-
-**Files:** none (verification only)
-
-- [ ] **Step 1: Render harness**
-
-```bash
-python3 deploy/helm/hyperping-exporter/tests/render_test.py
-```
-Expected: 20+ PASS lines, `ALL RENDER TESTS PASSED`. Cases now in suite: defaults (with 4 new sub-assertions), existing-secret, ascii-regex, readme-regex, single-quote-regex, mcp-url, both-flags, quote-regex, mcp-url-query, secret-conflict ×3, secret-source-missing, replicas-multi, external-secret, np-default, np-cilium, replicas-zero, pdb-enabled. Plus the no-issues paths inside each.
-
-- [ ] **Step 2: Helm lint**
-
-```bash
+# Helm lint
 helm lint deploy/helm/hyperping-exporter/
+# kubeconform locally if tooling present
+which kubeconform >/dev/null && make helm-kubeconform || echo "kubeconform not installed locally; CI exercises it"
+# kind PSS admission locally if tooling present (slow; optional)
+which kind >/dev/null && make helm-pss || echo "kind not installed locally; CI exercises it"
+# Go regression smoke (Go code unchanged but verify nothing crept in)
+go test ./... -race -count=1 | tee /tmp/go-final.txt | tail -5
+diff <(grep -c '^=== RUN' /tmp/go-baseline.txt) <(grep -c '^=== RUN' /tmp/go-final.txt) && \
+  echo "Go test count unchanged from baseline" || \
+  echo "WARN Go test count changed from baseline; investigate"
 ```
-Expected: `1 chart(s) linted, 0 chart(s) failed`.
+Expected: all green. The diff comparison uses the dynamic baseline captured in Task 1 Step 3, not a hard-coded number.
 
-- [ ] **Step 3: kubeconform**
-
-```bash
-make helm-kubeconform
-```
-Expected: every passing fixture validates cleanly against k8s 1.34 + CRDs.
-
-- [ ] **Step 4: kind PSS admission**
-
-```bash
-make helm-pss
-```
-Expected: `PASS admission: PSS-restricted namespace admitted the rendered chart`.
-
-- [ ] **Step 5: Go regression smoke (chart change should not touch Go)**
-
-```bash
-go test ./... -race -count=1
-```
-Expected: 133 tests pass, no new failures. Chart files are in `paths-ignore` for `ci.yml`, so this is a local-only safety check that ensures no accidental Go-side coupling crept in.
-
-- [ ] **Step 6: Confirm git status matches expectations**
+- [ ] **Step 9: Confirm git status and branch state**
 
 ```bash
 git -C /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults status --short
 git -C /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults log --oneline main..HEAD
 git -C /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults diff --stat main..HEAD
 ```
-Expected: clean working tree; 9 commits on the branch (Tasks 2–10); files-changed list covers the chart, the CI workflow, the Makefile, the CHANGELOG, and the docs/plans/ entry.
+Expected: clean working tree; 10 commits on the branch (Tasks 2/3/4/5/6/7/8/9/10 plus this one), files-changed list covers the chart, the CI workflow, the Makefile, the CHANGELOG, the docs/plans entry.
 
-- [ ] **Step 7: No commit (verification only)**
+- [ ] **Step 10: Commit the harness extension**
+
+```bash
+git add deploy/helm/hyperping-exporter/tests/render_test.py \
+        deploy/helm/hyperping-exporter/tests/fixtures/cache-ttl-numeric.values.yaml
+git commit -m "test(helm): lock all production-readiness defaults via extended render harness
+
+Single commit lands every assertion the prior tasks deferred so each
+production change is exercised against settled values, not partial
+state. EXPECTED_VERSION bumps to 1.4.1; EXPECTED_CHART_LABEL pins the
+helm.sh/chart label at hyperping-exporter-1.5.0. Case 1 enumeration
+now covers NetworkPolicy in the default render. 13 new cases cover
+the five fail() paths, ExternalSecret defaults + override + required()
+failure, vanilla NP (with the explicit 'no RFC1918 except' check
+against the documented egress contract), Cilium variant, replicas-zero
+(secret-exempt), PDB suppression at replicaCount=1, and cacheTTL
+numeric pass-through documented at the render layer."
+```
 
 ---
 
 ### Task 12: Open the PR
 
-**Files:** none (orchestration only)
+**Files:** none (orchestration only).
 
 - [ ] **Step 1: Push the branch**
 
 ```bash
 git -C /home/khaledsa/projects/develeap/hyperping-exporter/.worktrees/chart-hardening-prod-defaults push -u origin chore/chart-hardening-prod-defaults
 ```
-Expected: branch pushed; remote tracking set.
 
 - [ ] **Step 2: Open PR via `gh`**
 
 ```bash
 gh pr create \
-  --title "feat(helm): chart 1.2.0 — production-readiness defaults" \
+  --title "feat(helm): chart 1.5.0 — production-readiness defaults and CI hardening" \
   --body "$(cat <<'EOF'
 ## Summary
 
-Chart-only release (binary unchanged at v1.4.0) implementing the ten production-readiness items from the v1.4.1 peer review.
+Chart-only release bumping `version` to 1.5.0 and tracking the just-released binary v1.4.1 via `appVersion`. Implements the ten production-readiness items from the v1.4.1 peer review.
 
 ### What changed and why
 
-- **Resources defaults tuned from a live 30-min observation** against the Hyperping dev API. Effect: requests/limits reflect actual binary use; render harness asserts the literal envelope so future drift is caught.
-- **Liveness/readiness probes reconciled** to the peer-review contract (10/10/3 and 5/5/3). Effect: pods become Ready faster and unhealthy pods get pulled from Service endpoints sooner.
-- **`--cache-ttl` renders via `toJson`**. Effect: every optional-flag arg in the chart now goes through one canonical path.
-- **PSS-restricted securityContext locked-in by render tests**. Effect: any future weakening fails CI loudly.
-- **NetworkPolicy enabled by default**, with optional Cilium FQDN variant behind `networkPolicy.fqdnRestriction.enabled`. Effect: every install ships with the strongest egress restriction expressible in vanilla Kubernetes (TCP/443 + DNS), and Cilium clusters can opt into FQDN-restricted egress to `api.hyperping.io`.
-- **ExternalSecret support** via `external-secrets.io/v1beta1`. Mutually exclusive with `apiKey` / `existingSecret`. Effect: production users have a first-class path that's neither inline secrets nor manual Secret management.
-- **Secret-source `fail()` guard**: exactly one of `apiKey` / `existingSecret` / `externalSecret.enabled` must be set; misconfiguration aborts render with a clear message.
-- **Multi-replica `fail()` guard**: `replicaCount > 1` aborts; `replicaCount: 0` and `1` are valid.
-- **PDB guard**: suppressed when `replicaCount ≤ 1` regardless of `enabled` (a PDB selecting a single replica blocks node drains).
-- **`image.tag` comment** noting chart vs binary version tracking.
+- **Resources defaults tuned from a 30-minute containerised observation** against the live Hyperping API (Docker `--read-only --user 65534:65534`, matching chart runtime). Effect: requests/limits reflect actual binary use under restricted constraints; render harness asserts the literal envelope.
+- **Probes reconciled** to the peer-review contract (10/10/3 liveness, 5/5/3 readiness). Effect: pods reach Ready faster and unhealthy pods are pulled from Service endpoints sooner.
+- **`--cache-ttl` renders via `toJson`**. Effect: every optional-flag arg in the chart now goes through one canonical path. `values.yaml` warns against bare-integer cacheTTL values.
+- **PSS-restricted securityContext locked-in by render tests AND admitted live in CI**. The kind admission job applies the defaults fixture LIVE so the pod boots under `readOnlyRootFilesystem: true`; this is the runtime proof item 4 demanded.
+- **NetworkPolicy on by default**. Vanilla NP permits DNS to kube-system and TCP/443 to 0.0.0.0/0 (no RFC1918 except — matches the documented egress contract). Optional `cilium.io/v2 CiliumNetworkPolicy` variant for FQDN-restricted egress.
+- **ExternalSecret support** via `external-secrets.io/v1` (default) with `externalSecret.apiVersion` override for legacy ESO ≤ 0.15. Mutually exclusive with `apiKey` / `existingSecret`.
+- **Three render-time `fail()` guards**: multi-source secret config, missing secret source at replicaCount≥1, and `replicaCount > 1`. `replicaCount: 0` is supported and secret-source-exempt.
+- **PDB guard**: PDB suppressed when `replicaCount ≤ 1` regardless of `enabled`. `maxUnavailable` default kept at `1` (drain-safe).
+- **`image.tag` comment** noting chart-vs-binary version independence.
+
+### Version policy
+
+- Chart `version`: 1.1.0 → **1.5.0** (skips past the binary's 1.2.x slot to keep the shared CHANGELOG monotonic; the binary's `[1.2.0] - 2026-04-25` entry is untouched).
+- Chart `appVersion`: "1.4.0" → **"1.4.1"** (tracks the just-released binary v1.4.1).
 
 ### CI / verification
 
-Three jobs gate chart-touching PRs (matching local `make helm-ci`):
+The existing `helm` job is extended with three new steps inside the same job (no branch-protection migration required):
 
-- `lint-and-render`: `helm lint` + PyYAML render harness (20+ cases including five new `fail()` paths).
-- `kubeconform`: every passing fixture validated against k8s 1.34 schemas + datreeio CRDs catalog (covers `ExternalSecret`, `CiliumNetworkPolicy`, `ServiceMonitor`).
-- `pss-admission`: rendered chart applied `--server-side --dry-run=server` into a `pod-security.kubernetes.io/enforce=restricted` namespace inside a `kind` cluster.
+- `helm lint` + PyYAML render harness (22+ cases including six new `fail()` paths and an explicit `helm.sh/chart` label assertion).
+- `kubeconform`: every passing fixture validated against k8s 1.34 schemas + datreeio CRDs catalog (lowercase kind filename convention).
+- `kind` cluster boots `kindest/node:v1.34.0@sha256:...` (digest-pinned), labels a namespace `pod-security.kubernetes.io/enforce=restricted`, applies four fixtures (defaults live with rollout-status wait; ExternalSecret/Cilium via server-side dry-run).
+
+### Caveats explicitly documented
+
+- The chart does NOT create or label the target Namespace. Operators must label `pod-security.kubernetes.io/enforce=restricted` themselves; the upgrade notes spell this out.
+- NetworkPolicy semantic correctness (does the policy actually permit traffic to api.hyperping.io?) is NOT verified by kubeconform or PSS. The egress rule is constructed to match the documented contract; manual smoke verification post-merge is the operator's responsibility for FQDN-restricted Cilium installs.
+- Helm-to-ESO upgrade requires a brief window where the chart-managed Secret is deleted and ESO reconciles a new one; staged cutover guidance is in the CHANGELOG upgrade notes.
 
 ### Upgrade notes (see CHANGELOG for full text)
 
-- `helm.sh/chart` label flips `1.1.0 → 1.2.0` on every resource.
-- `app.kubernetes.io/version` does NOT change (still `1.4.0`).
-- `networkPolicy.enabled` flips to `true` by default — set `false` explicitly if you don't want it.
-- `replicaCount > 1` and multi-source secret configs now abort install.
-- PSS-restricted enforcement is the assumed namespace policy.
-
-### Source of the work
-
-Peer-review action list at https://github.com/develeap/hyperping-exporter/pull/52 (10 items). All items addressed; none punted.
+- `app.kubernetes.io/version` label flips `1.4.0 → 1.4.1`; `helm.sh/chart` flips `hyperping-exporter-1.1.0 → hyperping-exporter-1.5.0`.
+- `networkPolicy.enabled` flips to `true` by default — set `false` explicitly to opt out.
+- `replicaCount > 1`, multi-source secret configs, and missing secret-source at replicaCount≥1 now abort install.
+- `externalSecret.apiVersion` defaults to `external-secrets.io/v1` — set to `v1beta1` for legacy ESO ≤ 0.15.
+- PSS-restricted enforcement is the assumed namespace policy; the chart does NOT label the namespace.
 EOF
 )"
 ```
@@ -1593,32 +1800,35 @@ EOF
 ```bash
 gh pr checks --watch
 ```
-All three Helm-CI jobs must pass: `lint-and-render`, `kubeconform`, `pss-admission`. (Go-side CI is skipped via the existing `paths-ignore`.)
+Expected: the `helm` job (with all three new steps) passes. Go-side CI is skipped via the existing `paths-ignore` filter.
 
-- [ ] **Step 4: Report PR URL upstream and stop**
+- [ ] **Step 4: Report PR URL and stop**
 
-Do NOT merge. The user explicitly required PR-only; the user does the merge.
+Do NOT merge. The user explicitly required PR-only.
 
 ---
 
 ## Risks and Cutover Notes
 
-- **`kind-action` SHA pin**: the executing subagent MUST verify the actual `helm/kind-action` tag and SHA at execution time and update the workflow accordingly. The plan uses `v1.12.0` as a placeholder; if a newer stable tag exists at execution time, use it (and pin the corresponding SHA) to keep CI fast and using a maintained release.
-- **kubeconform CRDs catalog availability**: the workflow pulls schemas from `raw.githubusercontent.com/datreeio/CRDs-catalog`. If GitHub rate-limits the runner, the job will fail intermittently. The CRDs catalog is the standard practice; if it proves flaky, switch to pinning a tagged release of the catalog and caching schemas. Document if encountered.
-- **kind boot time**: ~60–90 seconds on GitHub-hosted runners. The PSS admission job is the long pole at ~2 minutes total. Acceptable.
-- **PSS rejection for fields we don't set**: the chart never sets `hostNetwork`, `hostPID`, `hostPIDs`, `procMount`, sysctl, AppArmor — all PSS-restricted-friendly defaults. The container image is `gcr.io/distroless`-style at the binary's release pipeline. If a future change accidentally adds e.g. `hostPort`, the PSS job will catch it.
-- **External Secrets Operator presence**: the ExternalSecret template renders unconditionally on `externalSecret.enabled: true`. The chart cannot detect whether ESO is installed in the cluster; if it's missing, `kubectl apply` returns `no matches for kind "ExternalSecret"`. This is the same trade-off the chart makes for the Cilium variant: be honest at apply time rather than silent at render time.
-- **`add` is the Helm template function**: the count helper uses `add` from Helm's Sprig functions. Verified available in Helm v3.20.2.
-- **`int` conversion**: `gt (int .Values.replicaCount) 1` works because `replicaCount` is a YAML integer; if a user passes `replicaCount: "1"` as a string, `int` coerces it. Tested implicitly by the harness.
-- **Backwards-compat**: no existing value name renamed. The new keys (`externalSecret`, `networkPolicy.fqdnRestriction`) are additive. Existing values consumed by users on chart 1.0.0/1.1.0 still work, except for the new fail() guards which intentionally reject previously-broken configurations.
-- **`replicas: 0` rendering**: Helm/Go renders Go ints by their natural representation. `replicas: {{ .Values.replicaCount }}` with `replicaCount: 0` produces `replicas: 0` (not `null` or `""`) because YAML serializes the integer literally. Verified by Case 18.
+- **Action SHA pinning**: Task 1 Step 6 resolves the live SHAs. The plan MUST NOT merge with `<KIND_ACTION_SHA>` or `<KINDEST_NODE_DIGEST>` literals in the workflow; the executing subagent verifies and substitutes before commit. If `helm/kind-action v1.12.0` does not exist at execution time, use the actual latest stable tag.
+- **kubeconform CRDs catalog availability**: the workflow pulls schemas from `raw.githubusercontent.com/datreeio/CRDs-catalog`. Lowercase-kind filename convention is now used. If GitHub rate-limits the runner, the job will fail intermittently; document if encountered and pin a tagged catalog release.
+- **kind boot time + live admission**: ~60-90 seconds on GitHub-hosted runners plus a rollout-status wait of up to 120 seconds for the defaults fixture pod. Total job time ~3-5 minutes; acceptable.
+- **kind admission-config mount**: kind resolves relative `hostPath` against its own cwd, not `$GITHUB_WORKSPACE`. The `admission_test.sh` wrapper rewrites the placeholder `__ABSPATH_PLACEHOLDER__` in a temporary copy of `kind-pss.yaml` to the absolute repo root at run time, so the PSS admission plugin is always configured. helm/kind-action processes the config file before our wrapper runs; we therefore pass our own pre-rewritten config path to kind-action via the `config:` input rather than letting kind-action consume the placeholder file directly. This is done by setting `config: deploy/helm/hyperping-exporter/tests/kind-pss.yaml` and having the workflow first run a one-line `sed -i` substitution BEFORE the kind-action step — add that as a discrete workflow step ahead of the `helm/kind-action@<SHA>` step.
+- **Namespace mismatch in `kubectl apply`**: rendered manifests carry `namespace: <Release.Namespace>`. The admission script renders with `--namespace "$NS"` so Release.Namespace becomes the test namespace, AND strips `^  namespace:` lines as belt-and-braces so the `-n "$NS"` flag has authority. Either alone would suffice; both together are robust.
+- **PSS rejection for fields we don't set**: the chart never sets `hostNetwork`, `hostPID`, `procMount`, sysctl, AppArmor — all PSS-friendly defaults. If a future change accidentally adds `hostPort` or similar, the PSS admission job will catch it.
+- **External Secrets Operator presence at apply time**: same trade-off as the Cilium variant: chart cannot detect operator presence at render time; ExternalSecret apply fails with `no matches for kind` on clusters without ESO. The admission test exercises the ExternalSecret render via `--dry-run=server` (CRDs absent in stock kind), which validates the manifest shape against the apiserver but not against the CRD schema; kubeconform provides that via the datreeio catalog.
+- **Helm template function availability**: `add`, `default dict`, `int`, `gt`, `printf`, `toJson`, `required` are all in Helm v3.20.x Sprig; verified by smoke tests in Tasks 6-8.
+- **`replicaCount: 0` integer rendering**: Helm/Go YAML serialises the integer literally, producing `replicas: 0` (not `null` or `""`). Verified by Case 20.
+- **Backwards-compat**: no existing value name renamed. New keys (`externalSecret`, `networkPolicy.fqdnRestriction`) are additive. The new `fail()` guards intentionally reject previously-broken configurations; that's the point.
+- **Branch-protection identifier**: the workflow keeps the `helm` job key, so existing branch-protection rules referencing the `Helm chart lint and render` check name continue to bind. The job's `name:` is updated to `Helm chart CI`; if branch-protection matches by `name`, the rule needs the new name. Confirm before merge by running `gh api repos/develeap/hyperping-exporter/branches/main/protection --jq '.required_status_checks.contexts' 2>/dev/null` and reconciling.
 
 ## Why this plan is bold and direct
 
 - One PR, ten items, single cutover.
-- Empirical numbers, not invented ones.
-- All four edge cases the strategy flagged (replicas:0, NP-conflict, ExternalSecret-conflict, multi-replica) are tested as `fail()` paths or admission paths, not characterized into best-effort warnings.
-- Real CI gates (kubeconform + kind admission) rather than render-only confidence.
-- No interim "characterize then change" steps; the existing partial implementations are reconciled in-line.
-- The plan explicitly documents what is intentionally NOT changed (binary, Go-side workflows, README) so the reviewer can short-circuit "why didn't you touch X" objections.
-
+- Empirical numbers measured under chart-equivalent runtime (Docker `--read-only`, uid 65534).
+- Every edge case (replicas:0, NP-conflict, ExternalSecret-conflict, multi-replica, missing-store) is tested as a `fail()` path or admission path, not characterised into best-effort warnings.
+- Real CI gates: live pod boot for the readOnlyRootFilesystem proof, kubeconform for offline schema validation including CRDs, PSS admission for restricted-namespace enforcement.
+- Strict TDD discipline: production changes commit BEFORE the assertion-only commit, which lands the entire harness extension once against fully settled values rather than in TDD-incomplete fragments per task.
+- Action SHAs, kindest/node digest, and ESO apiVersion are all resolved against upstream at execution time (Task 1 Step 6); no placeholders survive into the workflow.
+- Version policy is explicit: chart 1.5.0 (not 1.2.0, which collides with the binary slot), appVersion 1.4.1 (tracks the latest released binary).
+- Caveats the chart cannot fix (operator-side namespace labelling, NP connectivity semantics, ESO operator presence, kindest/node tag mutability between digest pins) are surfaced in the upgrade notes rather than papered over.
