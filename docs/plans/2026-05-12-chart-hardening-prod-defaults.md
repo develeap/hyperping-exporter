@@ -41,6 +41,31 @@ The plan owns the LIST of anchors; the worktree owns the VALUES. `tests/admissio
 
 These contracts are the verification rules that bind every task. Each contract states the invariant, the gate that enforces it, and the test that proves the gate works. The findings memo (R3-1..R3-46) is the audit checklist these contracts must satisfy collectively, not a list of one-off patches.
 
+### Round-4 Contradiction Resolutions (binding; supersedes earlier text)
+
+Eight contradictions raised in round 4 issue review are resolved as follows. These resolutions are CANONICAL; any earlier text in this plan that disagrees is superseded by the resolution below. Implementers MUST treat each resolution as the single source of truth and update derived sections accordingly.
+
+- **R4-1 — `validateReplicaCount` bypass semantics.** The validator ALWAYS aborts on `replicaCount > 1`. There is no in-validator bypass. The `internal._testBypassReplicaCheck` knob (see R4-8) affects ONLY the PDB rendering gate so the structural test can render a PDB at `replicaCount == 1`. Case 29 proves: even with `internal._testBypassReplicaCheck: true` AND `replicaCount: 2` AND `podDisruptionBudget.enabled: true`, the validator aborts BEFORE PDB is rendered, so the PDB is absent (no leakage).
+- **R4-2 — `secretSourceCount` gate syntax.** Use int-vs-int form everywhere: `gt (int (include "hyperping-exporter.secretSourceCount" .)) 0`. The string-vs-string form `gt (include ... .) "0"` is forbidden because Helm `include` returns a string and lexicographic compare on `"0"` is unsafe. File Structure (deployment.yaml env-block wrap) and Task 6 Step 4 BOTH use the int-vs-int form. The C2.4 helper's gate text in this section is the single source of truth.
+- **R4-3 — `--cache-ttl` ownership.** Task 4 owns ALL arg migrations to the safe-arg helper, INCLUDING `--cache-ttl`. Task 6 does NOT migrate any arg lines; Task 6 only adds the validator includes at the top of `deployment.yaml`, the env-block gate, and the secret-source / replica-count / cacheTTL validator definitions. Any earlier sentence in Task 6 claiming a cacheTTL migration is superseded.
+- **R4-4 — `validateCacheTTL` existence timing.** The `validateCacheTTL` helper is DEFINED in Task 4 Step 1 (alongside the safe-arg helper), used by the top-of-`deployment.yaml` include block from Task 4 Step 2 onward, and remains stable through Task 6. The `assert_fail` smoke test that exercises it (`cache-ttl-int-fails`, Case 23) is introduced in Task 6 Step 9 (because the `assert_fail` helper itself is introduced in Task 6 Step 1). Between Task 4 and Task 6, the validator is exercised by an inline shell smoke (`helm template ... ; test $? -ne 0 && grep -q "must be a quoted Go duration"`) called out explicitly in Task 4 Step 4. Contract C2.3 and Contract C6.3 are both consistent with this timing.
+- **R4-5 — Cilium namespace-label encoding.** Use ONLY the plural-`labels` form: `k8s:io.kubernetes.pod.namespace.labels.<key>=<value>` for arbitrary namespaceSelector labels (per Cilium 1.14+ documentation), and `k8s:io.kubernetes.pod.namespace=<name>` for the well-known `kubernetes.io/metadata.name` shortcut. Any singular `label` form in earlier plan text is a typo and is replaced by the plural form. The Cilium template emits the plural form; the `fail()` message for unsupported namespace-label keys names the plural form in its operator guidance.
+- **R4-6 — `validateSecretSources` boolean precedence.** Pin the exact tree:
+  1. If `(int .Values.replicaCount) == 0` → SKIP all secret-source validation. A zero-replica Deployment has no Pods to authenticate; both "missing source" and "conflict between sources" are tolerated. Case 13 (`replicas-zero`) renders successfully even with `apiKey: ""`, `existingSecret: ""`, `externalSecret.enabled: false` (no source); the env block is suppressed because `secretSourceCount == 0`.
+  2. Else if `(int (include "hyperping-exporter.secretSourceCount" .)) > 1` → `fail()` with the conflict message naming the offending pair(s).
+  3. Else if `(int (include "hyperping-exporter.secretSourceCount" .)) == 0` → `fail()` with the missing-source message.
+  4. Else → pass (exactly one source set; the env block renders).
+  The contract is symmetric: `replicaCount: 0` exempts ALL secret-source rules, not just "missing". Case 18 (`secret-source-missing`, `replicaCount: 1`, no source) still fails because `replicaCount > 0`.
+- **R4-7 — bisect-green between Task 4 and Task 6 (render harness assertion shape).** The render harness's existing 9 cases assert on `deployment_args(rendered)` (a decoded list, list-equality comparison via `assert_eq`), NOT on stdout grep. The `BASELINE_ARGS` constant in `render_test.py` is a fixed list of 5 strings; the safe-arg helper is designed to produce byte-identical output for the same input values. After Task 4's migration, every default-render still produces `["--listen-address=:9312", "--metrics-path=/metrics", "--cache-ttl=60s", "--log-level=info", "--log-format=text"]` (same order, same content). Therefore Contract C1.1's bisect-green claim holds across the Task 4 commit without an "arg-per-case" migration restructuring. Implementer MUST re-run `python3 render_test.py` immediately after Task 4 Step 4 to prove this empirically; if any case turns red, the helper output is byte-divergent from the inline form and the implementer fixes the helper (NOT the assertion).
+- **R4-8 — `internal._testBypassReplicaCheck` is test-only, never production-exposed.** The values.yaml `internal:` block is REMOVED from this plan. The bypass key has the literal name `internal._testBypassReplicaCheck` (leading-underscore-prefixed key explicitly marks it as test-only). The key:
+  - Has NO entry in `values.yaml` (no default, no documentation, no `internal:` block — operators cannot set it via the documented surface).
+  - Is supplied EXCLUSIVELY by `tests/fixtures/pdb-structural.values.yaml` for the C8 structural test.
+  - Is honored ONLY by `templates/pdb.yaml`'s rendering gate so the PDB renders at `replicaCount: 1` for the structural test.
+  - Is IGNORED by `_helpers.tpl`'s `validateReplicaCount` (per R4-1), so any combination with `replicaCount > 1` still aborts BEFORE the PDB gate is reached.
+  - The chart explicitly guards against production leakage: a top-of-`deployment.yaml` include calls `validateNoTestKeys` which `fail()`s if any key in `.Values.internal` exists with a name NOT prefixed with `_test`. This catches accidental production use of any test-only knob added in the future.
+  
+  Case 29 (`pdb-structural-internal-bypass-multi-replica-fails`) supplies `internal._testBypassReplicaCheck: true` + `replicaCount: 2` + `podDisruptionBudget.enabled: true` and `assert_fail`s on the `validateReplicaCount` message; the `assert_fail` body also greps the rendered output (if any) for `kind: PodDisruptionBudget` and asserts absent. Case 29 thereby proves: (a) the broken-user-input shape (`replicaCount > 1`) ALWAYS aborts the render; (b) the bypass does NOT smuggle a PDB into a render that the validator otherwise rejected.
+
 ### Contract C1 — Bisect-Green Atomicity (covers R3-1, R3-15, R3-21, R3-22, R3-34)
 
 **Invariant:** Every commit on the branch keeps `python3 render_test.py` AND `helm lint` AND (from Task 9 onward) `make helm-kubeconform` green. No commit leaves an orphan helper, an unreferenced template, a stale expected-version, or a test-vs-template impedance mismatch.
@@ -89,7 +114,7 @@ These contracts are the verification rules that bind every task. Each contract s
    {{- end -}}
    {{- end -}}
    ```
-   `validateCacheTTL` is included EXACTLY ONCE — at the top of `templates/deployment.yaml`, alongside `validateSecretSources` and `validateReplicaCount`. The plan does NOT instruct re-including it from any other template. Task 4 and Task 6 are both audited (Contract C7) to ensure single-inclusion.
+   `validateCacheTTL` is DEFINED in Task 4 Step 1 alongside the safe-arg helper (per R4-4). It is INCLUDED EXACTLY ONCE — at the top of `templates/deployment.yaml`, written in Task 4 Step 2 alongside the cacheTTL arg migration. `validateSecretSources` and `validateReplicaCount` are defined in Task 6 and join the same top-of-file include block in the Task 6 commit. The plan does NOT instruct re-including any validator from any other template. Task 4 and Task 6 are both audited (Contract C7) to ensure single-inclusion.
 
 4. **`default dict` semantics correctness.** All `secretSourceCount`-style helpers that read into a sub-block of `.Values` MUST first verify the parent is a map. Pattern:
    ```yaml
@@ -112,7 +137,10 @@ These contracts are the verification rules that bind every task. Each contract s
 
 1. **Peer-shape conversion supports both `matchLabels` AND `matchExpressions`.** The chart's `networkPolicy.ingressFrom` accepts vanilla `NetworkPolicyPeer` shape (`{podSelector: {matchLabels, matchExpressions}, namespaceSelector: {matchLabels, matchExpressions}}`). The Cilium template walks each peer and emits an `EndpointSelector` containing both `matchLabels` and `matchExpressions` from `podSelector`, AND merges in a derived label for `namespaceSelector` when one is present. The conversion logic is in Task 7 Step 3.
 
-2. **Namespace-label encoding policy.** The Cilium label convention is `k8s:io.kubernetes.pod.namespace=<name>` for the well-known namespace label; for arbitrary namespaceSelector labels Cilium uses `k8s:io.kubernetes.pod.namespace.label.<key>=<value>`. The template only converts the well-known `kubernetes.io/metadata.name` case automatically; ANY other `namespaceSelector` label triggers a `fail()` with a message directing the operator to encode it directly as a Cilium-shaped `matchLabels` entry on the peer's `podSelector`. The Cilium label PREFIX is `k8s:` and is a project-versioned constant. We document the targeted Cilium minor: **Cilium 1.14+ (uses `k8s:io.kubernetes.pod.namespace.labels.<key>` for any label and `k8s:io.kubernetes.pod.namespace` for the well-known name).** Older Cilium (≤1.13) is not supported; the values.yaml comment states this explicitly.
+2. **Namespace-label encoding policy.** Per R4-5, the plural `labels` form is canonical. The Cilium label convention this chart targets (Cilium 1.14+) is:
+   - `k8s:io.kubernetes.pod.namespace=<name>` for the well-known `kubernetes.io/metadata.name` namespace label (the shortcut form, accepted by Cilium without the `.labels.` infix).
+   - `k8s:io.kubernetes.pod.namespace.labels.<key>=<value>` for ANY OTHER namespaceSelector label (per Cilium 1.14+ documentation; the plural `labels` segment is required).
+   The template auto-converts ONLY the well-known shortcut case. ANY other `namespaceSelector` label triggers a `fail()` whose message names the plural-`labels` encoding and tells the operator to lift it onto the peer's `podSelector.matchLabels` directly (because Cilium's `EndpointSelector` flattens pod and namespace labels into one selector). The Cilium label PREFIX is `k8s:` and is a project-versioned constant. Older Cilium (≤1.13) is not supported; the values.yaml comment states this explicitly. The plan and template MUST never spell the singular `label` form.
 
 3. **`ipBlock`-only peers, selector-less peers, and unconvertible mixes** abort with a specific `fail()` message naming the offending entry index and the unsupported field. No silent dropping.
 
@@ -230,7 +258,14 @@ These contracts are the verification rules that bind every task. Each contract s
 
 **Mechanics:**
 
-1. **PDB structural test.** Because `validateReplicaCount` aborts on `replicaCount > 1`, no positive PDB render is achievable through normal fixtures. Task 7 Step (PDB test) adds a `pdb-structural.values.yaml` fixture that uses `--set` to bypass `validateReplicaCount` (`replicaCount=2` with a special-cased `--set internal.skipReplicaCheck=true` knob OR a render-only `kubeconform`-target file that calls `helm template ... --show-only templates/pdb.yaml --set replicaCount=2 --skip-validation`). Cleaner approach: the PDB template gets an explicit `internal.bypassReplicaCheck` boolean that ONLY the PDB-structural test sets, AND the `validateReplicaCount` validator skips the `replicaCount > 1` check when that bypass is set. The bypass key is `internal.` (Helm convention for not-for-production), documented as internal-only in `values.yaml` with explicit "DO NOT SET IN PRODUCTION" warning, plus a render-harness case (`pdb-structural-internal-bypass-without-pdb-fails`, Case 29) that asserts setting `internal.bypassReplicaCheck=true` without `podDisruptionBudget.enabled=true` ALSO fails (one cannot leak the bypass without enabling PDB; the bypass is gated to the PDB-test pathway only).
+1. **PDB structural test.** Because `validateReplicaCount` aborts on `replicaCount > 1` (per R4-1, no in-validator bypass), no positive PDB render is achievable through any production-shape fixture. Per R4-8, a test-only key `internal._testBypassReplicaCheck: true` is introduced. The key:
+   - Is NOT in `values.yaml` (no default, no documentation, no `internal:` block); it cannot be set via the documented surface.
+   - Is supplied EXCLUSIVELY by `tests/fixtures/pdb-structural.values.yaml` (with `replicaCount: 1` + `podDisruptionBudget.enabled: true` + `internal._testBypassReplicaCheck: true`).
+   - Is honored ONLY by `templates/pdb.yaml`'s gate so the PDB renders at `replicaCount: 1` for the structural test.
+   - Is IGNORED by `validateReplicaCount` (the validator never honors the bypass).
+   - A `validateNoTestKeys` helper (defined in Task 6 alongside the other validators, included from the top of `deployment.yaml`) `fail()`s if `.Values.internal` contains any key NOT prefixed with `_test`; this prevents accidental production introduction of any future test-only knob.
+   
+   Case 29 (`pdb-structural-internal-bypass-multi-replica-fails`) supplies `internal._testBypassReplicaCheck: true` + `replicaCount: 2` + `podDisruptionBudget.enabled: true` and `assert_fail`s on the `validateReplicaCount` message. The `assert_fail` invocation ALSO greps the captured stdout (when present) for `kind: PodDisruptionBudget` and asserts no such kind appears, proving the broken-user-input shape stays PDB-free even with the bypass key set.
 
 2. **Admission-job live-boot coverage.** The four `ADMISSION_FIXTURES` anchor entries cover: `pss-restricted` (default-config live boot — runtime read-only-rootfs proof), `networkpolicy-default` (live boot — proves the default NetworkPolicy doesn't break pod start), `external-secret` (kubeconform only — no CRDs in stock kind), `networkpolicy-cilium` (kubeconform only — same reason). The dispatch table is the SSOT (Contract C1.4).
 
@@ -289,7 +324,7 @@ These contracts are the verification rules that bind every task. Each contract s
 - `deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/replicas-multi.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml`
-- `deploy/helm/hyperping-exporter/tests/fixtures/pdb-structural.values.yaml` — uses `internal.bypassReplicaCheck: true` (C8 PDB-structural test).
+- `deploy/helm/hyperping-exporter/tests/fixtures/pdb-structural.values.yaml` — uses `replicaCount: 1`, `podDisruptionBudget.enabled: true`, and the test-only key `internal._testBypassReplicaCheck: true` (C8 PDB-structural test, per R4-8). This fixture is the SOLE caller of the bypass key; no production-shape fixture sets it.
 - `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-default.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium-defaults.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium-with-ingress.values.yaml`
@@ -330,20 +365,21 @@ These contracts are the verification rules that bind every task. Each contract s
   - Add `externalSecret:` block (Task 6).
   - Document secret-source mutual exclusion above the secret block.
   - Document the multi-replica `fail()` and `replicaCount: 0` exemption above `replicaCount`.
-  - Add `internal:` block with `bypassReplicaCheck: false` and a DO-NOT-SET-IN-PRODUCTION warning (Contract C8).
+  - Per R4-8, NO `internal:` block is added to `values.yaml`. The test-only bypass key `internal._testBypassReplicaCheck` exists ONLY in `tests/fixtures/pdb-structural.values.yaml`; it is undocumented in the operator-facing surface by design. A `validateNoTestKeys` helper (added in Task 6) `fail()`s on production introduction of any key under `.Values.internal` that is not prefixed `_test`.
 - `deploy/helm/hyperping-exporter/templates/_helpers.tpl`:
-  - Add `hyperping-exporter.arg` (Contract C2.1).
-  - Add `validateSecretSources` (one of three top-of-deployment validators).
-  - Add `validateReplicaCount` (with `internal.bypassReplicaCheck` honoured for the PDB-structural test).
-  - Add `validateCacheTTL` (Contract C2.3).
-  - Add `secretSourceCount` (Contract C2.4 default-dict-with-kindIs-map guard).
+  - Add `hyperping-exporter.arg` in **Task 4** (Contract C2.1).
+  - Add `validateCacheTTL` in **Task 4** alongside the safe-arg helper (per R4-4).
+  - Add `secretSourceCount` in **Task 6** (Contract C2.4 default-dict-with-kindIs-map guard).
+  - Add `validateSecretSources` in **Task 6**, implementing the boolean tree pinned in R4-6 (skip-all-on-`replicaCount==0`, then conflict-on-`count>1`, then missing-on-`count==0`).
+  - Add `validateReplicaCount` in **Task 6**. The validator ALWAYS aborts on `replicaCount > 1`; it does NOT honor any bypass key (per R4-1).
+  - Add `validateNoTestKeys` in **Task 6**, `fail()`ing if `.Values.internal` contains any key without a `_test` prefix (per R4-8); included from the top of `deployment.yaml` alongside the other validators.
   - Remove `hyperping-exporter.secretName` ONLY IF Task 6's env-block edit migrates every callsite away from it. If any callsite remains (Service, ServiceMonitor, etc.), the helper stays; Task 6's audit (Contract C1.2) decides.
 - `deploy/helm/hyperping-exporter/templates/deployment.yaml`:
   - Top-of-file: replace the legacy `apiKey || existingSecret` guard with the three validator includes. Trailing `-}}` to suppress stray newlines.
   - Args block: migrate every `printf "--flag=...{{ .Values...}}` line to `{{ include "hyperping-exporter.arg" (list "--flag" .Values.path.to.scalar) }}` (Contract C2.2). Conditional args (`if .Values.config.foo`) wrap the helper call; the helper itself doesn't gate.
-  - Env block (`env: HYPERPING_API_KEY`): wrap in `{{- if gt (include "hyperping-exporter.secretSourceCount" .) "0" }}` so `replicaCount: 0` Deployments without a configured secret source don't dangle a `secretKeyRef`. Use `(include ... .)` not raw `.Values...` so the env block correctness depends on the SAME helper that `validateSecretSources` uses; future weakening of one breaks both, surfacing the regression.
+  - Env block (`env: HYPERPING_API_KEY`): wrap in `{{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}` (int-vs-int compare, per R4-2; the inner `int` cast is required because `include` returns a string). This suppresses the env block when no secret source is configured (typically `replicaCount: 0` deployments under the R4-6 exemption). Use `(include ... .)` not raw `.Values...` so the env block correctness depends on the SAME helper that `validateSecretSources` uses; future weakening of one breaks both, surfacing the regression.
 - `deploy/helm/hyperping-exporter/templates/secret.yaml` — extend `if` guard to suppress on `externalSecret.enabled`.
-- `deploy/helm/hyperping-exporter/templates/pdb.yaml` — wrap in `{{- if and .Values.podDisruptionBudget.enabled (or (gt (int .Values.replicaCount) 1) (and .Values.internal .Values.internal.bypassReplicaCheck)) }}`. `maxUnavailable` default `1` (drain-safe).
+- `deploy/helm/hyperping-exporter/templates/pdb.yaml` — wrap in `{{- if and .Values.podDisruptionBudget.enabled (or (gt (int .Values.replicaCount) 1) (and .Values.internal .Values.internal._testBypassReplicaCheck)) }}` (per R4-8, the key is `internal._testBypassReplicaCheck`; underscore-prefixed `_test` marks it as test-only). `maxUnavailable` default `1` (drain-safe). Because `validateReplicaCount` aborts before this template renders for any `replicaCount > 1` input (per R4-1), the test-only bypass clause only meaningfully triggers when `replicaCount == 1` (the structural test).
 - `deploy/helm/hyperping-exporter/templates/networkpolicy.yaml`:
   - Wrap in `{{- if and .Values.networkPolicy.enabled (not (and .Values.networkPolicy.fqdnRestriction .Values.networkPolicy.fqdnRestriction.enabled)) }}` (Cilium-suppression).
   - Replace the egress 443 rule's `- to:` block (text-matched, not line-matched; see Contract C1.3) so the rendered egress permits TCP/443 to `0.0.0.0/0` with no `except:` list. The cross-namespace scraping doc comment above `ingressFrom` is preserved verbatim.
@@ -559,13 +595,18 @@ Verify Contract C1.
 
 ---
 
-### Task 4: Uniform safe-arg rendering (Contract C2)
+### Task 4: Uniform safe-arg rendering + cacheTTL validator define (Contract C2; R4-3, R4-4, R4-7)
 
-**Files:** Create the `hyperping-exporter.arg` helper in `_helpers.tpl`. Modify `templates/deployment.yaml` to migrate EVERY `printf`/inline arg line. Modify `values.yaml` cacheTTL comment.
+**Files:** Modify `_helpers.tpl` (add `hyperping-exporter.arg` AND `validateCacheTTL`). Modify `templates/deployment.yaml` (migrate EVERY `printf`/inline arg line; add `validateCacheTTL` include at top of file). Modify `values.yaml` cacheTTL comment.
 
-- [ ] **Step 1: Add `hyperping-exporter.arg` helper to `_helpers.tpl`** (Contract C2.1).
+Per R4-3, this task owns ALL arg migrations, INCLUDING `--cache-ttl`; Task 6 does not migrate any arg lines.
+Per R4-4, `validateCacheTTL` is defined here (not in Task 6) and is exercised by an inline shell smoke until the `assert_fail` Case 23 lands in Task 6.
 
-- [ ] **Step 2: Migrate every conditional arg line in `deployment.yaml`** to `{{ include "hyperping-exporter.arg" (list "--flag" .Values.path) }}`. Specifically: `--cache-ttl`, `--listen-address`, `--metrics-path`, `--log-level`, `--log-format`, `--web-config-file`, `--namespace`, `--exclude-name-pattern`, `--mcp-url`. The `if .Values.config.foo` conditionals wrap the helper call as before.
+- [ ] **Step 1: Add two helpers to `_helpers.tpl`** (Contract C2.1, C2.3):
+  - `hyperping-exporter.arg` — the safe-arg helper (Contract C2.1 body).
+  - `hyperping-exporter.validateCacheTTL` — `fail()` if `not (kindIs "string" .Values.config.cacheTTL)` (Contract C2.3 body).
+
+- [ ] **Step 2: Migrate every conditional arg line in `deployment.yaml`** to `{{ include "hyperping-exporter.arg" (list "--flag" .Values.path) }}`. Specifically: `--cache-ttl`, `--listen-address`, `--metrics-path`, `--log-level`, `--log-format`, `--web-config-file`, `--namespace`, `--exclude-name-pattern`, `--mcp-url`. The `if .Values.config.foo` conditionals wrap the helper call as before. ALSO add `{{- include "hyperping-exporter.validateCacheTTL" . }}` to the top of `deployment.yaml` (the validator's first call site).
 
 - [ ] **Step 3: Audit deployment.yaml for any surviving inline arg pattern** (Contract C2 gate).
 
@@ -574,14 +615,24 @@ grep -nE '"--[a-z-]+=' deploy/helm/hyperping-exporter/templates/deployment.yaml
 # Expected: zero output beyond the include lines.
 ```
 
-- [ ] **Step 4: Run render harness and helm lint**
+- [ ] **Step 4: Run render harness, helm lint, AND the cacheTTL inline smoke** (R4-4 between-task validator exercise):
 
 ```bash
 python3 deploy/helm/hyperping-exporter/tests/render_test.py
 helm lint deploy/helm/hyperping-exporter/
+# Inline cacheTTL validator smoke — int input must abort with the expected message:
+set +e
+stderr=$(helm template testrel deploy/helm/hyperping-exporter/ \
+  --set config.apiKey=x --set config.cacheTTL=60 2>&1 >/dev/null)
+rc=$?
+set -e
+test "$rc" -ne 0 || { echo "FAIL validateCacheTTL did not abort"; exit 1; }
+echo "$stderr" | grep -q "must be a quoted Go duration" \
+  || { echo "FAIL validateCacheTTL message drift: $stderr"; exit 1; }
+echo "OK validateCacheTTL inline smoke"
 ```
 
-Existing 9 cases all stay green (the helper produces byte-identical output for the values they exercise).
+Per R4-7, the render harness's `BASELINE_ARGS` list-equality assertions stay green across this commit because the safe-arg helper is designed to produce byte-identical output for the same input values. If `render_test.py` reports any case red after this step, the helper is byte-divergent from the inline form: fix the helper, not the assertion.
 
 - [ ] **Step 5: Commit**
 
@@ -617,29 +668,37 @@ Verify Contract C1.
 
 ---
 
-### Task 6: ExternalSecret template + secret-source guards + multi-replica guard + cacheTTL guard + safe-arg cacheTTL migration (single commit)
+### Task 6: ExternalSecret template + secret-source guards + multi-replica guard + test-keys guard (single commit)
 
-**Files:** Create `templates/externalsecret.yaml`, three secret-conflict fixtures, `secret-source-missing.values.yaml`, `replicas-multi.values.yaml`, `cache-ttl-int-fails.values.yaml`. Modify `templates/_helpers.tpl` (add `secretSourceCount`, `validateSecretSources`, `validateReplicaCount`, `validateCacheTTL`), `templates/deployment.yaml` (replace legacy guard, gate env block), `templates/secret.yaml` (suppress on `externalSecret.enabled`), `values.yaml` (externalSecret block, secret-source-mutex doc, replicaCount-zero doc, `internal.bypassReplicaCheck: false`), `tests/render_test.py` (add `assert_fail` helper + 6 new cases).
+**Files:** Create `templates/externalsecret.yaml`, three secret-conflict fixtures, `secret-source-missing.values.yaml`, `replicas-multi.values.yaml`. Modify `templates/_helpers.tpl` (add `secretSourceCount`, `validateSecretSources`, `validateReplicaCount`, `validateNoTestKeys`; `validateCacheTTL` already lives here from Task 4 per R4-4), `templates/deployment.yaml` (replace legacy 2-line `apiKey || existingSecret` guard with the new validator includes; gate env block), `templates/secret.yaml` (suppress on `externalSecret.enabled`), `values.yaml` (externalSecret block, secret-source-mutex doc, replicaCount-zero doc; per R4-8 NO `internal:` block is added), `tests/render_test.py` (add `assert_fail` helper + new cases including Case 23 cache-ttl-int-fails).
+
+Per R4-3, this task does NOT migrate any arg lines (all arg migrations were Task 4).
+Per R4-4, `validateCacheTTL` is already defined and included from Task 4; this task adds the OTHER validators to the same top-of-`deployment.yaml` include block.
+Per R4-8, `validateNoTestKeys` is added here to gate against production introduction of any `internal.*` keys not prefixed with `_test`.
 
 This is the largest single commit. Contract C1.1 requires the legacy two-line `apiKey || existingSecret` guard removal AND the new validator includes to land atomically, so the `external-secret.values.yaml` and `secret-source-missing.values.yaml` fixtures don't bisect-red between any two commits.
 
 - [ ] **Step 1: Add `assert_fail` helper to `render_test.py`** (Contract C6.1).
 
-- [ ] **Step 2: Add four helpers to `_helpers.tpl`** (Contract C2.3, C2.4):
-  - `secretSourceCount` — uses `default dict` + `kindIs "map"` guard on `.Values.externalSecret`.
-  - `validateSecretSources` — `fail()` on count != 1 OR count == 0 AND `gt (int .Values.replicaCount) 0`. (`replicaCount: 0` is exempt; documented inline.)
-  - `validateReplicaCount` — `fail()` on `gt (int .Values.replicaCount) 1` UNLESS `internal.bypassReplicaCheck: true` (Contract C8.1).
-  - `validateCacheTTL` — `fail()` if `not (kindIs "string" .Values.config.cacheTTL)`.
+- [ ] **Step 2: Add four helpers to `_helpers.tpl`** (Contract C2.4; R4-1, R4-6, R4-8):
+  - `secretSourceCount` — uses `default dict` + `kindIs "map"` guard on `.Values.externalSecret`. Returns a numeric-shaped string (Helm `include` always returns a string; callers wrap with `int`).
+  - `validateSecretSources` — implements the R4-6 boolean tree EXACTLY:
+    1. If `(int .Values.replicaCount) == 0` → skip all checks (return nothing).
+    2. Else if `(int (include "hyperping-exporter.secretSourceCount" .)) > 1` → `fail()` with the conflict message.
+    3. Else if `(int (include "hyperping-exporter.secretSourceCount" .)) == 0` → `fail()` with the missing-source message.
+    4. Else → pass.
+  - `validateReplicaCount` — `fail()` on `gt (int .Values.replicaCount) 1`. ALWAYS aborts on multi-replica; no bypass (per R4-1).
+  - `validateNoTestKeys` — `fail()` if `.Values.internal` is a map containing any key NOT prefixed with `_test` (per R4-8). Allows the `_testBypassReplicaCheck` key (used by the structural fixture) while rejecting any other `internal.*` key as a footgun.
 
-- [ ] **Step 3: Modify `deployment.yaml` top** — replace the legacy 2-line guard with the three new validator includes. Use the safe-arg helper for `--cache-ttl` (this is the C2.2 migration of cacheTTL specifically; other arg migrations were in Task 4).
+- [ ] **Step 3: Modify `deployment.yaml` top** — replace the legacy 2-line `apiKey || existingSecret` guard with includes for `validateSecretSources`, `validateReplicaCount`, and `validateNoTestKeys`. (`validateCacheTTL` is ALREADY included from Task 4; do NOT re-add it.) No arg lines are migrated here (per R4-3).
 
-- [ ] **Step 4: Modify `deployment.yaml` env block** — wrap in `{{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}`. (The double `int` cast is needed because `include` returns a string.)
+- [ ] **Step 4: Modify `deployment.yaml` env block** — wrap in `{{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}` (int-vs-int per R4-2; the inner `int` cast is required because `include` returns a string).
 
 - [ ] **Step 5: Create `templates/externalsecret.yaml`** rendering `external-secrets.io/v1` (with values-driven `externalSecret.apiVersion` override defaulting to `external-secrets.io/v1`).
 
 - [ ] **Step 6: Modify `templates/secret.yaml`** to suppress when `externalSecret.enabled: true`.
 
-- [ ] **Step 7: Update `values.yaml`** with the externalSecret block, secret-source mutex docs, replicaCount-zero doc, `internal:` block with `bypassReplicaCheck: false` + DO-NOT-SET-IN-PRODUCTION warning.
+- [ ] **Step 7: Update `values.yaml`** with the externalSecret block, secret-source mutex docs, and replicaCount-zero doc (explaining the R4-6 exemption). Per R4-8, do NOT add an `internal:` block; the test-only bypass key lives only in the structural fixture.
 
 - [ ] **Step 8: Create fixtures**: `external-secret.values.yaml`, `external-secret-defaults.values.yaml`, `external-secret-missing-store.values.yaml`, `replicas-zero.values.yaml`, `replicas-multi.values.yaml`, `secret-conflict-{apikey-and-existing,apikey-and-external,existing-and-external}.values.yaml`, `secret-source-missing.values.yaml`, `cache-ttl-numeric.values.yaml`, `cache-ttl-int-fails.values.yaml`, `log-level-numeric.values.yaml`, `metrics-path-with-special-chars.values.yaml`.
 
@@ -647,7 +706,7 @@ This is the largest single commit. Contract C1.1 requires the legacy two-line `a
   - Case 10: `external-secret` positive render (ExternalSecret kind present; Secret kind absent).
   - Case 11: `external-secret-defaults` (no `refreshInterval` → 1h propagates).
   - Case 12: `external-secret-missing-store` (`assert_fail` on missing `secretStoreRef.name`).
-  - Case 13: `replicas-zero` positive render (Deployment `replicas: 0`; env block absent because `secretSourceCount == 0`; PDB absent).
+  - Case 13: `replicas-zero` positive render. Fixture sets `replicaCount: 0` and provides NO secret source (no `apiKey`, no `existingSecret`, `externalSecret.enabled: false`). Per R4-6 the validator skips all secret-source checks at `replicaCount == 0`; render succeeds with Deployment `replicas: 0`, env block absent (because `secretSourceCount == 0` short-circuits the env wrap), PDB absent.
   - Case 14: `replicas-multi` (`assert_fail` on multi-replica).
   - Cases 15, 16, 17: three secret-conflict `assert_fail` cases.
   - Case 18: `secret-source-missing` (`assert_fail` with `replicaCount: 1` and no source).
@@ -687,7 +746,7 @@ Verify Contract C1.
 
 This commit lands the NetworkPolicy default flip atomically with Case 1's `expected_versions` extension (Contract C1.1) AND introduces the Cilium variant with full peer-shape coverage (Contract C3).
 
-- [ ] **Step 1: Update `templates/pdb.yaml`** to gate on `podDisruptionBudget.enabled AND (replicaCount > 1 OR internal.bypassReplicaCheck)` (Contract C8).
+- [ ] **Step 1: Update `templates/pdb.yaml`** to gate on `podDisruptionBudget.enabled AND (replicaCount > 1 OR internal._testBypassReplicaCheck)` (per R4-8). Because `validateReplicaCount` aborts on `replicaCount > 1` (per R4-1) BEFORE this template renders, the bypass clause effectively unlocks PDB rendering only at `replicaCount == 1` (the structural fixture).
 
 - [ ] **Step 2: Targeted text-matched edit of `templates/networkpolicy.yaml`** (Contract C1.3):
   - Replace `{{- if .Values.networkPolicy.enabled }}` (top of file) with `{{- if and .Values.networkPolicy.enabled (not (and .Values.networkPolicy.fqdnRestriction .Values.networkPolicy.fqdnRestriction.enabled)) }}`.
@@ -722,7 +781,7 @@ This commit lands the NetworkPolicy default flip atomically with Case 1's `expec
 
 - [ ] **Step 5: Create Cilium fixtures (seven)** per Contract C3 gate.
 
-- [ ] **Step 6: Create `pdb-structural.values.yaml`** with `internal.bypassReplicaCheck: true`, `podDisruptionBudget.enabled: true`. Create `pdb-enabled.values.yaml` (default `replicaCount: 1`, `podDisruptionBudget.enabled: true`; asserts PDB suppressed). Create `networkpolicy-default.values.yaml` (`apiKey: x` only; default NP rendered).
+- [ ] **Step 6: Create `pdb-structural.values.yaml`** with `replicaCount: 1`, `podDisruptionBudget.enabled: true`, `internal._testBypassReplicaCheck: true` (per R4-8; the sole production caller of the test-only bypass key). Create `pdb-enabled.values.yaml` (default `replicaCount: 1`, `podDisruptionBudget.enabled: true`, NO bypass key; asserts PDB suppressed because gate requires either `>1` replicas or the bypass). Create `networkpolicy-default.values.yaml` (`apiKey: x` only; default NP rendered).
 
 - [ ] **Step 7: Extend `render_test.py` Case 1** to use a set-difference enumeration with per-kind diff message (Contract C8.3, R3-13 collapse). Include `NetworkPolicy` in the expected set (default-on).
 
@@ -732,7 +791,7 @@ This commit lands the NetworkPolicy default flip atomically with Case 1's `expec
   - Case 19: `networkpolicy-default` positive render (NetworkPolicy kind present; Cilium absent).
   - Case 20: `pdb-enabled` (PDB absent — gate suppresses on replicaCount=1).
   - Case 21: `pdb-structural` (PDB rendered with internal bypass; asserts apiVersion, kind, `maxUnavailable: 1`, selector).
-  - Case 29: `pdb-structural-internal-bypass-without-pdb-fails` — sets `internal.bypassReplicaCheck: true` WITHOUT `podDisruptionBudget.enabled: true` AND `replicaCount: 2`; `assert_fail` (validator still aborts because bypass only applies to the PDB gate, not to the validator's normal path; this prevents bypass leakage).
+  - Case 29: `pdb-structural-internal-bypass-multi-replica-fails` — sets `internal._testBypassReplicaCheck: true` + `replicaCount: 2` + `podDisruptionBudget.enabled: true`; `assert_fail` on the `validateReplicaCount` message (per R4-1, the validator always aborts on `replicaCount > 1`; per R4-8, the test-only bypass key does NOT smuggle a PDB into a render the validator rejected). The `assert_fail` body ALSO greps captured stdout for `kind: PodDisruptionBudget` and asserts absent, closing the leakage path.
   - Case 30: `cilium-egress-only`.
   - Case 31: `cilium-ingress-matchlabels`.
   - Case 32: `cilium-ingress-matchexpressions`.
