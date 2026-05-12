@@ -21,7 +21,7 @@ HELM_RENDER_FIXTURES := \
 	networkpolicy-cilium-mixed cache-ttl-numeric log-level-numeric \
 	metrics-path-with-special-chars pss-restricted ascii-regex \
 	readme-regex single-quote-regex mcp-url both-flags \
-	quote-regex mcp-url-query existing-secret
+	quote-regex mcp-url-query existing-secret servicemonitor-enabled
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X main.revision=$(REVISION)" -o $(BINARY) .

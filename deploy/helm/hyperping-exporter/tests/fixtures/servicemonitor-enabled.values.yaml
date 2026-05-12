@@ -1,0 +1,6 @@
+config:
+  apiKey: x
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s

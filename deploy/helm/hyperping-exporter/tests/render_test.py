@@ -602,6 +602,16 @@ def main() -> int:
                 "networkpolicy-cilium-foreign-namespace-label.values.yaml",
                 "k8s:io.kubernetes.pod.namespace.labels")
 
+    # Case 37 — servicemonitor enabled (template coverage).
+    rendered = helm_template("servicemonitor-enabled.values.yaml")
+    sm = [d for d in docs(rendered) if d.get("kind") == "ServiceMonitor"]
+    assert sm, "FAIL servicemonitor-enabled: ServiceMonitor missing"
+    assert_eq(sm[0]["apiVersion"], "monitoring.coreos.com/v1",
+              "servicemonitor-enabled: apiVersion")
+    assert_eq(sm[0]["spec"]["endpoints"][0]["interval"], "30s",
+              "servicemonitor-enabled: interval passes through")
+    assert_scalars_clean(rendered, "servicemonitor-enabled")
+
     print("\nALL RENDER TESTS PASSED")
     return 0
 
