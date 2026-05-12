@@ -22,3 +22,5 @@
 .idea/
 *.tmproj
 .vscode/
+# Chart render-test harness (not part of the released chart).
+tests/
