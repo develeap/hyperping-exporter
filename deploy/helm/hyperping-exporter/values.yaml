@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: develeap/hyperping-exporter
+  repository: khaledsalhabdeveleap/hyperping-exporter
   pullPolicy: IfNotPresent
   tag: ""  # Defaults to chart appVersion
 
@@ -27,6 +27,25 @@ config:
   # Changing from the default requires updating any alert rules and Grafana
   # dashboards that reference hardcoded hyperping_* metric names.
   namespace: ""
+  # Optional: RE2 regex; monitors whose name matches are excluded from all
+  # per-monitor metrics AND tenant aggregates. The chart renders this argument
+  # through `toJson`, so any string this YAML file accepts (including
+  # backslashes, brackets, and pipes) round-trips unchanged into the container
+  # args. Example documented in the project README (see README; transported
+  # verbatim by the chart, regex correctness is owned by the README):
+  #   excludeNamePattern: '\[DRILL\|\[TEST'
+  # IMPORTANT for CLI users: Helm's `--set` and `--set-string` flag parsers
+  # strip backslashes before any template function sees them. To supply a
+  # backslash-bearing value from the CLI, either use a values file
+  # (`helm install -f my-values.yaml`) or pass the regex via
+  # `--set-file config.excludeNamePattern=path/to/regex.txt` (where the file
+  # contains the regex literally, no quoting).
+  excludeNamePattern: ""
+  # Optional: custom Hyperping MCP server URL. The binary validates the scheme
+  # (must start with `https://` or `http://localhost`) at startup; the chart
+  # passes the value through unchanged. Leave empty to use the official
+  # endpoint (https://api.hyperping.io/v1/mcp).
+  mcpUrl: ""
 
 service:
   type: ClusterIP

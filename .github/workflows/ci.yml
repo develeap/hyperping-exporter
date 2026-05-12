@@ -9,6 +9,7 @@ on:
       - 'deploy/k8s/**'
       - 'LICENSE'
       - 'CHANGELOG.md'
+      - '.github/workflows/helm-ci.yml'
   pull_request:
     branches: [main]
     paths-ignore:
@@ -18,6 +19,7 @@ on:
       - 'deploy/k8s/**'
       - 'LICENSE'
       - 'CHANGELOG.md'
+      - '.github/workflows/helm-ci.yml'
 
 permissions:
   contents: read
