@@ -256,14 +256,20 @@ def main() -> int:
               "quote regex: args list contains literal double quotes")
     assert_scalars_clean(rendered, "quote regex")
 
-    # Case 9 — mcpUrl with query string. `?`, `=`, `&` need no JSON
-    # escaping; the URL passes through byte-for-byte.
+    # Case 9 — mcpUrl whose query value embeds a literal `"` and `\`. This
+    # is the load-bearing mutation test for the `toJson` rendering of
+    # mcpUrl: both characters require JSON escaping, so a naive
+    # `"--mcp-url={{ .Values.config.mcpUrl }}"` template would either fail
+    # helm's YAML output or decode to a different string. The fixture's
+    # single-quoted YAML preserves `\` literally; `toJson` escapes both
+    # `"` and `\`; Kubernetes' YAML decoder reverses both escapes, so the
+    # container sees the source URL byte-for-byte.
     rendered = helm_template("mcp-url-query.values.yaml")
     assert_eq(deployment_args(rendered),
               BASELINE_ARGS + [
-                  "--mcp-url=https://mcp.example.com/v1/mcp?team=core&strict=1",
+                  '--mcp-url=https://mcp.example.com/v1/mcp?token="ab\\cd"',
               ],
-              "mcp-url query: URL with query string passes through verbatim")
+              "mcp-url query: URL with literal quote and backslash passes through verbatim")
     assert_scalars_clean(rendered, "mcp-url query")
 
     print("\nALL RENDER TESTS PASSED")
