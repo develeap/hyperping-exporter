@@ -21,6 +21,7 @@ Exit code 0 on success, 1 on any assertion failure.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -154,6 +155,10 @@ EXPECTED_VERSION = "1.4.0"
 
 
 def main() -> int:
+    if shutil.which(HELM) is None:
+        print("ERROR: helm binary not on PATH. Install Helm v3.x.", file=sys.stderr)
+        return 2
+
     # Case 1 — defaults: args list is exactly the baseline (contract 2).
     rendered = helm_template("default.values.yaml")
     assert_eq(deployment_args(rendered), BASELINE_ARGS,
@@ -239,6 +244,27 @@ def main() -> int:
               ],
               "combo: args list = baseline + both new entries in template order")
     assert_scalars_clean(rendered, "combo")
+
+    # Case 8 — regex containing literal double quotes. YAML single-quoted
+    # scalar `'"foo"'` decodes to the string `"foo"` (quotes intact).
+    # toJson escapes those quotes; Kubernetes' YAML decoder reverses the
+    # escape, so the container sees `--exclude-name-pattern="foo"` as a
+    # single arg with embedded quote characters.
+    rendered = helm_template("quote-regex.values.yaml")
+    assert_eq(deployment_args(rendered),
+              BASELINE_ARGS + ['--exclude-name-pattern="foo"'],
+              "quote regex: args list contains literal double quotes")
+    assert_scalars_clean(rendered, "quote regex")
+
+    # Case 9 — mcpUrl with query string. `?`, `=`, `&` need no JSON
+    # escaping; the URL passes through byte-for-byte.
+    rendered = helm_template("mcp-url-query.values.yaml")
+    assert_eq(deployment_args(rendered),
+              BASELINE_ARGS + [
+                  "--mcp-url=https://mcp.example.com/v1/mcp?team=core&strict=1",
+              ],
+              "mcp-url query: URL with query string passes through verbatim")
+    assert_scalars_clean(rendered, "mcp-url query")
 
     print("\nALL RENDER TESTS PASSED")
     return 0
