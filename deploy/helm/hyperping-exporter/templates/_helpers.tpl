@@ -89,3 +89,85 @@ binary expects a Go duration. `kindIs` works on Sprig's typed kinds.
 {{- fail (printf "config.cacheTTL must be a quoted Go duration string (e.g. \"60s\"). Got kind %s (value %v). Quote the value in values.yaml." (kindOf .Values.config.cacheTTL) .Values.config.cacheTTL) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+secretSourceCount (Contract C2.4). Returns the count (as a string, since
+Helm `include` always returns a string; callers wrap with `int`) of secret
+sources the operator has set. Sources are mutually exclusive:
+  - `config.apiKey` (a non-empty string)
+  - `config.existingSecret` (a non-empty string)
+  - `externalSecret.enabled` (a truthy boolean)
+Guards `.Values.externalSecret` is a map before reading `.enabled` to keep
+operator error messages on shape mismatches honest.
+*/}}
+{{- define "hyperping-exporter.secretSourceCount" -}}
+{{- $count := 0 -}}
+{{- if .Values.config.apiKey -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- if .Values.config.existingSecret -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if not (kindIs "map" $es) -}}
+{{- fail (printf "values.externalSecret must be a map; got kind %s. Refer to values.yaml for the supported shape." (kindOf .Values.externalSecret)) -}}
+{{- end -}}
+{{- if $es.enabled -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- $count -}}
+{{- end -}}
+
+{{/*
+validateSecretSources (R4-6 boolean tree, Contract C2.4).
+  1. If `replicaCount == 0` -> SKIP all checks (no Pods to authenticate).
+  2. Else if `secretSourceCount > 1` -> fail with conflict naming the pair.
+  3. Else if `secretSourceCount == 0` -> fail with missing-source message.
+  4. Else -> pass.
+The conflict message enumerates every set pair so the operator does not
+have to guess which two values to reconcile.
+*/}}
+{{- define "hyperping-exporter.validateSecretSources" -}}
+{{- if eq (int .Values.replicaCount) 0 -}}
+{{- /* skip */ -}}
+{{- else -}}
+{{- $count := int (include "hyperping-exporter.secretSourceCount" .) -}}
+{{- if gt $count 1 -}}
+{{- $set := list -}}
+{{- if .Values.config.apiKey -}}{{- $set = append $set "config.apiKey" -}}{{- end -}}
+{{- if .Values.config.existingSecret -}}{{- $set = append $set "config.existingSecret" -}}{{- end -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if $es.enabled -}}{{- $set = append $set "externalSecret.enabled" -}}{{- end -}}
+{{- fail (printf "secret-source conflict: %s are all set; set exactly one. (config.apiKey is dev-only; config.existingSecret consumes an externally-managed Secret; externalSecret.enabled lets External Secrets Operator manage the Secret.)" (join ", " $set)) -}}
+{{- else if eq $count 0 -}}
+{{- fail "secret-source missing: set exactly one of config.apiKey (dev-only), config.existingSecret (recommended for production; references an externally-managed Secret with key 'api-key'), or externalSecret.enabled: true (lets External Secrets Operator manage the Secret)." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+validateReplicaCount (R4-1, Contract C1.1). The exporter is a singleton:
+its cache is in-memory and per-process, and tenant-aggregate metrics
+would double-count under HA. ALWAYS aborts on replicaCount > 1; the
+internal._testBypassReplicaCheck key is honored ONLY by the PDB
+rendering gate, never here.
+*/}}
+{{- define "hyperping-exporter.validateReplicaCount" -}}
+{{- if gt (int .Values.replicaCount) 1 -}}
+{{- fail (printf "replicaCount must be 0 or 1; got %d. The hyperping-exporter binary is a singleton (in-memory cache, tenant-aggregate metrics would double-count under HA). Scale horizontally by sharding monitor namespaces across deployments, not by raising replicaCount." (int .Values.replicaCount)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+validateNoTestKeys (R4-8, Contract C8.1). The chart exposes ONE test-only
+key, `internal._testBypassReplicaCheck`, which is undocumented in
+values.yaml and consumed ONLY by the PDB rendering gate. Any other key
+under `.Values.internal` is a footgun and aborts the render here. The
+leading-underscore prefix `_test` marks keys as test-only; production
+callers cannot stumble into them.
+*/}}
+{{- define "hyperping-exporter.validateNoTestKeys" -}}
+{{- $internal := .Values.internal | default dict -}}
+{{- if not (kindIs "map" $internal) -}}
+{{- fail (printf "values.internal must be a map (or absent); got kind %s." (kindOf .Values.internal)) -}}
+{{- end -}}
+{{- range $k, $v := $internal -}}
+{{- if not (hasPrefix "_test" $k) -}}
+{{- fail (printf "values.internal.%s is not a documented chart key. The `internal` block is reserved for test-only knobs prefixed `_test`; production callers should not set anything here." $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

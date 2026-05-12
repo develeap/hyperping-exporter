@@ -1,3 +1,14 @@
+# The hyperping-exporter binary is a singleton. Its monitor cache is an
+# in-memory per-process map and tenant-aggregate metrics (totals, SLA
+# averages) would double-count under HA. The chart's validateReplicaCount
+# helper aborts the render with replicaCount > 1. Two supported values:
+#   - 1 (default): one Pod runs the exporter.
+#   - 0          : scaled-to-zero. The Deployment renders with replicas: 0;
+#                  no Pods run; secret-source validation is skipped (no
+#                  authentication context to enforce) and the env block is
+#                  suppressed if no source is configured. Scale-up without
+#                  configuring a source re-trips validateSecretSources.
+# To scale horizontally, shard monitor namespaces across separate releases.
 replicaCount: 1
 
 image:
@@ -16,6 +27,14 @@ nameOverride: ""
 fullnameOverride: ""
 
 config:
+  # Secret-source mutual exclusion (Contract C2.4). Exactly ONE of the
+  # following three must be set when replicaCount > 0:
+  #   - config.apiKey         (dev-only; plaintext in release metadata)
+  #   - config.existingSecret (recommended; consumes an externally-managed Secret)
+  #   - externalSecret.enabled: true  (lets External Secrets Operator manage it)
+  # validateSecretSources aborts the render on missing source AND on conflict
+  # (more than one source set). The replicaCount: 0 path exempts this check.
+  #
   # DEVELOPMENT ONLY: Hyperping API key passed inline.
   # WARNING: This value is stored in plaintext in Helm release metadata and
   # visible via `helm get values`. For production, use existingSecret with an
@@ -131,6 +150,27 @@ podLabels: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# External Secrets Operator integration. When enabled, the chart renders an
+# `ExternalSecret` resource targeting the chart's standard Secret name; the
+# chart-managed Secret template is suppressed. This is mutually exclusive
+# with `config.apiKey` and `config.existingSecret` (validateSecretSources
+# enforces the conflict; see Contract C2.4 / R4-6).
+#
+# apiVersion override defaults to `external-secrets.io/v1`. ESO ≤ 0.15
+# operators should set `apiVersion: external-secrets.io/v1beta1`.
+externalSecret:
+  enabled: false
+  apiVersion: external-secrets.io/v1
+  refreshInterval: 1h
+  creationPolicy: Owner
+  secretStoreRef:
+    name: ""
+    kind: SecretStore  # or ClusterSecretStore
+  remoteRef:
+    key: ""
+    property: ""
+    version: ""
 
 livenessProbe:
   httpGet:

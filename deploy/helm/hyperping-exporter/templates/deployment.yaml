@@ -1,7 +1,7 @@
-{{- if and (not .Values.config.apiKey) (not .Values.config.existingSecret) }}
-{{- fail "Either apiKey or existingSecret must be set" }}
-{{- end }}
+{{- include "hyperping-exporter.validateNoTestKeys" . -}}
 {{- include "hyperping-exporter.validateCacheTTL" . -}}
+{{- include "hyperping-exporter.validateReplicaCount" . -}}
+{{- include "hyperping-exporter.validateSecretSources" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,12 +58,14 @@ spec:
             {{- if .Values.config.mcpUrl }}
             - {{ include "hyperping-exporter.arg" (list "--mcp-url" .Values.config.mcpUrl) }}
             {{- end }}
+          {{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}
           env:
             - name: HYPERPING_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "hyperping-exporter.secretName" . }}
                   key: api-key
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

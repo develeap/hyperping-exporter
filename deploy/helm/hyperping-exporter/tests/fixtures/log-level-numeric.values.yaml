@@ -1,0 +1,3 @@
+config:
+  apiKey: x
+  logLevel: 4

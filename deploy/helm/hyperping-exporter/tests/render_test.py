@@ -67,6 +67,66 @@ def find_secret(rendered: str) -> dict | None:
     return None
 
 
+def find_external_secret(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "ExternalSecret":
+            return d
+    return None
+
+
+def find_pdb(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "PodDisruptionBudget":
+            return d
+    return None
+
+
+def find_network_policy(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "NetworkPolicy":
+            return d
+    return None
+
+
+def find_cilium_network_policy(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "CiliumNetworkPolicy":
+            return d
+    return None
+
+
+def deployment_env(rendered: str) -> list[dict]:
+    return (
+        find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]
+        .get("env", [])
+    )
+
+
+def assert_fail(case_name: str, fixture: str, expected_stderr_substring: str,
+                forbidden_stdout_substring: str | None = None) -> None:
+    """Run helm template and assert it exits non-zero AND stderr contains the
+    given substring. Optionally assert a forbidden substring is absent from
+    captured stdout (leakage-proof per Contract C8.1)."""
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART), "-f", str(FIXTURES / fixture)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        print(f"FAIL {case_name}: expected helm template to fail; got returncode 0", file=sys.stderr)
+        print(f"  stdout: {proc.stdout[:500]}", file=sys.stderr)
+        sys.exit(1)
+    if expected_stderr_substring not in proc.stderr:
+        print(f"FAIL {case_name}: expected stderr to contain {expected_stderr_substring!r}", file=sys.stderr)
+        print(f"  stderr: {proc.stderr[:1000]}", file=sys.stderr)
+        sys.exit(1)
+    if forbidden_stdout_substring is not None:
+        if forbidden_stdout_substring in proc.stdout:
+            print(f"FAIL {case_name}: forbidden substring {forbidden_stdout_substring!r} leaked into stdout", file=sys.stderr)
+            print(f"  stdout: {proc.stdout[:1000]}", file=sys.stderr)
+            sys.exit(1)
+    print(f"PASS {case_name}: assert_fail({expected_stderr_substring!r}) rc={proc.returncode}")
+
+
 def deployment_args(rendered: str) -> list[str]:
     return find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]["args"]
 
@@ -278,6 +338,127 @@ def main() -> int:
               ],
               "mcp-url query: URL with literal quote and backslash passes through verbatim")
     assert_scalars_clean(rendered, "mcp-url query")
+
+    # ---- v1.5.0 cases ----
+    # Case 10 — external-secret positive render.
+    rendered = helm_template("external-secret.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL external-secret: ExternalSecret missing"
+    assert find_secret(rendered) is None, \
+        "FAIL external-secret: chart-managed Secret must NOT render alongside ExternalSecret"
+    assert_eq(es["spec"]["secretStoreRef"]["name"], "my-store",
+              "external-secret: secretStoreRef.name passes through")
+    assert_eq(es["spec"]["target"]["name"], "testrel-hyperping-exporter",
+              "external-secret: target.name equals chart fullname")
+    print("PASS external-secret: ExternalSecret rendered with chart Secret absent")
+    assert_scalars_clean(rendered, "external-secret")
+
+    # Case 11 — external-secret-defaults (default refreshInterval).
+    rendered = helm_template("external-secret-defaults.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL external-secret-defaults: ExternalSecret missing"
+    assert_eq(es["spec"]["refreshInterval"], "1h",
+              "external-secret-defaults: refreshInterval default is 1h")
+    assert_scalars_clean(rendered, "external-secret-defaults")
+
+    # Case 12 — external-secret-missing-store assert_fail.
+    assert_fail("external-secret-missing-store",
+                "external-secret-missing-store.values.yaml",
+                "secretStoreRef.name is required")
+
+    # Case 13 — replicas-zero positive render with NO source.
+    rendered = helm_template("replicas-zero.values.yaml")
+    dep = find_deployment(rendered)
+    assert_eq(dep["spec"]["replicas"], 0,
+              "replicas-zero: Deployment replicas is 0")
+    env = deployment_env(rendered)
+    assert all(e.get("name") != "HYPERPING_API_KEY" for e in env), \
+        "FAIL replicas-zero: env block must omit HYPERPING_API_KEY when no source set"
+    print("PASS replicas-zero: env block suppressed (no secret source)")
+    assert find_pdb(rendered) is None, \
+        "FAIL replicas-zero: PDB must be absent"
+    print("PASS replicas-zero: PDB absent")
+    assert_scalars_clean(rendered, "replicas-zero")
+
+    # Case 14 — replicas-multi assert_fail.
+    assert_fail("replicas-multi", "replicas-multi.values.yaml",
+                "replicaCount must be 0 or 1")
+
+    # Case 15 — apikey + existingSecret conflict.
+    assert_fail("secret-conflict-apikey-and-existing",
+                "secret-conflict-apikey-and-existing.values.yaml",
+                "config.apiKey")
+    # Re-check existingSecret named:
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART),
+         "-f", str(FIXTURES / "secret-conflict-apikey-and-existing.values.yaml")],
+        capture_output=True, text=True,
+    )
+    assert "config.existingSecret" in proc.stderr, \
+        f"FAIL secret-conflict-apikey-and-existing: stderr missing existingSecret mention: {proc.stderr[:300]}"
+    print("PASS secret-conflict-apikey-and-existing: conflict names both sources")
+
+    # Case 16 — apikey + externalSecret conflict.
+    assert_fail("secret-conflict-apikey-and-external",
+                "secret-conflict-apikey-and-external.values.yaml",
+                "externalSecret.enabled")
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART),
+         "-f", str(FIXTURES / "secret-conflict-apikey-and-external.values.yaml")],
+        capture_output=True, text=True,
+    )
+    assert "config.apiKey" in proc.stderr, \
+        f"FAIL secret-conflict-apikey-and-external: stderr missing apiKey mention: {proc.stderr[:300]}"
+    print("PASS secret-conflict-apikey-and-external: conflict names both sources")
+
+    # Case 17 — existingSecret + externalSecret conflict.
+    assert_fail("secret-conflict-existing-and-external",
+                "secret-conflict-existing-and-external.values.yaml",
+                "config.existingSecret")
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART),
+         "-f", str(FIXTURES / "secret-conflict-existing-and-external.values.yaml")],
+        capture_output=True, text=True,
+    )
+    assert "externalSecret.enabled" in proc.stderr, \
+        f"FAIL secret-conflict-existing-and-external: stderr missing externalSecret mention: {proc.stderr[:300]}"
+    print("PASS secret-conflict-existing-and-external: conflict names both sources")
+
+    # Case 18 — missing source at replicaCount: 1.
+    assert_fail("secret-source-missing", "secret-source-missing.values.yaml",
+                "secret-source missing")
+
+    # Case 22 — cache-ttl-numeric (non-default quoted duration).
+    rendered = helm_template("cache-ttl-numeric.values.yaml")
+    args = deployment_args(rendered)
+    expected = [a if not a.startswith("--cache-ttl=") else "--cache-ttl=30s" for a in BASELINE_ARGS]
+    assert_eq(args, expected,
+              "cache-ttl-numeric: non-default cacheTTL renders byte-clean through helper")
+    assert_scalars_clean(rendered, "cache-ttl-numeric")
+
+    # Case 23 — cache-ttl-int-fails (bare int aborts).
+    assert_fail("cache-ttl-int-fails", "cache-ttl-int-fails.values.yaml",
+                "must be a quoted Go duration")
+
+    # Case 24 — log-level-numeric (typed input renders clean).
+    rendered = helm_template("log-level-numeric.values.yaml")
+    args = deployment_args(rendered)
+    for a in args:
+        assert "%!s" not in a, f"FAIL log-level-numeric: Sprig formatting artefact in {a!r}"
+        assert isinstance(a, str), f"FAIL log-level-numeric: non-str arg {a!r}"
+    # The numeric logLevel coerces to a string in the rendered arg.
+    assert any(a.startswith("--log-level=") for a in args), \
+        f"FAIL log-level-numeric: no --log-level arg in {args!r}"
+    print("PASS log-level-numeric: args contain no %!s artefacts")
+    assert_scalars_clean(rendered, "log-level-numeric")
+
+    # Case 25 — metrics-path-with-special-chars (quotes + backslash round-trip).
+    rendered = helm_template("metrics-path-with-special-chars.values.yaml")
+    args = deployment_args(rendered)
+    assert '--metrics-path=/m"e\\trics' in args, \
+        f"FAIL metrics-path-special: expected literal special-char path, got args={args!r}"
+    print("PASS metrics-path-with-special-chars: special chars round-trip")
+    assert_scalars_clean(rendered, "metrics-path-with-special-chars")
 
     print("\nALL RENDER TESTS PASSED")
     return 0
