@@ -16,6 +16,8 @@ All notable changes to this project will be documented in this file.
 - Helm chart `appVersion` `"1.0.3"` → `"1.4.0"` to match the released binary that understands `--exclude-name-pattern` and `--mcp-url`. Side-effect: the `app.kubernetes.io/version` label on Secret, Service, and Deployment flips from `"1.0.3"` to `"1.4.0"`.
 - Helm chart `image.repository` default `develeap/hyperping-exporter` → `khaledsalhabdeveleap/hyperping-exporter` to match the published Docker Hub repo.
 - `.github/workflows/ci.yml` `paths-ignore` lists extended with `.github/workflows/helm-ci.yml` so future chart-only changes skip the seven Go jobs.
+- **`goreleaser/goreleaser-action`** `7.1.0` → `7.2.1` (dependabot).
+- **`aquasecurity/trivy-action`** `0.35.0` → `0.36.0` (dependabot).
 
 ### Security
 
