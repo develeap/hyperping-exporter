@@ -1,6 +1,9 @@
 // Copyright (c) 2026 Develeap
 // SPDX-License-Identifier: MIT
 
+// Command hyperping-exporter is a Prometheus exporter for the Hyperping
+// monitoring service. It serves Hyperping monitor health, SLA, outage, and
+// MCP-derived metrics on /metrics.
 package main
 
 import (

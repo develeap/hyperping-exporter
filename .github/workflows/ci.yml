@@ -170,7 +170,10 @@ jobs:
           cache: true
       - name: Build binary
         run: CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o hyperping-exporter .
-      - run: docker build -t hyperping-exporter:ci .
+      # BIN_PATH override matches the Makefile: copy the binary at the project
+      # root, not the platform-prefixed default (which only exists under the
+      # goreleaser dockers_v2 build context).
+      - run: docker build --build-arg BIN_PATH=hyperping-exporter -t hyperping-exporter:ci .
       - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Develeap
 // SPDX-License-Identifier: MIT
 
+// Package collector implements a Prometheus collector that exposes Hyperping
+// monitor, healthcheck, outage, SLA, and MCP-derived metrics.
 package collector
 
 import (
@@ -17,13 +19,13 @@ import (
 	hyperping "github.com/develeap/hyperping-go"
 )
 
-// CollectorOption configures a Collector after construction.
-type CollectorOption func(*Collector)
+// Option configures a Collector after construction.
+type Option func(*Collector)
 
 // WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
 // is dropped from the monitor list immediately after the API fetch, before any
 // metric computation or tenant aggregate calculation.
-func WithExcludePattern(rx *regexp.Regexp) CollectorOption {
+func WithExcludePattern(rx *regexp.Regexp) Option {
 	return func(c *Collector) {
 		c.excludePattern = rx
 	}
@@ -243,7 +245,7 @@ type Collector struct {
 var _ prometheus.Collector = (*Collector)(nil)
 
 // NewCollector creates a new Hyperping metrics collector.
-func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...CollectorOption) *Collector {
+func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Duration, logger *slog.Logger, namespace string, opts ...Option) *Collector {
 	c := &Collector{
 		api:               api,
 		mcp:               mcp,
