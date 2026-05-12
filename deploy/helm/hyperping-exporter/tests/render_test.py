@@ -217,8 +217,9 @@ BASELINE_ARGS = [
 # that actually understands the flags this chart now renders
 # (`--mcp-url` since v1.2.0, `--exclude-name-pattern` since v1.3.0).
 # Published binary: khaledsalhabdeveleap/hyperping-exporter:1.4.0.
-EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.0"
-EXPECTED_VERSION = "1.4.0"
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.1"
+EXPECTED_VERSION = "1.4.1"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.0"
 
 
 def main() -> int:
@@ -259,6 +260,17 @@ def main() -> int:
         sys.exit(1)
     assert_eq(versions, expected_versions,
               f"defaults: app.kubernetes.io/version label is {EXPECTED_VERSION} on every labelled resource")
+    # helm.sh/chart label coverage: every labelled resource carries the
+    # chart-version label sourced from the CHART_VERSION anchor.
+    chart_labels: dict[str, str] = {}
+    for d in docs(rendered):
+        labels = (d.get("metadata") or {}).get("labels") or {}
+        v = labels.get("helm.sh/chart")
+        if v is not None:
+            chart_labels[f"{d.get('kind')}/{d['metadata'].get('name')}"] = v
+    expected_chart_labels = {k: EXPECTED_CHART_LABEL for k in expected_versions}
+    assert_eq(chart_labels, expected_chart_labels,
+              f"defaults: helm.sh/chart label is {EXPECTED_CHART_LABEL} on every labelled resource")
     assert_scalars_clean(rendered, "defaults")
 
     # Case 2 — existingSecret path. No chart-managed Secret rendered; args
