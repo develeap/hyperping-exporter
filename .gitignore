@@ -30,3 +30,7 @@ deploy/.env
 
 # Local flow files
 samber-parity.flow.yaml
+
+# Helm chart test artifacts (run-only state, not committed)
+deploy/helm/hyperping-exporter/tests/artifacts/
+!deploy/helm/hyperping-exporter/tests/artifacts/.gitkeep

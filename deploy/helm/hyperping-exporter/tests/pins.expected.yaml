@@ -1,0 +1,16 @@
+# SSOT for upstream pin values. Update when a pin is intentionally rolled
+# forward; never silently. The resolver fails-loud on mismatch.
+helm_kind_action_min_tag: v1.14.0
+kind_min_tag: v0.31.0
+kindest_node_minor: v1.34
+actions_checkout_tag: v6
+azure_setup_helm_tag: v5.0.0
+actions_setup_python_tag: v6.2.0
+# Captured from datreeio/CRDs-catalog releases; resolver verifies the tag
+# exists. The repo publishes daily-dated tags (YYYY.MM.DD-...); we pin a
+# specific dated release so schema drift is a deliberate update.
+datreeio_crds_catalog_tag: "v0.0.12"
+docker_hub_image_repo: khaledsalhabdeveleap/hyperping-exporter
+docker_hub_image_tag: "1.4.1"
+# kindest/node minor v1.34.x — the resolver captures the patch+digest
+# from kind release notes and writes them to tests/artifacts/.
