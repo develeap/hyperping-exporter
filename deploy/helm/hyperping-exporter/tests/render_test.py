@@ -239,19 +239,26 @@ def main() -> int:
     assert_eq(deployment_image(rendered), EXPECTED_IMAGE_DEFAULT,
               "defaults: Deployment image equals published Docker Hub tag")
     versions = labels_with_version(rendered)
-    # Expect the label on Secret, Service, and Deployment (every resource
-    # whose template includes the common-labels helper).
-    expected_versions = {
-        f"Secret/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Secret')]
-    }
-    expected_versions.update({
-        f"Service/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Service')]
-    })
-    expected_versions.update({
-        f"Deployment/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Deployment')]
-    })
+    # Expect the label on every chart-labelled resource. Default render after
+    # Task 7 emits Secret, Service, Deployment, NetworkPolicy (NP flipped on
+    # by default in chart 1.5.0). Use set-difference enumeration so a future
+    # additional resource produces a clear "new resource" diff rather than a
+    # tuple mismatch (Contract C8.3).
+    expected_versions: dict[str, str] = {}
+    for kind in ("Secret", "Service", "Deployment", "NetworkPolicy"):
+        for d in find_all(rendered, kind):
+            expected_versions[f"{kind}/{d['metadata']['name']}"] = EXPECTED_VERSION
+    missing = set(expected_versions) - set(versions)
+    extra = set(versions) - set(expected_versions)
+    if missing or extra:
+        print(
+            f"FAIL defaults: app.kubernetes.io/version label coverage drift; "
+            f"missing={sorted(missing)} extra={sorted(extra)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     assert_eq(versions, expected_versions,
-              "defaults: app.kubernetes.io/version label is 1.4.0 on every labelled resource")
+              f"defaults: app.kubernetes.io/version label is {EXPECTED_VERSION} on every labelled resource")
     assert_scalars_clean(rendered, "defaults")
 
     # Case 2 — existingSecret path. No chart-managed Secret rendered; args
@@ -459,6 +466,129 @@ def main() -> int:
         f"FAIL metrics-path-special: expected literal special-char path, got args={args!r}"
     print("PASS metrics-path-with-special-chars: special chars round-trip")
     assert_scalars_clean(rendered, "metrics-path-with-special-chars")
+
+    # Case 19 — networkpolicy-default positive render.
+    rendered = helm_template("networkpolicy-default.values.yaml")
+    np = find_network_policy(rendered)
+    assert np is not None, "FAIL networkpolicy-default: NetworkPolicy missing"
+    assert find_cilium_network_policy(rendered) is None, \
+        "FAIL networkpolicy-default: CiliumNetworkPolicy must be absent"
+    egress = np["spec"]["egress"]
+    # DNS rule + TCP/443 rule
+    assert any(
+        any(p.get("port") == 53 for p in r.get("ports", []))
+        for r in egress
+    ), "FAIL networkpolicy-default: DNS egress rule missing"
+    https_rules = [r for r in egress if any(p.get("port") == 443 for p in r.get("ports", []))]
+    assert https_rules, "FAIL networkpolicy-default: TCP/443 egress rule missing"
+    for r in https_rules:
+        for to in r.get("to", []):
+            ipb = to.get("ipBlock") or {}
+            assert ipb.get("cidr") == "0.0.0.0/0", \
+                f"FAIL networkpolicy-default: HTTPS rule cidr drift: {ipb!r}"
+            assert "except" not in ipb, \
+                f"FAIL networkpolicy-default: HTTPS rule retains except list: {ipb!r}"
+    print("PASS networkpolicy-default: vanilla NetworkPolicy egress (DNS + TCP/443 0.0.0.0/0 no except)")
+    assert_scalars_clean(rendered, "networkpolicy-default")
+
+    # Case 20 — pdb-enabled at replicaCount=1 with no bypass: PDB suppressed.
+    rendered = helm_template("pdb-enabled.values.yaml")
+    assert find_pdb(rendered) is None, \
+        "FAIL pdb-enabled: PDB must be suppressed at replicaCount=1 without bypass"
+    print("PASS pdb-enabled: PDB suppressed at replicaCount=1 (drain-safe gate)")
+    assert_scalars_clean(rendered, "pdb-enabled")
+
+    # Case 21 — pdb-structural with internal bypass: PDB renders with required shape.
+    rendered = helm_template("pdb-structural.values.yaml")
+    pdb = find_pdb(rendered)
+    assert pdb is not None, "FAIL pdb-structural: PDB missing under bypass"
+    assert_eq(pdb["apiVersion"], "policy/v1",
+              "pdb-structural: PDB apiVersion")
+    assert_eq(pdb["spec"]["maxUnavailable"], 1,
+              "pdb-structural: maxUnavailable default is 1")
+    sel_labels = pdb["spec"]["selector"]["matchLabels"]
+    assert "app.kubernetes.io/name" in sel_labels and "app.kubernetes.io/instance" in sel_labels, \
+        f"FAIL pdb-structural: selector matchLabels missing standard keys: {sel_labels!r}"
+    print("PASS pdb-structural: PDB structurally correct under internal bypass")
+    assert_scalars_clean(rendered, "pdb-structural")
+
+    # Case 29 — pdb-structural with bypass + replicaCount=2: validator still aborts; no PDB.
+    assert_fail(
+        "pdb-structural-internal-bypass-multi-replica-fails",
+        "pdb-structural-internal-bypass-multi-replica.values.yaml",
+        "replicaCount must be 0 or 1",
+        forbidden_stdout_substring="kind: PodDisruptionBudget",
+    )
+
+    # Case 30 — cilium-egress-only.
+    rendered = helm_template("networkpolicy-cilium-defaults.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-egress-only: CiliumNetworkPolicy missing"
+    assert find_network_policy(rendered) is None, \
+        "FAIL cilium-egress-only: vanilla NetworkPolicy must be absent"
+    assert "ingress" not in cnp["spec"], \
+        f"FAIL cilium-egress-only: ingress key must be DROPPED (not [])"
+    assert "egress" in cnp["spec"], "FAIL cilium-egress-only: egress key required"
+    # FQDN block in egress
+    fqdn_rules = [r for r in cnp["spec"]["egress"] if "toFQDNs" in r]
+    assert fqdn_rules, "FAIL cilium-egress-only: no toFQDNs rule"
+    assert any(
+        any(f.get("matchName") == "api.hyperping.io" for f in r.get("toFQDNs", []))
+        for r in fqdn_rules
+    ), "FAIL cilium-egress-only: api.hyperping.io matchName missing"
+    print("PASS cilium-egress-only: CiliumNetworkPolicy egress-only with toFQDNs")
+    assert_scalars_clean(rendered, "cilium-egress-only")
+
+    # Case 31 — cilium-ingress-matchlabels.
+    rendered = helm_template("networkpolicy-cilium-with-ingress.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-matchlabels: CiliumNetworkPolicy missing"
+    assert "ingress" in cnp["spec"], "FAIL cilium-matchlabels: ingress key required"
+    from_endpoints = cnp["spec"]["ingress"][0]["fromEndpoints"]
+    assert from_endpoints[0]["matchLabels"]["app.kubernetes.io/name"] == "prometheus", \
+        f"FAIL cilium-matchlabels: matchLabels drift {from_endpoints!r}"
+    print("PASS cilium-ingress-matchlabels: matchLabels flatten into EndpointSelector")
+    assert_scalars_clean(rendered, "cilium-ingress-matchlabels")
+
+    # Case 32 — cilium-ingress-matchexpressions.
+    rendered = helm_template("networkpolicy-cilium-matchexpressions.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-matchexpressions: CiliumNetworkPolicy missing"
+    me = cnp["spec"]["ingress"][0]["fromEndpoints"][0].get("matchExpressions")
+    assert me, "FAIL cilium-matchexpressions: matchExpressions missing"
+    assert me[0]["key"] == "app.kubernetes.io/name" and me[0]["operator"] == "In", \
+        f"FAIL cilium-matchexpressions: drift {me!r}"
+    print("PASS cilium-ingress-matchexpressions: matchExpressions preserved")
+    assert_scalars_clean(rendered, "cilium-ingress-matchexpressions")
+
+    # Case 33 — cilium-ingress-mixed (matchLabels + matchExpressions + ns shortcut).
+    rendered = helm_template("networkpolicy-cilium-mixed.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-mixed: CiliumNetworkPolicy missing"
+    peer = cnp["spec"]["ingress"][0]["fromEndpoints"][0]
+    assert peer["matchLabels"]["tier"] == "monitoring", \
+        f"FAIL cilium-mixed: matchLabels lost"
+    assert peer["matchLabels"]["k8s:io.kubernetes.pod.namespace"] == "monitoring", \
+        f"FAIL cilium-mixed: namespace shortcut conversion lost: {peer!r}"
+    assert peer["matchExpressions"][0]["key"] == "app.kubernetes.io/name", \
+        f"FAIL cilium-mixed: matchExpressions lost"
+    print("PASS cilium-ingress-mixed: matchLabels + matchExpressions + ns shortcut")
+    assert_scalars_clean(rendered, "cilium-ingress-mixed")
+
+    # Case 34 — cilium ipBlock-only abort.
+    assert_fail("cilium-ipblock-only-fails",
+                "networkpolicy-cilium-ipblock-only.values.yaml",
+                "ipBlock peers are not supported")
+
+    # Case 35 — cilium selectorless abort.
+    assert_fail("cilium-selectorless-fails",
+                "networkpolicy-cilium-selectorless.values.yaml",
+                "peer must have a podSelector or namespaceSelector")
+
+    # Case 36 — cilium foreign-ns-label abort.
+    assert_fail("cilium-foreign-ns-label-fails",
+                "networkpolicy-cilium-foreign-namespace-label.values.yaml",
+                "k8s:io.kubernetes.pod.namespace.labels")
 
     print("\nALL RENDER TESTS PASSED")
     return 0

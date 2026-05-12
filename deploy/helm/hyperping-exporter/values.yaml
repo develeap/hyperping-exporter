@@ -195,7 +195,13 @@ podDisruptionBudget:
   maxUnavailable: 1
 
 networkPolicy:
-  enabled: false
+  # Default-on as of chart 1.5.0. The vanilla NetworkPolicy admits ingress
+  # from `ingressFrom` peers on the metrics port and permits egress to
+  # kube-dns (UDP/TCP 53) plus TCP/443 to 0.0.0.0/0 with no `except:` list
+  # (the user's clusters may route api.hyperping.io via an in-cluster
+  # egress gateway in RFC1918 space). Operators who need fine-grained
+  # FQDN restriction enable the Cilium variant via `fqdnRestriction.enabled`.
+  enabled: true
   # Selectors for pods allowed to scrape metrics (e.g. Prometheus).
   # The default assumes Prometheus is in the SAME namespace as this chart.
   # For cross-namespace scraping, add a namespaceSelector to the entry:
@@ -210,3 +216,16 @@ networkPolicy:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: prometheus
+  # FQDN-restricted egress via CiliumNetworkPolicy. Requires Cilium 1.14+.
+  # When enabled, the vanilla NetworkPolicy template is suppressed and a
+  # CiliumNetworkPolicy (apiVersion: cilium.io/v2) is rendered instead.
+  # The two templates are mutually exclusive. CRDs (cilium.io/v2) must be
+  # installed in the cluster for kubectl apply to succeed; the chart's
+  # render-time validation does not require CRDs (kubeconform validates
+  # the schema offline against the pinned catalog tag).
+  fqdnRestriction:
+    enabled: false
+    # FQDN allow-list applied to the egress block. Defaults to the
+    # official Hyperping API host.
+    allowedHosts:
+      - api.hyperping.io

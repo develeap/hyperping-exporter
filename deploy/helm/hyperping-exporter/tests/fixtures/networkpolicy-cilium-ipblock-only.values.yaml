@@ -1,0 +1,9 @@
+config:
+  apiKey: x
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - ipBlock:
+        cidr: 10.0.0.0/8
+  fqdnRestriction:
+    enabled: true

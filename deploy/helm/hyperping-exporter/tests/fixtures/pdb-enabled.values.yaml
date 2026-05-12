@@ -1,0 +1,4 @@
+config:
+  apiKey: x
+podDisruptionBudget:
+  enabled: true

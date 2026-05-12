@@ -1,0 +1,9 @@
+config:
+  apiKey: x
+networkPolicy:
+  enabled: true
+  ingressFrom: []
+  fqdnRestriction:
+    enabled: true
+    allowedHosts:
+      - api.hyperping.io

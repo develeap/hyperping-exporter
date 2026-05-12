@@ -1,4 +1,6 @@
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- $internal := .Values.internal | default dict -}}
+{{- $bypass := $internal._testBypassReplicaCheck -}}
+{{- if and .Values.podDisruptionBudget.enabled (or (gt (int .Values.replicaCount) 1) $bypass) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
