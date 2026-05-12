@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: develeap/hyperping-exporter
+  repository: khaledsalhabdeveleap/hyperping-exporter
   pullPolicy: IfNotPresent
   tag: ""  # Defaults to chart appVersion
 
@@ -27,19 +27,6 @@ config:
   # Changing from the default requires updating any alert rules and Grafana
   # dashboards that reference hardcoded hyperping_* metric names.
   namespace: ""
-  # ------------------------------------------------------------------
-  # IMPORTANT: BEFORE SETTING EITHER OF THE TWO KEYS BELOW, OVERRIDE
-  # `image.repository` AND `image.tag` AT THE TOP OF THIS VALUES FILE.
-  #
-  # The chart's default `image.repository: develeap/hyperping-exporter`
-  # does not resolve to a real registry path. The published binaries
-  # live at:
-  #   - khaledsalhabdeveleap/hyperping-exporter (Docker Hub), or
-  #   - ghcr.io/develeap/hyperping-exporter (GitHub Container Registry)
-  # Pick one and set `image.repository` and `image.tag` to v1.2.0 or
-  # later. Earlier binary versions do not understand `--mcp-url`
-  # (added v1.2.0) or `--exclude-name-pattern` (added v1.3.0).
-  # ------------------------------------------------------------------
   # Optional: RE2 regex; monitors whose name matches are excluded from all
   # per-monitor metrics AND tenant aggregates. The chart renders this argument
   # through `toJson`, so any string this YAML file accepts (including

@@ -61,6 +61,30 @@ def deployment_args(rendered: str) -> list[str]:
     return find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]["args"]
 
 
+def find_all(rendered: str, kind: str) -> list[dict]:
+    """Return every parsed document matching the given Kubernetes kind."""
+    return [d for d in docs(rendered) if d.get("kind") == kind]
+
+
+def deployment_image(rendered: str) -> str:
+    return find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]["image"]
+
+
+def labels_with_version(rendered: str) -> dict[str, str]:
+    """Map each rendered resource that carries `app.kubernetes.io/version`
+    to its value, keyed by `<kind>/<metadata.name>`. Useful so a regression
+    pinpoints exactly which resource's labels block drifted.
+    """
+    out: dict[str, str] = {}
+    for d in docs(rendered):
+        labels = (d.get("metadata") or {}).get("labels") or {}
+        v = labels.get("app.kubernetes.io/version")
+        if v is not None:
+            key = f"{d.get('kind')}/{d['metadata'].get('name')}"
+            out[key] = v
+    return out
+
+
 def assert_scalars_clean(rendered: str, label: str) -> None:
     """Walk every parsed document and confirm every string-typed scalar
     is a real Python str that survives json.dumps round-trip.
@@ -110,6 +134,15 @@ BASELINE_ARGS = [
 ]
 
 
+# Default image and version contract. The chart's `image.repository`
+# default must resolve on Docker Hub, and `appVersion` must match a tag
+# that actually understands the flags this chart now renders
+# (`--mcp-url` since v1.2.0, `--exclude-name-pattern` since v1.3.0).
+# Published binary: khaledsalhabdeveleap/hyperping-exporter:1.4.0.
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.0"
+EXPECTED_VERSION = "1.4.0"
+
+
 def main() -> int:
     # Case 1 — defaults: args list is exactly the baseline (contract 2).
     rendered = helm_template("default.values.yaml")
@@ -118,6 +151,25 @@ def main() -> int:
     assert find_secret(rendered) is not None, \
         "FAIL defaults: chart-managed Secret should be present"
     print("PASS defaults: chart-managed Secret present")
+    # Image and version-label contract: defaults must point at the
+    # published binary, and every resource that carries the common
+    # labels block must advertise the matching `app.kubernetes.io/version`.
+    assert_eq(deployment_image(rendered), EXPECTED_IMAGE_DEFAULT,
+              "defaults: Deployment image equals published Docker Hub tag")
+    versions = labels_with_version(rendered)
+    # Expect the label on Secret, Service, and Deployment (every resource
+    # whose template includes the common-labels helper).
+    expected_versions = {
+        f"Secret/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Secret')]
+    }
+    expected_versions.update({
+        f"Service/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Service')]
+    })
+    expected_versions.update({
+        f"Deployment/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Deployment')]
+    })
+    assert_eq(versions, expected_versions,
+              "defaults: app.kubernetes.io/version label is 1.4.0 on every labelled resource")
     assert_scalars_clean(rendered, "defaults")
 
     # Case 2 — existingSecret path. No chart-managed Secret rendered; args
