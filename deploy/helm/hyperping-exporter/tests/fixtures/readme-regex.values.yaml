@@ -1,3 +1,3 @@
 config:
   apiKey: x
-  excludeNamePattern: '\[DRILL\|\[TEST'
+  excludeNamePattern: '\[DRILL|\[TEST'

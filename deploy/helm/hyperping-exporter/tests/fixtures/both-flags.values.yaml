@@ -1,4 +1,4 @@
 config:
   apiKey: x
-  excludeNamePattern: '\[DRILL\|\[TEST'
+  excludeNamePattern: '\[DRILL|\[TEST'
   mcpUrl: https://mcp.example.com/v1/mcp

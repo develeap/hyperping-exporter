@@ -205,10 +205,10 @@ def main() -> int:
     assert_scalars_clean(rendered, "ascii regex")
 
     # Case 4 — README documented example (contract 1, contract 4, load-bearing).
-    # Exact README spelling: '\[DRILL\|\[TEST'. The chart transports this
+    # Exact README spelling: '\[DRILL|\[TEST'. The chart transports this
     # verbatim; whether the string is a "correct" RE2 regex is owned by
     # the README, not by the chart.
-    pattern = r"\[DRILL\|\[TEST"
+    pattern = r"\[DRILL|\[TEST"
     rendered = helm_template("readme-regex.values.yaml")
     assert_eq(deployment_args(rendered),
               BASELINE_ARGS + [f"--exclude-name-pattern={pattern}"],

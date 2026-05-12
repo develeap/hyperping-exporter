@@ -69,7 +69,7 @@ All flags can also be set via environment variables.
 | `--log-format` | `(flag only)` | `text` | Log format: `text` or `json` |
 | `--namespace` | `HYPERPING_EXPORTER_NAMESPACE` | `hyperping` | Metric name prefix. Must match `[a-zA-Z_][a-zA-Z0-9_]{0,63}`. |
 | `--mcp-url` | `(flag only)` | `(official)` | Custom Hyperping MCP server URL. |
-| `--exclude-name-pattern` | `(flag only)` | *(none)* | RE2 regex; monitors whose name matches are dropped from all per-monitor metrics and tenant aggregates. Typical use: `'\[DRILL\|\[TEST'` to keep synthetic monitors out of fleet health. |
+| `--exclude-name-pattern` | `(flag only)` | *(none)* | RE2 regex; monitors whose name matches are dropped from all per-monitor metrics and tenant aggregates. Typical use: `'\[DRILL|\[TEST'` to keep synthetic monitors out of fleet health. |
 | `--web.config.file` | `(flag only)` | *(none)* | Path to web config file for TLS / basic auth. See [exporter-toolkit web-configuration](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md). |
 
 > Only `HYPERPING_API_KEY` is read from the environment by default;
