@@ -51,11 +51,11 @@ spec:
             {{- if .Values.config.namespace }}
             - "--namespace={{ .Values.config.namespace }}"
             {{- end }}
-            {{- with .Values.config.excludeNamePattern }}
-            - {{ printf "--exclude-name-pattern=%s" . | toJson }}
+            {{- if .Values.config.excludeNamePattern }}
+            - {{ printf "--exclude-name-pattern=%s" .Values.config.excludeNamePattern | toJson }}
             {{- end }}
-            {{- with .Values.config.mcpUrl }}
-            - {{ printf "--mcp-url=%s" . | toJson }}
+            {{- if .Values.config.mcpUrl }}
+            - {{ printf "--mcp-url=%s" .Values.config.mcpUrl | toJson }}
             {{- end }}
           env:
             - name: HYPERPING_API_KEY
