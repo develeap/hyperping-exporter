@@ -5,11 +5,13 @@ on:
     paths:
       - 'deploy/helm/**'
       - '.github/workflows/helm-ci.yml'
+      - 'Makefile'
   pull_request:
     branches: [main]
     paths:
       - 'deploy/helm/**'
       - '.github/workflows/helm-ci.yml'
+      - 'Makefile'
 
 permissions:
   contents: read
@@ -18,8 +20,10 @@ jobs:
   helm:
     name: Helm chart lint and render
     runs-on: ubuntu-latest
+    env:
+      KUBECONFORM_VERSION: v0.7.0
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Set up Helm
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
         with:
@@ -30,7 +34,69 @@ jobs:
           python-version: '3.12'
       - name: Install PyYAML
         run: python -m pip install --no-cache-dir 'pyyaml==6.0.3'
+      - name: Resolve pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash deploy/helm/hyperping-exporter/tests/scripts/resolve_pins.sh
       - name: Helm lint
         run: helm lint deploy/helm/hyperping-exporter/
       - name: Render tests
         run: python3 deploy/helm/hyperping-exporter/tests/render_test.py
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+      - name: Kubeconform schema validation
+        run: make helm-kubeconform
+      - name: Rewrite kind-pss.yaml placeholders
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          KINDEST_VERSION=$(tr -d '[:space:]' < deploy/helm/hyperping-exporter/tests/artifacts/kindest-version.txt)
+          KINDEST_DIGEST=$(tr -d '[:space:]' < deploy/helm/hyperping-exporter/tests/artifacts/kindest-digest.txt)
+          ABSPATH=$(cd deploy/helm/hyperping-exporter/tests/kind-pss-config && pwd)
+          sed -i \
+            -e "s|__KINDEST_VERSION__|${KINDEST_VERSION}|g" \
+            -e "s|__KINDEST_DIGEST__|${KINDEST_DIGEST}|g" \
+            -e "s|__ABSPATH__|${ABSPATH}|g" \
+            deploy/helm/hyperping-exporter/tests/kind-pss.yaml
+          if grep -E '__[A-Z_]+__' deploy/helm/hyperping-exporter/tests/kind-pss.yaml; then
+            echo "FATAL: placeholder substitution incomplete" >&2
+            exit 1
+          fi
+      - name: Create kind cluster (PSS-restricted)
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+        with:
+          cluster_name: hyperping-pss
+          config: deploy/helm/hyperping-exporter/tests/kind-pss.yaml
+          wait: 120s
+      - name: PSS admission live-boot tests
+        run: |
+          # shellcheck disable=SC1091
+          source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          bash deploy/helm/hyperping-exporter/tests/admission_test.sh
+      - name: Audit pins
+        if: always()
+        run: |
+          set -e
+          # No surviving placeholders in committed files (Contract C4 gate).
+          if git diff --quiet deploy/helm/hyperping-exporter/tests/kind-pss.yaml; then
+            echo "kind-pss.yaml: committed file is clean (substitution happened only on the temp/runtime copy)."
+          else
+            echo "kind-pss.yaml has uncommitted changes (substitution was applied to the workspace copy)."
+          fi
+          # Confirm the workflow / Makefile do not embed literal anchor values.
+          ! grep -RnE 'hyperping-pss-test\b|khaledsalhabdeveleap/hyperping-exporter:1\.4\.1' \
+              .github/workflows/helm-ci.yml Makefile || {
+            echo "FATAL: anchor literal embedded in workflow/Makefile; source from admission_env.sh / pins.expected.yaml" >&2
+            exit 1
+          }
+      - name: Cluster teardown
+        if: always()
+        run: |
+          # shellcheck disable=SC1091
+          source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          kind delete cluster --name "${KIND_CLUSTER_NAME}" 2>/dev/null || true

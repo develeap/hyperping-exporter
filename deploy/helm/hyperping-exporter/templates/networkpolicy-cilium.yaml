@@ -26,24 +26,28 @@ spec:
         {{- if not (or $hasPod $nsSel) }}
         {{- fail (printf "networkPolicy.ingressFrom[%d]: peer must have a podSelector or namespaceSelector. Selector-less peers are not supported by the Cilium variant." $i) }}
         {{- end }}
-        - matchLabels:
-            {{- with $podSel.matchLabels }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- if $nsSel }}
-            {{- $nsLabels := $nsSel.matchLabels | default dict }}
-            {{- $nsExprs := $nsSel.matchExpressions | default list }}
-            {{- if $nsExprs }}
-            {{- fail (printf "networkPolicy.ingressFrom[%d]: namespaceSelector.matchExpressions are not auto-converted by the Cilium variant. Cilium's EndpointSelector flattens pod and namespace labels; lift the expressions onto the peer's podSelector.matchLabels with the canonical k8s:io.kubernetes.pod.namespace.labels.<key> prefix, or disable fqdnRestriction to fall back to the vanilla NetworkPolicy." $i) }}
-            {{- end }}
-            {{- range $k, $v := $nsLabels }}
-            {{- if eq $k "kubernetes.io/metadata.name" }}
-            k8s:io.kubernetes.pod.namespace: {{ $v | quote }}
-            {{- else }}
-            {{- fail (printf "networkPolicy.ingressFrom[%d]: namespaceSelector label %q is not auto-converted. The Cilium variant supports only the kubernetes.io/metadata.name well-known label. Lift this onto the peer's podSelector.matchLabels with the canonical k8s:io.kubernetes.pod.namespace.labels.<key> prefix, or disable fqdnRestriction to fall back to the vanilla NetworkPolicy." $i $k) }}
-            {{- end }}
-            {{- end }}
-            {{- end }}
+        {{- /* Build the flattened matchLabels map: pod matchLabels + namespace shortcut. */}}
+        {{- $labels := dict }}
+        {{- range $k, $v := ($podSel.matchLabels | default dict) }}
+        {{- $_ := set $labels $k $v }}
+        {{- end }}
+        {{- if $nsSel }}
+        {{- $nsExprs := $nsSel.matchExpressions | default list }}
+        {{- if $nsExprs }}
+        {{- fail (printf "networkPolicy.ingressFrom[%d]: namespaceSelector.matchExpressions are not auto-converted by the Cilium variant. Cilium's EndpointSelector flattens pod and namespace labels; lift the expressions onto the peer's podSelector.matchLabels with the canonical k8s:io.kubernetes.pod.namespace.labels.<key> prefix, or disable fqdnRestriction to fall back to the vanilla NetworkPolicy." $i) }}
+        {{- end }}
+        {{- range $k, $v := ($nsSel.matchLabels | default dict) }}
+        {{- if eq $k "kubernetes.io/metadata.name" }}
+        {{- $_ := set $labels "k8s:io.kubernetes.pod.namespace" $v }}
+        {{- else }}
+        {{- fail (printf "networkPolicy.ingressFrom[%d]: namespaceSelector label %q is not auto-converted. The Cilium variant supports only the kubernetes.io/metadata.name well-known label. Lift this onto the peer's podSelector.matchLabels with the canonical k8s:io.kubernetes.pod.namespace.labels.<key> prefix, or disable fqdnRestriction to fall back to the vanilla NetworkPolicy." $i $k) }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+        - {{- if $labels }}
+          matchLabels:
+            {{- toYaml $labels | nindent 12 }}
+          {{- end }}
           {{- with $podSel.matchExpressions }}
           matchExpressions:
             {{- toYaml . | nindent 12 }}

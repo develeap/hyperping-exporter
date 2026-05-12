@@ -157,11 +157,15 @@ affinity: {}
 # with `config.apiKey` and `config.existingSecret` (validateSecretSources
 # enforces the conflict; see Contract C2.4 / R4-6).
 #
-# apiVersion override defaults to `external-secrets.io/v1`. ESO ≤ 0.15
-# operators should set `apiVersion: external-secrets.io/v1beta1`.
+# apiVersion defaults to `external-secrets.io/v1beta1` because that is the
+# version fully covered by the kubeconform CRDs-catalog tag this chart's
+# CI pins. Operators on ESO 0.10+ that have rolled to v1 should set
+# `apiVersion: external-secrets.io/v1` explicitly (their cluster will
+# accept the v1 CRD; kubeconform validation will skip until the
+# CRDs-catalog rolls v1 into a tagged release).
 externalSecret:
   enabled: false
-  apiVersion: external-secrets.io/v1
+  apiVersion: external-secrets.io/v1beta1
   refreshInterval: 1h
   creationPolicy: Owner
   secretStoreRef:

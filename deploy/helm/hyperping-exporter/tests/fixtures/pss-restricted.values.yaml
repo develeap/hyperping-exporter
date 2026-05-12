@@ -1,0 +1,9 @@
+# Live-boot fixture exercised by the kind PSS-restricted admission test.
+# Uses the published Docker Hub image (admission_env.sh's LIVE_BOOT_IMAGE)
+# and the chart's PSS-restricted defaults verbatim. Probe periods are
+# kept tight so the rollout-status wait inside the 120s admission_test.sh
+# window does not flake.
+config:
+  apiKey: dev-placeholder-not-used-at-runtime
+networkPolicy:
+  enabled: false  # avoids needing a CNI that enforces NP in kind for this test

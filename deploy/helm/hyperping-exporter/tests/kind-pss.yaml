@@ -1,0 +1,31 @@
+# kind cluster config with placeholder substitution (Contract C4).
+# admission_test.sh and the helm-ci workflow rewrite the placeholders
+# below before invoking `kind create cluster`. Placeholders:
+#   __KINDEST_VERSION__ - e.g. v1.34.3
+#   __KINDEST_DIGEST__  - e.g. sha256:0849...
+#   __ABSPATH__         - absolute path to the tests/kind-pss-config dir
+# The committed file MUST retain the placeholders; the audit step
+# greps the committed workflow + this file for any surviving
+# placeholder and fails if substitution leaked into source.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: hyperping-pss
+nodes:
+  - role: control-plane
+    image: kindest/node:__KINDEST_VERSION__@__KINDEST_DIGEST__
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            admission-control-config-file: /etc/kubernetes/admission/admission-config.yaml
+          extraVolumes:
+            - name: admission-config
+              hostPath: /etc/kubernetes/admission
+              mountPath: /etc/kubernetes/admission
+              readOnly: true
+              pathType: Directory
+    extraMounts:
+      - hostPath: __ABSPATH__
+        containerPath: /etc/kubernetes/admission
+        readOnly: true

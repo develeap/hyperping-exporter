@@ -6,7 +6,22 @@ IMAGE_NAME := hyperping-exporter
 IMAGE_TAG  := dev
 COMPOSE    := docker compose -f deploy/docker-compose.yml
 
-.PHONY: build test lint docker-build docker-run compose-up compose-down clean fmt vet coverage govulncheck release-dry-run all
+.PHONY: build test lint docker-build docker-run compose-up compose-down clean fmt vet coverage govulncheck release-dry-run all \
+        helm-render helm-kubeconform helm-pss helm-pss-clean helm-ci-fast helm-ci
+
+CHART_DIR        := deploy/helm/hyperping-exporter
+CHART_TESTS_DIR  := $(CHART_DIR)/tests
+PINS_FILE        := $(CHART_TESTS_DIR)/pins.expected.yaml
+KUBECONFORM_CATALOG_REF := $(shell awk -F'"' '/^datreeio_crds_catalog_tag:/{print $$2}' $(PINS_FILE))
+HELM_RENDER_FIXTURES := \
+	default external-secret external-secret-defaults \
+	replicas-zero pdb-structural pdb-enabled \
+	networkpolicy-default networkpolicy-cilium-defaults \
+	networkpolicy-cilium-with-ingress networkpolicy-cilium-matchexpressions \
+	networkpolicy-cilium-mixed cache-ttl-numeric log-level-numeric \
+	metrics-path-with-special-chars pss-restricted ascii-regex \
+	readme-regex single-quote-regex mcp-url both-flags \
+	quote-regex mcp-url-query existing-secret
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X main.revision=$(REVISION)" -o $(BINARY) .
@@ -54,3 +69,33 @@ release-dry-run:
 	goreleaser release --snapshot --clean
 
 all: fmt vet lint test build
+
+# ---- Helm chart targets ----
+
+helm-render:
+	python3 $(CHART_TESTS_DIR)/render_test.py
+
+# Run kubeconform against every fixture's rendered output. Catalog tag
+# is pinned via $(KUBECONFORM_CATALOG_REF) (read from pins.expected.yaml)
+# so schema drift is a deliberate update, never an upstream surprise.
+helm-kubeconform:
+	@command -v kubeconform >/dev/null || { echo "kubeconform not on PATH"; exit 2; }
+	@if [ -z "$(KUBECONFORM_CATALOG_REF)" ]; then echo "KUBECONFORM_CATALOG_REF empty (pins.expected.yaml)"; exit 2; fi
+	@set -e; \
+	for f in $(HELM_RENDER_FIXTURES); do \
+		echo "=== kubeconform: $$f ==="; \
+		helm template testrel $(CHART_DIR) -f $(CHART_TESTS_DIR)/fixtures/$$f.values.yaml \
+		  | kubeconform -strict -summary -schema-location default \
+		      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/$(KUBECONFORM_CATALOG_REF)/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+		      -; \
+	done
+
+helm-pss:
+	bash $(CHART_TESTS_DIR)/admission_test.sh
+
+helm-pss-clean:
+	@. $(CHART_TESTS_DIR)/admission_env.sh; kind delete cluster --name "$$KIND_CLUSTER_NAME" 2>/dev/null || true
+
+helm-ci-fast: helm-render helm-kubeconform
+
+helm-ci: helm-ci-fast helm-pss
