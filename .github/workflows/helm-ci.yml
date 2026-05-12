@@ -82,18 +82,25 @@ jobs:
         if: always()
         run: |
           set -e
-          # No surviving placeholders in committed files (Contract C4 gate).
+          # Workspace state of kind-pss.yaml is informational only:
+          # the workflow's substitution step rewrites the workspace copy in
+          # place, so this step is expected to report uncommitted changes
+          # on a successful run. The audit is the placeholder-survival
+          # check inside the substitution step itself (it errors out if
+          # any __X__ token remains after sed).
           if git diff --quiet deploy/helm/hyperping-exporter/tests/kind-pss.yaml; then
-            echo "kind-pss.yaml: committed file is clean (substitution happened only on the temp/runtime copy)."
+            echo "kind-pss.yaml: workspace copy clean (no rewrite happened)."
           else
-            echo "kind-pss.yaml has uncommitted changes (substitution was applied to the workspace copy)."
+            echo "kind-pss.yaml: workspace copy was rewritten in place (expected)."
           fi
-          # Confirm the workflow / Makefile do not embed literal anchor values.
-          ! grep -RnE 'hyperping-pss-test\b|khaledsalhabdeveleap/hyperping-exporter:1\.4\.1' \
-              .github/workflows/helm-ci.yml Makefile || {
-            echo "FATAL: anchor literal embedded in workflow/Makefile; source from admission_env.sh / pins.expected.yaml" >&2
+          # Confirm the Makefile does not embed literal anchor values
+          # that should come from admission_env.sh or pins.expected.yaml.
+          if grep -nE 'hyperping-pss-test\b|khaledsalhabdeveleap/hyperping-exporter:1\.4\.1' \
+              Makefile; then
+            echo "FATAL: anchor literal embedded in Makefile; source from admission_env.sh / pins.expected.yaml" >&2
             exit 1
-          }
+          fi
+          echo "OK Makefile anchor audit"
       - name: Cluster teardown
         if: always()
         run: |

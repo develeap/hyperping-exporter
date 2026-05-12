@@ -1,9 +1,24 @@
 # Live-boot fixture exercised by the kind PSS-restricted admission test.
 # Uses the published Docker Hub image (admission_env.sh's LIVE_BOOT_IMAGE)
-# and the chart's PSS-restricted defaults verbatim. Probe periods are
-# kept tight so the rollout-status wait inside the 120s admission_test.sh
-# window does not flake.
+# and the chart's PSS-restricted defaults verbatim.
+#
+# The goal of T31 is to prove the rendered Pod is admitted under PSS-
+# restricted AND tolerates `readOnlyRootFilesystem: true` at start. The
+# default readinessProbe (`/readyz`) returns 503 until the binary's
+# cache has a successful Hyperping fetch, which is not available in the
+# kind cluster (no Hyperping API key, no egress). So this fixture
+# overrides the readinessProbe to target `/healthz` instead: the
+# rollout-status wait then succeeds as soon as the binary is listening
+# (i.e. the Pod was admitted and the read-only rootfs did not abort
+# startup). Hyperping connectivity is out of scope for this test.
 config:
   apiKey: dev-placeholder-not-used-at-runtime
 networkPolicy:
   enabled: false  # avoids needing a CNI that enforces NP in kind for this test
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3
