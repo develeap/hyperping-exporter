@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **`config.excludeNamePattern`** (RE2 regex) and **`config.mcpUrl`** Helm chart values, rendered into the Deployment container args via `toJson` so backslash-bearing regexes round-trip byte-for-byte through Kubernetes' YAML decoder.
+- **Render-test harness** at `deploy/helm/hyperping-exporter/tests/render_test.py` driven by PyYAML, with fixture files exercising defaults, existingSecret-only, plain-ASCII regex, the README example, a single-quote-containing regex, `mcpUrl` alone, and both flags together.
+- **Helm CI workflow** (`.github/workflows/helm-ci.yml`) that runs `helm lint` and the render harness on chart-touching PRs.
+
+### Changed
+
+- Helm chart `Chart.yaml` `version` `1.0.0` → `1.1.0`.
+- Helm chart `appVersion` `"1.0.3"` → `"1.4.0"` to match the released binary that understands `--exclude-name-pattern` and `--mcp-url`. Side-effect: the `app.kubernetes.io/version` label on Secret, Service, and Deployment flips from `"1.0.3"` to `"1.4.0"`.
+- Helm chart `image.repository` default `develeap/hyperping-exporter` → `khaledsalhabdeveleap/hyperping-exporter` to match the published Docker Hub repo.
+- `.github/workflows/ci.yml` `paths-ignore` lists extended with `.github/workflows/helm-ci.yml` so future chart-only changes skip the seven Go jobs.
+
+### Security
+
+- **`golang.org/x/net`** `v0.51.0` → `v0.54.0` (GO-2026-4918: infinite loop in HTTP/2 transport on bad `SETTINGS_MAX_FRAME_SIZE`, reachable via `hyperping.Client.ListIncidents`). Companion bumps: `golang.org/x/crypto` `v0.49.0` → `v0.51.0`, `golang.org/x/sys` `v0.42.0` → `v0.44.0`, `golang.org/x/text` `v0.35.0` → `v0.37.0`.
+
+## [1.4.0] - 2026-04-26
+
+### Added
+
 - **Maintenance-window suppression** for `HyperpingMonitorDown`, `HyperpingMonitorActiveOutage`, and `HyperpingCoreMonitorDown`. Each alert now has `unless on(uuid) hyperping_monitor_in_maintenance == 1` appended, so monitors covered by an active maintenance window do not page during the planned downtime.
 - **`HyperpingOpenIncidents`** alert: fires when there are unresolved Hyperping incidents for more than 30 minutes.
 - **`HyperpingMonitorRegionalOutage`** alert: fires when a monitor is down in some regions but up in others (partial regional infrastructure failure rather than complete outage). Requires monitors configured with multiple regions.
