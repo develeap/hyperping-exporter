@@ -15,8 +15,15 @@ YAML, and asserts:
     well-formed strings; not a strict-mode YAML validator and not a
     substitute for `kubectl apply --dry-run=client`).
 
-PyYAML is the only third-party dependency. helm must be on PATH.
+PyYAML is the only third-party dependency. helm must be on PATH; when it
+is not, this script exits with code 2 and prints a clear install hint.
 Exit code 0 on success, 1 on any assertion failure.
+
+TDD pattern for new render-test cases: add (or update) the fixture first
+so the existing harness goes red against the missing fixture or stale
+assertion, then land the chart change and update the expected-args
+literal so the harness goes green. This keeps each case load-bearing
+(a template-side regression flips the assertion) rather than tautological.
 """
 from __future__ import annotations
 
