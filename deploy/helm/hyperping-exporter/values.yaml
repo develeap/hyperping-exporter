@@ -33,7 +33,7 @@ config:
   # backslashes, brackets, and pipes) round-trips unchanged into the container
   # args. Example documented in the project README (see README; transported
   # verbatim by the chart, regex correctness is owned by the README):
-  #   excludeNamePattern: '\[DRILL\|\[TEST'
+  #   excludeNamePattern: '\[DRILL|\[TEST'
   # IMPORTANT for CLI users: Helm's `--set` and `--set-string` flag parsers
   # strip backslashes before any template function sees them. To supply a
   # backslash-bearing value from the CLI, either use a values file

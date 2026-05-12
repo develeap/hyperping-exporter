@@ -1,0 +1,9 @@
+# Stress-test URL: the query value embeds a literal double quote (") and a
+# literal backslash (\) on purpose so that `toJson` in the chart template is
+# load-bearing. A naive `"--mcp-url={{ .Values.config.mcpUrl }}"` rendering
+# would either break helm's YAML output or decode to a different string; the
+# `toJson` path round-trips both characters byte-for-byte. Do not "clean up"
+# the funny URL — it exists to detect quoting regressions in CI.
+config:
+  apiKey: x
+  mcpUrl: 'https://mcp.example.com/v1/mcp?token="ab\cd"'

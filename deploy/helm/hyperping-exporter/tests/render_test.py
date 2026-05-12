@@ -15,12 +15,20 @@ YAML, and asserts:
     well-formed strings; not a strict-mode YAML validator and not a
     substitute for `kubectl apply --dry-run=client`).
 
-PyYAML is the only third-party dependency. helm must be on PATH.
+PyYAML is the only third-party dependency. helm must be on PATH; when it
+is not, this script exits with code 2 and prints a clear install hint.
 Exit code 0 on success, 1 on any assertion failure.
+
+TDD pattern for new render-test cases: add (or update) the fixture first
+so the existing harness goes red against the missing fixture or stale
+assertion, then land the chart change and update the expected-args
+literal so the harness goes green. This keeps each case load-bearing
+(a template-side regression flips the assertion) rather than tautological.
 """
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -154,6 +162,10 @@ EXPECTED_VERSION = "1.4.0"
 
 
 def main() -> int:
+    if shutil.which(HELM) is None:
+        print("ERROR: helm binary not on PATH. Install Helm v3.x.", file=sys.stderr)
+        return 2
+
     # Case 1 — defaults: args list is exactly the baseline (contract 2).
     rendered = helm_template("default.values.yaml")
     assert_eq(deployment_args(rendered), BASELINE_ARGS,
@@ -205,10 +217,10 @@ def main() -> int:
     assert_scalars_clean(rendered, "ascii regex")
 
     # Case 4 — README documented example (contract 1, contract 4, load-bearing).
-    # Exact README spelling: '\[DRILL\|\[TEST'. The chart transports this
+    # Exact README spelling: '\[DRILL|\[TEST'. The chart transports this
     # verbatim; whether the string is a "correct" RE2 regex is owned by
     # the README, not by the chart.
-    pattern = r"\[DRILL\|\[TEST"
+    pattern = r"\[DRILL|\[TEST"
     rendered = helm_template("readme-regex.values.yaml")
     assert_eq(deployment_args(rendered),
               BASELINE_ARGS + [f"--exclude-name-pattern={pattern}"],
@@ -239,6 +251,33 @@ def main() -> int:
               ],
               "combo: args list = baseline + both new entries in template order")
     assert_scalars_clean(rendered, "combo")
+
+    # Case 8 — regex containing literal double quotes. YAML single-quoted
+    # scalar `'"foo"'` decodes to the string `"foo"` (quotes intact).
+    # toJson escapes those quotes; Kubernetes' YAML decoder reverses the
+    # escape, so the container sees `--exclude-name-pattern="foo"` as a
+    # single arg with embedded quote characters.
+    rendered = helm_template("quote-regex.values.yaml")
+    assert_eq(deployment_args(rendered),
+              BASELINE_ARGS + ['--exclude-name-pattern="foo"'],
+              "quote regex: args list contains literal double quotes")
+    assert_scalars_clean(rendered, "quote regex")
+
+    # Case 9 — mcpUrl whose query value embeds a literal `"` and `\`. This
+    # is the load-bearing mutation test for the `toJson` rendering of
+    # mcpUrl: both characters require JSON escaping, so a naive
+    # `"--mcp-url={{ .Values.config.mcpUrl }}"` template would either fail
+    # helm's YAML output or decode to a different string. The fixture's
+    # single-quoted YAML preserves `\` literally; `toJson` escapes both
+    # `"` and `\`; Kubernetes' YAML decoder reverses both escapes, so the
+    # container sees the source URL byte-for-byte.
+    rendered = helm_template("mcp-url-query.values.yaml")
+    assert_eq(deployment_args(rendered),
+              BASELINE_ARGS + [
+                  '--mcp-url=https://mcp.example.com/v1/mcp?token="ab\\cd"',
+              ],
+              "mcp-url query: URL with literal quote and backslash passes through verbatim")
+    assert_scalars_clean(rendered, "mcp-url query")
 
     print("\nALL RENDER TESTS PASSED")
     return 0
