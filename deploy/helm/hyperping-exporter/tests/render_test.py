@@ -5,13 +5,15 @@ Drives `helm template -f <fixture>` for each test case, parses the rendered
 YAML, and asserts:
 
   - The Deployment's first container args list matches an expected list
-    exactly (contract 1 and contract 2).
+    exactly. This literal comparison is the harness's load-bearing
+    apply-time-failure detector: any template-side regression in quoting,
+    escaping, or flag ordering surfaces here.
   - The chart-managed Secret is present or absent according to whether
     inline apiKey is set (existingSecret-only path).
-  - Every string-typed scalar in the rendered manifest survives a
-    PyYAML round-trip and is a real Python str (no escape decoding
-    surprises). This is the apply-time-failure-class detector used in
-    place of kubectl apply --dry-run=client, which requires a cluster.
+  - Every string-typed scalar in the rendered manifest is a real Python
+    str and JSON-encodes cleanly (a smoke check that decode produced
+    well-formed strings; not a strict-mode YAML validator and not a
+    substitute for `kubectl apply --dry-run=client`).
 
 PyYAML is the only third-party dependency. helm must be on PATH.
 Exit code 0 on success, 1 on any assertion failure.
@@ -86,14 +88,22 @@ def labels_with_version(rendered: str) -> dict[str, str]:
 
 
 def assert_scalars_clean(rendered: str, label: str) -> None:
-    """Walk every parsed document and confirm every string-typed scalar
-    is a real Python str that survives json.dumps round-trip.
+    """Smoke check that the YAML decoder produced Python `str` scalars
+    (not bytes, not surrogate-bearing objects) and that each such scalar
+    JSON-encodes without error.
 
-    This is the proxy used in place of `kubectl apply --dry-run=client`:
-    if toJson emitted a malformed escape that PyYAML accepted but
-    Kubernetes' YAML decoder would reject, the scalar would not be a
-    plain str (or json.dumps would surface the malformed bytes via an
-    encoding error). All string-typed scalars must JSON-encode cleanly.
+    What this is NOT: a kubectl apply --dry-run=client substitute. PyYAML
+    is lenient and will accept inputs that stricter YAML decoders (such
+    as the one Kubernetes uses) would reject; this walk catches neither
+    that class of bug nor schema-level violations. It is purely a check
+    that `helm template` produced parseable text whose string scalars are
+    well-formed Python strings.
+
+    The real apply-time-failure detection in this harness is the literal
+    `assert_eq(deployment_args(...), BASELINE_ARGS + [...])` comparisons:
+    those fix the rendered container args list to an exact expected value
+    so any quoting, escaping, or template-side regression on the contract
+    surfaces immediately.
     """
     def walk(node):
         if isinstance(node, dict):
