@@ -3,7 +3,13 @@ replicaCount: 1
 image:
   repository: khaledsalhabdeveleap/hyperping-exporter
   pullPolicy: IfNotPresent
-  tag: ""  # Defaults to chart appVersion
+  # Image tag. Empty string falls back to .Chart.AppVersion.
+  # Chart version (Chart.yaml `version`) and application version (Chart.yaml
+  # `appVersion` / image tag) are independent. The chart may be bumped for
+  # rendering changes without a binary release; the binary may be bumped
+  # without a chart change. Operators pinning a specific binary should set
+  # this tag explicitly rather than relying on appVersion drift.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -17,6 +23,8 @@ config:
   apiKey: ""
   # Name of an existing Secret with key 'api-key' (recommended for production).
   existingSecret: ""
+  # Must be a quoted Go duration string (e.g. "60s"). Bare integers (60)
+  # abort the render with a clear error pointing to validateCacheTTL.
   cacheTTL: "60s"
   metricsPath: "/metrics"
   logLevel: "info"
@@ -78,6 +86,21 @@ resources:
     cpu: 200m
     memory: 256Mi
 
+# Container-scope SecurityContext (item 4 — PSS-restricted contract).
+# These defaults satisfy the Kubernetes Pod Security Standard "restricted"
+# profile so the chart can be admitted into namespaces labelled
+# `pod-security.kubernetes.io/enforce: restricted`. Specifically:
+#   - runAsNonRoot: true             — required by PSS-restricted.
+#   - runAsUser / runAsGroup: 65534  — `nobody`; matches the container image.
+#   - allowPrivilegeEscalation: false — required by PSS-restricted.
+#   - readOnlyRootFilesystem: true   — empirically validated by the
+#     2026-05-12 30-minute Docker run; the binary tolerates a read-only
+#     rootfs (no scratch-disk writes outside /tmp).
+#   - capabilities.drop: [ALL]       — required by PSS-restricted.
+#   - seccompProfile.type: RuntimeDefault — required by PSS-restricted.
+# Operators MUST also label the target namespace
+# `pod-security.kubernetes.io/enforce=restricted` to actually enforce; the
+# chart does not create or label the Namespace itself.
 securityContext:
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
@@ -89,6 +112,12 @@ securityContext:
   seccompProfile:
     type: RuntimeDefault
 
+# Pod-scope SecurityContext (item 4 — PSS-restricted contract).
+# Mirrors the container-scope settings at the pod level so kubelet applies
+# the same identity to init containers, ephemeral containers, and any
+# future template that consumes podSecurityContext. `fsGroup: 65534`
+# matches the container uid/gid so any future emptyDir or PVC mount the
+# chart adds defaults to a group writable by the running process.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65534
