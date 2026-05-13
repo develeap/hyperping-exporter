@@ -6,8 +6,13 @@ name: Chart Release
 # A chart-v1.5.0 tag triggers ONLY this workflow; no Docker images are built
 # or republished. Operators install with:
 #
-#   helm install foo oci://ghcr.io/develeap/charts/hyperping-exporter \
-#     --version 1.5.0
+#   helm repo add develeap https://develeap.github.io/hyperping-exporter
+#   helm repo update
+#   helm install foo develeap/hyperping-exporter --version 1.5.0
+#
+# Publishes the chart .tgz + index.yaml to the `gh-pages` branch (served by
+# GitHub Pages). Switched from OCI on GHCR because the org policy disables
+# per-package visibility changes, which would leave the OCI artifact private.
 #
 # Release-time gates (re-run independently of branch CI, so a defect that
 # slipped past main does not ship to operators):
@@ -18,6 +23,12 @@ name: Chart Release
 #   - render_test.py
 #   - kubeconform schema validation
 #   - CHANGELOG entry MUST exist for the tag version (no fallback)
+#
+# Prerequisites (one-time per repo):
+#   - Enable GitHub Pages: Settings -> Pages -> Source: "Deploy from a branch",
+#     Branch: gh-pages, Folder: / (root). The first workflow run creates the
+#     branch if it does not exist; enable Pages AFTER the first successful run
+#     or accept that the URL 404s until then.
 
 on:
   push:
@@ -25,21 +36,19 @@ on:
       - 'chart-v*'
 
 permissions:
-  contents: write   # create GitHub Release
-  packages: write   # push OCI chart artifact to GHCR
+  contents: write   # create GitHub Release AND push to gh-pages branch
 
 concurrency:
   # Serialize concurrent runs on the same tag ref so re-runs do not race on
-  # the OCI push or the GitHub Release creation. cancel-in-progress: false
-  # because a half-finished release (OCI pushed but no Release created) is
-  # worse than a queued retry; let the running job complete.
+  # the gh-pages push or the GitHub Release creation. cancel-in-progress:
+  # false because a half-finished release (gh-pages updated but no Release
+  # created) is worse than a queued retry; let the running job complete.
   group: chart-release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   CHART_DIR: deploy/helm/hyperping-exporter
-  OCI_REGISTRY: ghcr.io
-  OCI_REPO: develeap/charts
+  CHART_NAME: hyperping-exporter
   KUBECONFORM_VERSION: v0.7.0
 
 jobs:
@@ -111,14 +120,29 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           helm package "${CHART_DIR}" -d dist
-          PKG="dist/hyperping-exporter-${CHART_VERSION}.tgz"
+          PKG="dist/${CHART_NAME}-${CHART_VERSION}.tgz"
           if [ ! -f "${PKG}" ]; then
             echo "::error::expected package ${PKG} not produced"
             exit 1
           fi
+          # Absolute path so subsequent worktree-cd does not break the ref.
+          ABS_PKG="$(cd "$(dirname "${PKG}")" && pwd)/$(basename "${PKG}")"
           echo "package=${PKG}" >> "${GITHUB_OUTPUT}"
+          echo "abs_package=${ABS_PKG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Compute Pages URL
+        id: pages
+        run: |
+          set -euo pipefail
+          OWNER_LC=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REPO_LC=$(printf '%s' "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+          PAGES_URL="https://${OWNER_LC}.github.io/${REPO_LC}"
+          echo "url=${PAGES_URL}" >> "${GITHUB_OUTPUT}"
+          echo "Pages URL: ${PAGES_URL}"
 
       - name: Extract release notes from CHANGELOG
+        env:
+          PAGES_URL: ${{ steps.pages.outputs.url }}
         run: |
           set -euo pipefail
           # Pulls the section between `## [<version>] ...` and the next `## [` heading.
@@ -136,89 +160,88 @@ jobs:
             echo "## Install"
             echo ""
             echo '```sh'
-            echo "helm install hyperping-exporter \\"
-            echo "  oci://${OCI_REGISTRY}/${OCI_REPO}/hyperping-exporter \\"
+            echo "helm repo add develeap ${PAGES_URL}"
+            echo "helm repo update"
+            echo "helm install hyperping-exporter develeap/${CHART_NAME} \\"
             echo "  --version ${CHART_VERSION}"
             echo '```'
           } >> release-notes.md
 
-      - name: Helm registry login (GHCR)
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" \
-            | helm registry login "${OCI_REGISTRY}" \
-              --username "${{ github.actor }}" \
-              --password-stdin
-
-      - name: Helm push to OCI
-        run: |
-          helm push "${{ steps.package.outputs.package }}" \
-            "oci://${OCI_REGISTRY}/${OCI_REPO}"
-
-      - name: Helm registry logout
-        if: always()
-        run: helm registry logout "${OCI_REGISTRY}" || true
-
-      # Newly-published GHCR packages default to PRIVATE. helm pull then 401s
-      # for unauthenticated operators. The default `GITHUB_TOKEN` cannot
-      # change package visibility (the endpoint needs `admin:org`); we use an
-      # optional PAT stored as `GHCR_ADMIN_TOKEN` instead. When the secret is
-      # missing the step is a no-op with a clear hint, so the workflow still
-      # succeeds end-to-end for repos that prefer the org-level setting
-      # "Inherit access from source repository" or a one-time UI flip.
-      - name: Ensure GHCR package is public
+      - name: Publish to gh-pages
         env:
-          PAT: ${{ secrets.GHCR_ADMIN_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          PKG_NAME: charts/hyperping-exporter
+          PAGES_URL: ${{ steps.pages.outputs.url }}
+          ABS_PKG: ${{ steps.package.outputs.abs_package }}
         run: |
           set -euo pipefail
-          # Percent-encode PKG_NAME for the path component (jq's @uri matches
-          # RFC 3986 unreserved set, so `/` becomes `%2F` etc.). Computed
-          # once so both the no-PAT notice and the PATCH call share the
-          # derived value.
-          ENCODED=$(printf '%s' "${PKG_NAME}" | jq -sRr @uri)
-          SETTINGS_URL="https://github.com/orgs/${OWNER}/packages/container/${ENCODED}/settings"
-          if [ -z "${PAT}" ]; then
-            echo "::notice::GHCR_ADMIN_TOKEN secret not set; skipping visibility flip."
-            echo "::notice::First-time pushes to GHCR default to PRIVATE. To make the chart pullable anonymously, either:"
-            echo "::notice::  (a) one-time fix at ${SETTINGS_URL} (Change visibility -> Public)"
-            echo "::notice::  (b) configure org-level Packages setting 'Inherit access from source repository' so future pushes inherit the public repo visibility"
-            echo "::notice::  (c) create a PAT with admin:org + write:packages and store it as the GHCR_ADMIN_TOKEN repo secret so this step automates (a) on every release"
-            exit 0
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          GH_PAGES_DIR="${RUNNER_TEMP}/gh-pages-wt"
+
+          # Separate "branch exists on remote?" from "fetch succeeded?" so a
+          # transient fetch failure does not silently fall through to orphan
+          # creation. ls-remote --exit-code returns 2 when the ref is absent;
+          # anything else (0 = found, 1+ = error) is handled distinctly.
+          if git ls-remote --exit-code origin refs/heads/gh-pages >/dev/null 2>&1; then
+            echo "gh-pages exists on remote; fetching."
+            git fetch origin gh-pages
+            git worktree add "${GH_PAGES_DIR}" FETCH_HEAD
+            (cd "${GH_PAGES_DIR}" && git checkout -B gh-pages)
+          else
+            echo "gh-pages does not exist on remote; creating orphan branch."
+            mkdir -p "${GH_PAGES_DIR}"
+            git worktree add --detach "${GH_PAGES_DIR}" HEAD
+            (cd "${GH_PAGES_DIR}" && git checkout --orphan gh-pages && git rm -rf . >/dev/null 2>&1 || true)
           fi
-          # PATCH org-package visibility (REST). 204 = success; 422 = already
-          # public (idempotent). Anything else surfaces the body for triage.
-          HTTP=$(curl -sS -o /tmp/visibility-body -w '%{http_code}' \
-            -X PATCH \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${PAT}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/orgs/${OWNER}/packages/container/${ENCODED}/visibility" \
-            -d '{"visibility":"public"}')
-          case "${HTTP}" in
-            204) echo "GHCR package set to public (or was already)." ;;
-            422)
-              if grep -q -i 'already' /tmp/visibility-body; then
-                echo "GHCR package already public; no change."
-              else
-                echo "::error::Visibility change rejected (422):"
-                cat /tmp/visibility-body
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::Unexpected response (HTTP ${HTTP}):"
-              cat /tmp/visibility-body
-              exit 1
-              ;;
-          esac
+
+          cp "${ABS_PKG}" "${GH_PAGES_DIR}/"
+
+          cd "${GH_PAGES_DIR}"
+          if [ -f index.yaml ]; then
+            helm repo index --merge index.yaml --url "${PAGES_URL}" .
+          else
+            helm repo index --url "${PAGES_URL}" .
+            # Seed an index.html so Pages serves something at the root URL.
+            cat > index.html <<HTML
+          <!DOCTYPE html>
+          <html><head><meta charset="utf-8"><title>develeap helm charts</title></head>
+          <body>
+          <h1>develeap helm charts</h1>
+          <p>Add this Helm repository:</p>
+          <pre>helm repo add develeap ${PAGES_URL}
+          helm repo update</pre>
+          <p>Index: <a href="${PAGES_URL}/index.yaml">index.yaml</a></p>
+          </body></html>
+          HTML
+          fi
+
+          git add -A
+          # No-op when re-running on the same tag with identical contents.
+          if git diff --cached --quiet; then
+            echo "gh-pages: nothing to commit (idempotent re-run)."
+          else
+            git commit -m "chart-${CHART_VERSION}"
+            git push origin gh-pages
+          fi
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "Chart ${GITHUB_REF_NAME}" \
-            --notes-file release-notes.md \
-            "${{ steps.package.outputs.package }}"
+          # gh release create exits non-zero if the release already exists;
+          # treat that as success after uploading the asset to the existing
+          # release. Keeps the workflow idempotent on tag re-runs.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; uploading asset (--clobber)."
+            gh release upload "${GITHUB_REF_NAME}" \
+              "${{ steps.package.outputs.package }}" --clobber
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "Chart ${GITHUB_REF_NAME}" \
+              --notes-file release-notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "Chart ${GITHUB_REF_NAME}" \
+              --notes-file release-notes.md \
+              "${{ steps.package.outputs.package }}"
+          fi
