@@ -49,11 +49,12 @@ go install github.com/develeap/hyperping-exporter@latest
 HYPERPING_API_KEY=your_key hyperping-exporter
 ```
 
-**Helm chart (OCI)** — published to GHCR on `chart-v*` tags. Install with Helm 3.8+:
+**Helm chart** — published to a GitHub Pages helm repo on `chart-v*` tags.
 
 ```bash
-helm install hyperping-exporter \
-  oci://ghcr.io/develeap/charts/hyperping-exporter \
+helm repo add develeap https://develeap.github.io/hyperping-exporter
+helm repo update
+helm install hyperping-exporter develeap/hyperping-exporter \
   --version 1.5.0 \
   --set config.existingSecret=hyperping-api-key
 ```
