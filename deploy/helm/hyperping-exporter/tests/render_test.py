@@ -385,6 +385,20 @@ def main() -> int:
                 "external-secret-missing-store.values.yaml",
                 "secretStoreRef.name is required")
 
+    # Case 12a — externalSecret.apiVersion typo aborts the render (C-3).
+    # Without this guard a value like `external-secrets.io/v1beata1`
+    # rendered verbatim and surfaced only at apply time as
+    # `no matches for kind ExternalSecret in version ...`.
+    assert_fail("externalsecret-bad-apiversion",
+                "externalsecret-bad-apiversion-fails.values.yaml",
+                "externalSecret.apiVersion")
+
+    # Case 12b — externalSecret.secretStoreRef.kind outside the supported
+    # set aborts the render (C-3). Same rationale as the apiVersion guard.
+    assert_fail("externalsecret-bad-storekind",
+                "externalsecret-bad-storekind-fails.values.yaml",
+                "externalSecret.secretStoreRef.kind")
+
     # Case 13 — replicas-zero positive render with NO source.
     rendered = helm_template("replicas-zero.values.yaml")
     dep = find_deployment(rendered)
