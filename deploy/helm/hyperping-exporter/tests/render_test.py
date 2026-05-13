@@ -538,6 +538,14 @@ def main() -> int:
     assert cnp is not None, "FAIL cilium-egress-only: CiliumNetworkPolicy missing"
     assert find_network_policy(rendered) is None, \
         "FAIL cilium-egress-only: vanilla NetworkPolicy must be absent"
+    # Ingress lockdown asymmetry fix (R8): when ingressFrom is empty, the
+    # Cilium variant must explicitly set enableDefaultDeny.ingress: true so
+    # ingress is denied by default like vanilla NP. Without this Cilium
+    # leaves ingress unrestricted (the implicit deny does NOT apply when an
+    # endpoint has only egress rules).
+    edd = cnp["spec"].get("enableDefaultDeny") or {}
+    assert edd.get("ingress") is True, \
+        f"FAIL cilium-egress-only: enableDefaultDeny.ingress must be true to match vanilla NP semantics; got {edd!r}"
     assert "ingress" not in cnp["spec"], \
         f"FAIL cilium-egress-only: ingress key must be DROPPED (not [])"
     assert "egress" in cnp["spec"], "FAIL cilium-egress-only: egress key required"
@@ -548,7 +556,28 @@ def main() -> int:
         any(f.get("matchName") == "api.hyperping.io" for f in r.get("toFQDNs", []))
         for r in fqdn_rules
     ), "FAIL cilium-egress-only: api.hyperping.io matchName missing"
-    print("PASS cilium-egress-only: CiliumNetworkPolicy egress-only with toFQDNs")
+    # DNS proxy interception (R5): the DNS egress rule MUST carry
+    # rules.dns under toPorts so Cilium's DNS proxy intercepts queries and
+    # learns the FQDN-to-IP mapping consumed by the toFQDNs rule. Without
+    # this block, toFQDNs never matches and egress to api.hyperping.io is
+    # dropped on a real Cilium-enforced cluster.
+    dns_rules = [
+        r for r in cnp["spec"]["egress"]
+        if any(
+            (ep.get("matchLabels") or {}).get("k8s-app") == "kube-dns"
+            for ep in r.get("toEndpoints", [])
+        )
+    ]
+    assert dns_rules, "FAIL cilium-egress-only: kube-dns toEndpoints rule missing"
+    dns_rule = dns_rules[0]
+    to_ports = dns_rule.get("toPorts") or []
+    assert to_ports, "FAIL cilium-egress-only: kube-dns rule missing toPorts"
+    dns_proxy_spec = (to_ports[0].get("rules") or {}).get("dns")
+    assert dns_proxy_spec, \
+        f"FAIL cilium-egress-only: kube-dns toPorts must include rules.dns for FQDN interception; got {to_ports!r}"
+    assert any("matchPattern" in entry or "matchName" in entry for entry in dns_proxy_spec), \
+        f"FAIL cilium-egress-only: rules.dns must have matchPattern or matchName entries; got {dns_proxy_spec!r}"
+    print("PASS cilium-egress-only: CiliumNetworkPolicy egress-only with toFQDNs + rules.dns + enableDefaultDeny.ingress")
     assert_scalars_clean(rendered, "cilium-egress-only")
 
     # Case 31 — cilium-ingress-matchlabels.

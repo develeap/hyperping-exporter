@@ -11,6 +11,18 @@ spec:
   endpointSelector:
     matchLabels:
       {{- include "hyperping-exporter.selectorLabels" . | nindent 6 }}
+  {{- /*
+    Ingress lockdown parity with vanilla NetworkPolicy (R8). Vanilla NP
+    sets policyTypes: [Ingress, Egress] and an omitted `ingress` key
+    means deny-all-ingress per K8s semantics. Cilium 1.14+ requires
+    enableDefaultDeny.ingress: true to match that behaviour when the
+    endpoint selector picks an endpoint that has only egress rules
+    (without this flag Cilium leaves ingress unrestricted). Always set
+    enableDefaultDeny.ingress: true so the Cilium variant matches the
+    vanilla NP trust model regardless of whether ingressFrom is empty.
+  */}}
+  enableDefaultDeny:
+    ingress: true
   {{- /* Ingress block is rendered only when ingressFrom is non-empty (C3.5). */}}
   {{- if .Values.networkPolicy.ingressFrom }}
   ingress:
@@ -60,6 +72,18 @@ spec:
   {{- end }}
   egress:
     # DNS resolution (scoped to kube-system).
+    #
+    # The rules.dns block under toPorts is REQUIRED for FQDN egress to
+    # work on a real Cilium-enforced cluster (R5). Cilium's DNS proxy
+    # only intercepts DNS queries when the egress rule that allows
+    # 53/UDP+TCP explicitly opts into proxying via rules.dns. Without
+    # that opt-in the proxy never observes the response, so the
+    # subsequent toFQDNs rule never learns the FQDN-to-IP mapping and
+    # all egress to api.hyperping.io is silently dropped.
+    #
+    # `matchPattern: "*"` allows the proxy to learn ANY hostname the
+    # exporter resolves (the toFQDNs rule below is what restricts which
+    # hosts can actually be connected to on port 443).
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
@@ -70,6 +94,9 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
     # FQDN-restricted egress to api.hyperping.io (or operator-configured hosts).
     - toFQDNs:
         {{- range $host := ($fqdn.allowedHosts | default (list "api.hyperping.io")) }}
