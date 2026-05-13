@@ -72,29 +72,67 @@ docker_hub_tag_exists() {
 
 echo "Resolving upstream pins from $EXPECTED" >&2
 
-# helm/kind-action
+# Strip a leading 'v' to enable numeric semver comparison.
+strip_v() { echo "${1#v}"; }
+
+# Return 0 iff got >= expected_min (treating both as dotted semver). Empty
+# operands are treated as failure.
+semver_ge() {
+  local got="$1" min="$2"
+  [ -n "$got" ] && [ -n "$min" ] || return 1
+  local sorted
+  sorted="$(printf '%s\n%s\n' "$(strip_v "$min")" "$(strip_v "$got")" \
+    | sort -V | head -1)"
+  [ "$sorted" = "$(strip_v "$min")" ]
+}
+
+# helm/kind-action — minimum-version contract: got must be >= expected_min.
 exp_helm_kind="$(pin helm_kind_action_min_tag)"
-got_helm_kind="$(retry latest_release_tag helm/kind-action || echo "")"
+got_helm_kind="$(retry latest_release_tag helm/kind-action || true)"
 echo "$got_helm_kind" > "$ARTIFACTS/helm-kind-action-tag.txt"
 echo "helm/kind-action resolved=$got_helm_kind expected_min=$exp_helm_kind" >&2
+if [ -z "$got_helm_kind" ]; then
+  echo "FATAL: helm/kind-action tag resolution failed after retries. USER DECISION REQUIRED: investigate gh API / network." >&2
+  exit 1
+fi
+if ! semver_ge "$got_helm_kind" "$exp_helm_kind"; then
+  echo "USER DECISION REQUIRED: pin drift for helm/kind-action: expected_min=$exp_helm_kind resolved=$got_helm_kind" >&2
+  exit 1
+fi
 
-# kind binary minimum
+# kind binary — minimum-version contract: got must be >= expected_min.
 exp_kind="$(pin kind_min_tag)"
-got_kind="$(retry latest_release_tag kubernetes-sigs/kind || echo "")"
+got_kind="$(retry latest_release_tag kubernetes-sigs/kind || true)"
 echo "$got_kind" > "$ARTIFACTS/kind-tag.txt"
 echo "kubernetes-sigs/kind resolved=$got_kind expected_min=$exp_kind" >&2
+if [ -z "$got_kind" ]; then
+  echo "FATAL: kubernetes-sigs/kind tag resolution failed after retries. USER DECISION REQUIRED: investigate gh API / network." >&2
+  exit 1
+fi
+if ! semver_ge "$got_kind" "$exp_kind"; then
+  echo "USER DECISION REQUIRED: pin drift for kubernetes-sigs/kind: expected_min=$exp_kind resolved=$got_kind" >&2
+  exit 1
+fi
 
-# actions/checkout, azure/setup-helm, actions/setup-python — exact-match audit
+# actions/checkout, azure/setup-helm, actions/setup-python — exact-match audit.
 for repo in actions/checkout azure/setup-helm actions/setup-python; do
   case "$repo" in
     actions/checkout)        exp="$(pin actions_checkout_tag)" ;;
     azure/setup-helm)        exp="$(pin azure_setup_helm_tag)" ;;
     actions/setup-python)    exp="$(pin actions_setup_python_tag)" ;;
   esac
-  got="$(retry latest_release_tag "$repo" || echo "")"
+  got="$(retry latest_release_tag "$repo" || true)"
   slug="$(echo "$repo" | tr '/' '-')"
   echo "$got" > "$ARTIFACTS/${slug}-tag.txt"
   echo "$repo resolved=$got expected=$exp" >&2
+  if [ -z "$got" ]; then
+    echo "FATAL: $repo tag resolution failed after retries. USER DECISION REQUIRED: investigate gh API / network." >&2
+    exit 1
+  fi
+  if [ "$got" != "$exp" ]; then
+    echo "USER DECISION REQUIRED: pin drift for $repo: expected=$exp resolved=$got" >&2
+    exit 1
+  fi
 done
 
 # datreeio/CRDs-catalog — capture latest tag if expected is empty,
