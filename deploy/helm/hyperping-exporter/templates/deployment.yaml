@@ -2,6 +2,7 @@
 {{- include "hyperping-exporter.validateCacheTTL" . -}}
 {{- include "hyperping-exporter.validateReplicaCount" . -}}
 {{- include "hyperping-exporter.validateSecretSources" . -}}
+{{- include "hyperping-exporter.validateWebConfigFile" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,9 +47,16 @@ spec:
             - {{ include "hyperping-exporter.arg" (list "--cache-ttl" .Values.config.cacheTTL) }}
             - {{ include "hyperping-exporter.arg" (list "--log-level" .Values.config.logLevel) }}
             - {{ include "hyperping-exporter.arg" (list "--log-format" .Values.config.logFormat) }}
-            {{- if .Values.config.webConfigFile }}
-            - {{ include "hyperping-exporter.arg" (list "--web.config.file" .Values.config.webConfigFile) }}
-            {{- end }}
+            {{- /*
+              config.webConfigFile (TLS mode) is currently gated off by
+              validateWebConfigFile (R10): the chart's probes and
+              ServiceMonitor hardcode HTTP, so enabling TLS would
+              produce a permanently-NotReady pod. The validator
+              fail()s before this template would render the arg. The
+              arg-rendering line stays out of the template until the
+              chart wires httpGet.scheme + ServiceMonitor scheme +
+              tlsConfig coherently.
+            */}}
             {{- if .Values.config.namespace }}
             - {{ include "hyperping-exporter.arg" (list "--namespace" .Values.config.namespace) }}
             {{- end }}

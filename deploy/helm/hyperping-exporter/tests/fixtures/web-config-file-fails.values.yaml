@@ -1,0 +1,7 @@
+config:
+  apiKey: x
+  # webConfigFile (chart-side TLS opt-in) is currently unsupported by the
+  # chart because the probes' httpGet.scheme defaults to HTTP and the
+  # ServiceMonitor's endpoint scheme is hardcoded to http. Setting this
+  # MUST abort the render (R10).
+  webConfigFile: /etc/hyperping/web-config.yaml

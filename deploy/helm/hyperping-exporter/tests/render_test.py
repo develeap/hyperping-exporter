@@ -620,6 +620,15 @@ def main() -> int:
                 "networkpolicy-cilium-foreign-namespace-label.values.yaml",
                 "k8s:io.kubernetes.pod.namespace.labels")
 
+    # Case 38 — config.webConfigFile is currently unsupported (R10).
+    # Setting it would put the binary into TLS mode, but the chart's
+    # probes default to HTTP and the ServiceMonitor's endpoint scheme is
+    # hardcoded to http. Operators must therefore see a render-time
+    # fail() with a clear message rather than a silently-broken Pod.
+    assert_fail("web-config-file-unsupported",
+                "web-config-file-fails.values.yaml",
+                "config.webConfigFile is not supported")
+
     # Case 37 — servicemonitor enabled (template coverage).
     rendered = helm_template("servicemonitor-enabled.values.yaml")
     sm = [d for d in docs(rendered) if d.get("kind") == "ServiceMonitor"]

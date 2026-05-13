@@ -48,7 +48,17 @@ config:
   metricsPath: "/metrics"
   logLevel: "info"
   logFormat: "text"
-  # Optional: path to web.config.file for TLS / basic auth
+  # Reserved for a future chart release. Setting `webConfigFile` to a
+  # non-empty path currently aborts the render via
+  # `validateWebConfigFile`: the binary's `--web.config.file` flag puts
+  # it into TLS mode, but the chart's `livenessProbe` /
+  # `readinessProbe` use `httpGet.scheme: HTTP` and the ServiceMonitor
+  # template hardcodes `scheme: http`. Enabling TLS in isolation would
+  # leave the pod permanently NotReady and would silently break
+  # Prometheus scrapes. Run the binary without `--web.config.file`
+  # (recommended; terminate TLS with a sidecar or at the Service edge),
+  # or wait for a chart release that wires probes + ServiceMonitor +
+  # tlsConfig together.
   webConfigFile: ""
   # Optional: Prometheus metric name prefix. Defaults to "hyperping" when empty.
   # Changing from the default requires updating any alert rules and Grafana

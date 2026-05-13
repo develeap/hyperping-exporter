@@ -153,6 +153,22 @@ rendering gate, never here.
 {{- end -}}
 
 {{/*
+validateWebConfigFile (R10). The `config.webConfigFile` knob puts the
+binary into TLS mode (Prometheus client toolkit `--web.config.file`),
+but the chart's probes default to `httpGet.scheme: HTTP` and the
+ServiceMonitor template hardcodes `scheme: http`. Setting the flag in
+isolation produces a permanently-NotReady pod: kubelet probes fail
+against the HTTPS endpoint and Prometheus scrapes also fail. Until the
+chart wires both surfaces to switch to HTTPS, fail the render with a
+clear message rather than silently break the install.
+*/}}
+{{- define "hyperping-exporter.validateWebConfigFile" -}}
+{{- if .Values.config.webConfigFile -}}
+{{- fail "config.webConfigFile is not supported by this chart. Setting it would enable TLS in the binary, but the chart's livenessProbe / readinessProbe httpGet.scheme and the ServiceMonitor endpoint scheme are hardcoded to HTTP. Either run the binary without --web.config.file (recommended; let a sidecar / Service-level TLS handle ingress encryption) or wait for a future chart release that wires httpGet.scheme + ServiceMonitor scheme + tlsConfig together." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 validateNoTestKeys (R4-8, Contract C8.1). The chart exposes ONE test-only
 key, `internal._testBypassReplicaCheck`, which is undocumented in
 values.yaml and consumed ONLY by the PDB rendering gate. Any other key
