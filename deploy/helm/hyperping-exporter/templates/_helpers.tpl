@@ -81,12 +81,14 @@ Usage:
 
 {{/*
 validateCacheTTL (Contract C2.3). `fail()`s if `config.cacheTTL` is not a
-string. Operators must quote bare integers (e.g. `"60s"` not `60`); the
-binary expects a Go duration. `kindIs` works on Sprig's typed kinds.
+non-empty string. Operators must quote bare integers (e.g. `"60s"` not
+`60`); the binary expects a Go duration and an empty value renders
+`--cache-ttl=` which `flag.Duration` rejects at startup. `kindIs` works
+on Sprig's typed kinds.
 */}}
 {{- define "hyperping-exporter.validateCacheTTL" -}}
-{{- if not (kindIs "string" .Values.config.cacheTTL) -}}
-{{- fail (printf "config.cacheTTL must be a quoted Go duration string (e.g. \"60s\"). Got kind %s (value %v). Quote the value in values.yaml." (kindOf .Values.config.cacheTTL) .Values.config.cacheTTL) -}}
+{{- if or (not (kindIs "string" .Values.config.cacheTTL)) (eq .Values.config.cacheTTL "") -}}
+{{- fail (printf "config.cacheTTL must be a non-empty quoted Go duration string (e.g. \"60s\"); empty string is rejected because it would render `--cache-ttl=` which the binary's flag.Duration parser rejects at startup. Got kind %s (value %v). Quote the value in values.yaml." (kindOf .Values.config.cacheTTL) .Values.config.cacheTTL) -}}
 {{- end -}}
 {{- end -}}
 

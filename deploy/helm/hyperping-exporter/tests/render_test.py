@@ -471,7 +471,14 @@ def main() -> int:
 
     # Case 23 — cache-ttl-int-fails (bare int aborts).
     assert_fail("cache-ttl-int-fails", "cache-ttl-int-fails.values.yaml",
-                "must be a quoted Go duration")
+                "must be a non-empty quoted Go duration")
+
+    # Case 23a — cache-ttl empty string aborts (C-4). The kindIs string
+    # check alone admitted "" and rendered `--cache-ttl=`, which the
+    # binary's flag.Duration parser rejects at startup. validateCacheTTL
+    # now rejects empty string at render time.
+    assert_fail("cache-ttl-empty-fails", "cache-ttl-empty-fails.values.yaml",
+                "empty string is rejected")
 
     # Case 24 — log-level-numeric (typed input renders clean).
     rendered = helm_template("log-level-numeric.values.yaml")

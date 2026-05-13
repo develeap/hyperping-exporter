@@ -1,0 +1,6 @@
+config:
+  apiKey: x
+  # Empty-string cacheTTL passed the kindIs string check pre-C-4 and
+  # rendered `--cache-ttl=` (empty), which the binary's flag.Duration
+  # parser rejects at startup. validateCacheTTL aborts the render here.
+  cacheTTL: ""
