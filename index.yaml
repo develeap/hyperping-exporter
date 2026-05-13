@@ -1,0 +1,26 @@
+apiVersion: v1
+entries:
+  hyperping-exporter:
+  - apiVersion: v2
+    appVersion: 1.4.1
+    created: "2026-05-13T12:09:40.701901828Z"
+    description: Prometheus exporter for the Hyperping monitoring service
+    digest: 6c35bd433c8bf0c4ea6171741797acc20bd375fa0308991bfe5a3a03f5a6e763
+    keywords:
+    - prometheus
+    - hyperping
+    - monitoring
+    - exporter
+    - observability
+    maintainers:
+    - email: team@develeap.com
+      name: Develeap
+      url: https://github.com/develeap
+    name: hyperping-exporter
+    sources:
+    - https://github.com/develeap/hyperping-exporter
+    type: application
+    urls:
+    - https://develeap.github.io/hyperping-exporter/hyperping-exporter-1.5.0.tgz
+    version: 1.5.0
+generated: "2026-05-13T12:09:40.701065958Z"
