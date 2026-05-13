@@ -646,6 +646,20 @@ def main() -> int:
                 "internal-bogus-key-fails.values.yaml",
                 "values.internal.bogus is not a documented chart key")
 
+    # Case 39a — validateNoTestKeys PASS path (C-2). The `_test`-prefix
+    # carve-out has no production consumer today but is reserved for
+    # future test-only knobs. Setting `internal._testFoo` must render
+    # normally, with the baseline args list and the chart-managed
+    # Secret present. This locks in the PASS path so a future regression
+    # that flips the prefix predicate would also surface here.
+    rendered = helm_template("internal-test-key-passes.values.yaml")
+    assert_eq(deployment_args(rendered), BASELINE_ARGS,
+              "internal-test-key-passes: args list equals baseline")
+    assert find_secret(rendered) is not None, \
+        "FAIL internal-test-key-passes: chart-managed Secret should render"
+    print("PASS internal-test-key-passes: _test-prefixed key under internal is accepted")
+    assert_scalars_clean(rendered, "internal-test-key-passes")
+
     # Case 38 — config.webConfigFile is currently unsupported (R10).
     # Setting it would put the binary into TLS mode, but the chart's
     # probes default to HTTP and the ServiceMonitor's endpoint scheme is

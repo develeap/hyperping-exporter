@@ -1,0 +1,9 @@
+config:
+  apiKey: x
+# The `_test`-prefix carve-out under `internal` is reserved for future
+# test-only knobs. Setting any `_test*` key must NOT abort the render
+# (no production consumer reads these today); the chart renders
+# normally. This case locks in the PASS path of validateNoTestKeys
+# alongside the REJECT-path case for non-prefixed keys (C-2).
+internal:
+  _testFoo: true
