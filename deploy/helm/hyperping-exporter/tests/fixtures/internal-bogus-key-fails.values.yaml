@@ -1,0 +1,7 @@
+config:
+  apiKey: x
+# The `internal` block is reserved for test-only knobs prefixed `_test`.
+# Any other key under `internal` must abort the render via
+# validateNoTestKeys with a clear, footgun-proof message (R4).
+internal:
+  bogus: true

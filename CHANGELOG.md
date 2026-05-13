@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-13 [Chart only — binary unchanged]
+
+### Highlights
+
+- **Production-readiness hardening for the Helm chart.** Ten peer-review items landed as one cutover: empirically-grounded `resources` defaults, reconciled probe periods, PSS-restricted documentation, a uniform safe-arg rendering helper, ExternalSecret support with mutual-exclusion guards, `replicaCount: 0` as a fully-supported scaled-to-zero state, a `validateReplicaCount` singleton guard, default-on `NetworkPolicy` with a `cilium.io/v2 CiliumNetworkPolicy` FQDN-restriction variant, and a `validateCacheTTL` guard that aborts the render on bare-integer cacheTTL.
+- **New CI gates.** `kubeconform -strict` schema validation against a pinned `datreeio/CRDs-catalog` tag plus a `kind` PSS-restricted live admission job; every commit on the branch keeps `render_test.py`, `helm lint`, and `make helm-kubeconform` green (bisect-safe).
+
+### Added
+
+- `templates/externalsecret.yaml` rendering `external-secrets.io/v1beta1 ExternalSecret` (default; override via `externalSecret.apiVersion` to `external-secrets.io/v1` on ESO 0.10+). The plan originally targeted `external-secrets.io/v1` as the default, but the pinned `datreeio/CRDs-catalog` tag does not ship the `v1` schema, which would have left `kubeconform -strict` unable to validate the fixture. The default was therefore rolled back to `v1beta1` for chart 1.5.0 with the operator opt-in preserved (see Upgrade notes).
+- `templates/networkpolicy-cilium.yaml` rendering `cilium.io/v2 CiliumNetworkPolicy` when `networkPolicy.fqdnRestriction.enabled: true`; mutually exclusive with the vanilla `templates/networkpolicy.yaml`.
+- `_helpers.tpl` helpers: `hyperping-exporter.arg` (safe-arg rendering), `secretSourceCount`, `validateSecretSources`, `validateReplicaCount`, `validateCacheTTL`, `validateNoTestKeys`.
+- `tests/admission_env.sh`, `tests/admission_test.sh`, `tests/kind-pss.yaml`, `tests/kind-pss-config/admission-config.yaml`, `tests/scripts/resolve_pins.sh`, `tests/pins.expected.yaml` — admission-test harness and pin resolver.
+- 28 new render-harness cases covering external-secret positive/defaults/missing-store, replicas-zero / replicas-multi, three secret-conflict variants, missing-source abort, cache-ttl numeric and abort, log-level numeric (no `%!s` artefact), metrics-path special chars, networkpolicy-default, pdb-enabled/structural with multi-replica leakage proof, and seven Cilium variants (egress-only, matchLabels, matchExpressions, mixed, plus three fail paths).
+- `Makefile` targets `helm-render`, `helm-kubeconform`, `helm-pss`, `helm-pss-clean`, `helm-ci-fast`, `helm-ci`.
+
+### Changed
+
+- Helm chart `Chart.yaml` `version` `1.1.0` → `1.5.0`.
+- Helm chart `appVersion` `"1.4.0"` → `"1.4.1"` to track the published binary.
+- `values.yaml` `resources` block re-tuned from a 30-minute Docker observation (peak RSS 11.47 MiB, peak CPU 6.33%): requests `cpu: 50m, memory: 64Mi`; limits `cpu: 200m, memory: 256Mi` (~30% request headroom; ~4x limit headroom).
+- `values.yaml` `livenessProbe` `initialDelaySeconds: 5 → 10`, `periodSeconds: 30 → 10`, `failureThreshold` introduced at `3`; `readinessProbe` `initialDelaySeconds: 10 → 5`, `periodSeconds: 15 → 5`, `failureThreshold: 3`.
+- `values.yaml` `networkPolicy.enabled` default `false → true`; egress 443 rule no longer carries an `except:` list (the user's clusters may route api.hyperping.io via an in-cluster egress gateway in RFC1918 space).
+- `templates/deployment.yaml` arg lines migrated to the safe-arg helper; the legacy 2-line `apiKey || existingSecret` guard replaced by validator includes; the env block now gates on `secretSourceCount > 0` so `replicaCount: 0` deployments without a secret source render cleanly.
+- `templates/secret.yaml` now suppresses when `externalSecret.enabled: true`.
+
+### Removed
+
+- The `podDisruptionBudget` block has been removed from `values.yaml` and the `templates/pdb.yaml` template has been deleted. The exporter is a singleton (`validateReplicaCount` aborts the render at `replicaCount > 1`), which means a PodDisruptionBudget rendering gate is unreachable for any production caller: you cannot run a maxUnavailable budget across a single replica without blocking node drains. The previous knob was therefore dead config and is no longer documented. Operators who had previously set `podDisruptionBudget.enabled: true` should remove the entry from their values overlays; Helm ignores unknown values keys, so the chart will still render cleanly but the value has no effect. If you need to gate voluntary disruptions for the singleton pod, the supported pattern is a cluster-level node-drain orchestration policy (e.g. PriorityClass + scheduling rules), not a PDB.
+
+### Upgrade notes
+
+- **PSS namespace labelling.** The chart does not create or label the target Namespace. Operators MUST label the target namespace `pod-security.kubernetes.io/enforce=restricted` to enforce; the chart's container and pod SecurityContext defaults already satisfy that profile.
+- **Helm-to-ESO migration.** Switching an existing release from `apiKey` / `existingSecret` to `externalSecret.enabled: true` requires a brief window where the chart-managed Secret is replaced by an ESO-reconciled Secret of the same name. Stage: (1) deploy ESO and the `(Cluster)SecretStore`; (2) bump the chart with `externalSecret.enabled: true` AND clear `apiKey` / `existingSecret` in the SAME release; (3) verify the ExternalSecret reaches `SecretSynced` before scaling the Deployment.
+- **`replicaCount: 2` (or higher) now aborts the render** with a `validateReplicaCount` error. The exporter is a singleton; scale horizontally by sharding monitor namespaces across separate releases.
+- **`cacheTTL` MUST be a quoted Go duration string** (e.g. `"60s"`). Bare integers abort the render via `validateCacheTTL`.
+- **NetworkPolicy default-on.** Existing releases that relied on `networkPolicy.enabled: false` should set it explicitly if they wish to keep that behaviour; the default flipped to `true` with an egress rule permitting kube-dns plus TCP/443 to `0.0.0.0/0` (no `except:`).
+- **`config.webConfigFile` is currently unsupported and aborts the render** via the new `validateWebConfigFile` helper. The binary's `--web.config.file` flag puts it into TLS mode, but the chart's probes (`livenessProbe.httpGet.scheme`, `readinessProbe.httpGet.scheme`) and the ServiceMonitor template's `endpoints[].scheme` hardcode HTTP. Enabling TLS in isolation would leave the pod permanently NotReady and silently break Prometheus scrapes; failing the render loud is the safer default. Operators who need TLS today should terminate at a sidecar or at the Service edge. A future chart release will wire `httpGet.scheme` + ServiceMonitor `scheme` + `tlsConfig` together so the knob becomes load-bearing.
+- **ExternalSecret apiVersion default is `external-secrets.io/v1beta1`.** Operators running ESO 0.10+ (where the `v1` CRD is GA and `v1beta1` is deprecated) MUST set `externalSecret.apiVersion: external-secrets.io/v1` explicitly. The chart's `kubeconform` job pins a CRDs-catalog tag that does not yet ship the `v1` schema; the chart will roll the default to `v1` in a subsequent chart bump once the catalog tag does.
+
 ## [1.4.1] - 2026-05-12
 
 ### Added

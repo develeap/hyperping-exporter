@@ -1,0 +1,14 @@
+config:
+  apiKey: x
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - podSelector:
+        matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+              - prometheus
+              - grafana-agent
+  fqdnRestriction:
+    enabled: true

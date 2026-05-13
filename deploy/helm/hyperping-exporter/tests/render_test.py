@@ -67,6 +67,66 @@ def find_secret(rendered: str) -> dict | None:
     return None
 
 
+def find_external_secret(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "ExternalSecret":
+            return d
+    return None
+
+
+def find_pdb(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "PodDisruptionBudget":
+            return d
+    return None
+
+
+def find_network_policy(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "NetworkPolicy":
+            return d
+    return None
+
+
+def find_cilium_network_policy(rendered: str) -> dict | None:
+    for d in docs(rendered):
+        if d.get("kind") == "CiliumNetworkPolicy":
+            return d
+    return None
+
+
+def deployment_env(rendered: str) -> list[dict]:
+    return (
+        find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]
+        .get("env", [])
+    )
+
+
+def assert_fail(case_name: str, fixture: str, expected_stderr_substring: str,
+                forbidden_stdout_substring: str | None = None) -> None:
+    """Run helm template and assert it exits non-zero AND stderr contains the
+    given substring. Optionally assert a forbidden substring is absent from
+    captured stdout (leakage-proof per Contract C8.1)."""
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART), "-f", str(FIXTURES / fixture)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        print(f"FAIL {case_name}: expected helm template to fail; got returncode 0", file=sys.stderr)
+        print(f"  stdout: {proc.stdout[:500]}", file=sys.stderr)
+        sys.exit(1)
+    if expected_stderr_substring not in proc.stderr:
+        print(f"FAIL {case_name}: expected stderr to contain {expected_stderr_substring!r}", file=sys.stderr)
+        print(f"  stderr: {proc.stderr[:1000]}", file=sys.stderr)
+        sys.exit(1)
+    if forbidden_stdout_substring is not None:
+        if forbidden_stdout_substring in proc.stdout:
+            print(f"FAIL {case_name}: forbidden substring {forbidden_stdout_substring!r} leaked into stdout", file=sys.stderr)
+            print(f"  stdout: {proc.stdout[:1000]}", file=sys.stderr)
+            sys.exit(1)
+    print(f"PASS {case_name}: assert_fail({expected_stderr_substring!r}) rc={proc.returncode}")
+
+
 def deployment_args(rendered: str) -> list[str]:
     return find_deployment(rendered)["spec"]["template"]["spec"]["containers"][0]["args"]
 
@@ -157,8 +217,9 @@ BASELINE_ARGS = [
 # that actually understands the flags this chart now renders
 # (`--mcp-url` since v1.2.0, `--exclude-name-pattern` since v1.3.0).
 # Published binary: khaledsalhabdeveleap/hyperping-exporter:1.4.0.
-EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.0"
-EXPECTED_VERSION = "1.4.0"
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.1"
+EXPECTED_VERSION = "1.4.1"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.0"
 
 
 def main() -> int:
@@ -179,19 +240,37 @@ def main() -> int:
     assert_eq(deployment_image(rendered), EXPECTED_IMAGE_DEFAULT,
               "defaults: Deployment image equals published Docker Hub tag")
     versions = labels_with_version(rendered)
-    # Expect the label on Secret, Service, and Deployment (every resource
-    # whose template includes the common-labels helper).
-    expected_versions = {
-        f"Secret/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Secret')]
-    }
-    expected_versions.update({
-        f"Service/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Service')]
-    })
-    expected_versions.update({
-        f"Deployment/{r}": EXPECTED_VERSION for r in [d['metadata']['name'] for d in find_all(rendered, 'Deployment')]
-    })
+    # Expect the label on every chart-labelled resource. Default render after
+    # Task 7 emits Secret, Service, Deployment, NetworkPolicy (NP flipped on
+    # by default in chart 1.5.0). Use set-difference enumeration so a future
+    # additional resource produces a clear "new resource" diff rather than a
+    # tuple mismatch (Contract C8.3).
+    expected_versions: dict[str, str] = {}
+    for kind in ("Secret", "Service", "Deployment", "NetworkPolicy"):
+        for d in find_all(rendered, kind):
+            expected_versions[f"{kind}/{d['metadata']['name']}"] = EXPECTED_VERSION
+    missing = set(expected_versions) - set(versions)
+    extra = set(versions) - set(expected_versions)
+    if missing or extra:
+        print(
+            f"FAIL defaults: app.kubernetes.io/version label coverage drift; "
+            f"missing={sorted(missing)} extra={sorted(extra)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     assert_eq(versions, expected_versions,
-              "defaults: app.kubernetes.io/version label is 1.4.0 on every labelled resource")
+              f"defaults: app.kubernetes.io/version label is {EXPECTED_VERSION} on every labelled resource")
+    # helm.sh/chart label coverage: every labelled resource carries the
+    # chart-version label sourced from the CHART_VERSION anchor.
+    chart_labels: dict[str, str] = {}
+    for d in docs(rendered):
+        labels = (d.get("metadata") or {}).get("labels") or {}
+        v = labels.get("helm.sh/chart")
+        if v is not None:
+            chart_labels[f"{d.get('kind')}/{d['metadata'].get('name')}"] = v
+    expected_chart_labels = {k: EXPECTED_CHART_LABEL for k in expected_versions}
+    assert_eq(chart_labels, expected_chart_labels,
+              f"defaults: helm.sh/chart label is {EXPECTED_CHART_LABEL} on every labelled resource")
     assert_scalars_clean(rendered, "defaults")
 
     # Case 2 — existingSecret path. No chart-managed Secret rendered; args
@@ -278,6 +357,334 @@ def main() -> int:
               ],
               "mcp-url query: URL with literal quote and backslash passes through verbatim")
     assert_scalars_clean(rendered, "mcp-url query")
+
+    # ---- v1.5.0 cases ----
+    # Case 10 — external-secret positive render.
+    rendered = helm_template("external-secret.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL external-secret: ExternalSecret missing"
+    assert find_secret(rendered) is None, \
+        "FAIL external-secret: chart-managed Secret must NOT render alongside ExternalSecret"
+    assert_eq(es["spec"]["secretStoreRef"]["name"], "my-store",
+              "external-secret: secretStoreRef.name passes through")
+    assert_eq(es["spec"]["target"]["name"], "testrel-hyperping-exporter",
+              "external-secret: target.name equals chart fullname")
+    print("PASS external-secret: ExternalSecret rendered with chart Secret absent")
+    assert_scalars_clean(rendered, "external-secret")
+
+    # Case 11 — external-secret-defaults (default refreshInterval).
+    rendered = helm_template("external-secret-defaults.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL external-secret-defaults: ExternalSecret missing"
+    assert_eq(es["spec"]["refreshInterval"], "1h",
+              "external-secret-defaults: refreshInterval default is 1h")
+    assert_scalars_clean(rendered, "external-secret-defaults")
+
+    # Case 12 — external-secret-missing-store assert_fail.
+    assert_fail("external-secret-missing-store",
+                "external-secret-missing-store.values.yaml",
+                "secretStoreRef.name is required")
+
+    # Case 12a — externalSecret.apiVersion typo aborts the render (C-3).
+    # Without this guard a value like `external-secrets.io/v1beata1`
+    # rendered verbatim and surfaced only at apply time as
+    # `no matches for kind ExternalSecret in version ...`.
+    assert_fail("externalsecret-bad-apiversion",
+                "externalsecret-bad-apiversion-fails.values.yaml",
+                "externalSecret.apiVersion")
+
+    # Case 12b — externalSecret.secretStoreRef.kind outside the supported
+    # set aborts the render (C-3). Same rationale as the apiVersion guard.
+    assert_fail("externalsecret-bad-storekind",
+                "externalsecret-bad-storekind-fails.values.yaml",
+                "externalSecret.secretStoreRef.kind")
+
+    # Case 13 — replicas-zero positive render with NO source.
+    rendered = helm_template("replicas-zero.values.yaml")
+    dep = find_deployment(rendered)
+    assert_eq(dep["spec"]["replicas"], 0,
+              "replicas-zero: Deployment replicas is 0")
+    env = deployment_env(rendered)
+    assert all(e.get("name") != "HYPERPING_API_KEY" for e in env), \
+        "FAIL replicas-zero: env block must omit HYPERPING_API_KEY when no source set"
+    print("PASS replicas-zero: env block suppressed (no secret source)")
+    assert find_pdb(rendered) is None, \
+        "FAIL replicas-zero: PDB must be absent"
+    print("PASS replicas-zero: PDB absent")
+    assert_scalars_clean(rendered, "replicas-zero")
+
+    # Case 14 — replicas-multi assert_fail.
+    assert_fail("replicas-multi", "replicas-multi.values.yaml",
+                "replicaCount must be 0 or 1")
+
+    # Case 15 — apikey + existingSecret conflict.
+    assert_fail("secret-conflict-apikey-and-existing",
+                "secret-conflict-apikey-and-existing.values.yaml",
+                "config.apiKey")
+    # Re-check existingSecret named:
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART),
+         "-f", str(FIXTURES / "secret-conflict-apikey-and-existing.values.yaml")],
+        capture_output=True, text=True,
+    )
+    assert "config.existingSecret" in proc.stderr, \
+        f"FAIL secret-conflict-apikey-and-existing: stderr missing existingSecret mention: {proc.stderr[:300]}"
+    print("PASS secret-conflict-apikey-and-existing: conflict names both sources")
+
+    # Case 16 — apikey + externalSecret conflict.
+    assert_fail("secret-conflict-apikey-and-external",
+                "secret-conflict-apikey-and-external.values.yaml",
+                "externalSecret.enabled")
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART),
+         "-f", str(FIXTURES / "secret-conflict-apikey-and-external.values.yaml")],
+        capture_output=True, text=True,
+    )
+    assert "config.apiKey" in proc.stderr, \
+        f"FAIL secret-conflict-apikey-and-external: stderr missing apiKey mention: {proc.stderr[:300]}"
+    print("PASS secret-conflict-apikey-and-external: conflict names both sources")
+
+    # Case 17 — existingSecret + externalSecret conflict.
+    assert_fail("secret-conflict-existing-and-external",
+                "secret-conflict-existing-and-external.values.yaml",
+                "config.existingSecret")
+    proc = subprocess.run(
+        [HELM, "template", "testrel", str(CHART),
+         "-f", str(FIXTURES / "secret-conflict-existing-and-external.values.yaml")],
+        capture_output=True, text=True,
+    )
+    assert "externalSecret.enabled" in proc.stderr, \
+        f"FAIL secret-conflict-existing-and-external: stderr missing externalSecret mention: {proc.stderr[:300]}"
+    print("PASS secret-conflict-existing-and-external: conflict names both sources")
+
+    # Case 18 — missing source at replicaCount: 1.
+    assert_fail("secret-source-missing", "secret-source-missing.values.yaml",
+                "secret-source missing")
+
+    # Case 22 — cache-ttl-numeric (non-default quoted duration).
+    rendered = helm_template("cache-ttl-numeric.values.yaml")
+    args = deployment_args(rendered)
+    expected = [a if not a.startswith("--cache-ttl=") else "--cache-ttl=30s" for a in BASELINE_ARGS]
+    assert_eq(args, expected,
+              "cache-ttl-numeric: non-default cacheTTL renders byte-clean through helper")
+    assert_scalars_clean(rendered, "cache-ttl-numeric")
+
+    # Case 23 — cache-ttl-int-fails (bare int aborts).
+    assert_fail("cache-ttl-int-fails", "cache-ttl-int-fails.values.yaml",
+                "must be a non-empty quoted Go duration")
+
+    # Case 23a — cache-ttl empty string aborts (C-4). The kindIs string
+    # check alone admitted "" and rendered `--cache-ttl=`, which the
+    # binary's flag.Duration parser rejects at startup. validateCacheTTL
+    # now rejects empty string at render time.
+    assert_fail("cache-ttl-empty-fails", "cache-ttl-empty-fails.values.yaml",
+                "empty string is rejected")
+
+    # Case 24 — log-level-numeric (typed input renders clean).
+    rendered = helm_template("log-level-numeric.values.yaml")
+    args = deployment_args(rendered)
+    for a in args:
+        assert "%!s" not in a, f"FAIL log-level-numeric: Sprig formatting artefact in {a!r}"
+        assert isinstance(a, str), f"FAIL log-level-numeric: non-str arg {a!r}"
+    # The numeric logLevel coerces to a string in the rendered arg.
+    assert any(a.startswith("--log-level=") for a in args), \
+        f"FAIL log-level-numeric: no --log-level arg in {args!r}"
+    print("PASS log-level-numeric: args contain no %!s artefacts")
+    assert_scalars_clean(rendered, "log-level-numeric")
+
+    # Case 25 — metrics-path-with-special-chars (quotes + backslash round-trip).
+    rendered = helm_template("metrics-path-with-special-chars.values.yaml")
+    args = deployment_args(rendered)
+    assert '--metrics-path=/m"e\\trics' in args, \
+        f"FAIL metrics-path-special: expected literal special-char path, got args={args!r}"
+    print("PASS metrics-path-with-special-chars: special chars round-trip")
+    assert_scalars_clean(rendered, "metrics-path-with-special-chars")
+
+    # Case 19 — networkpolicy-default positive render.
+    rendered = helm_template("networkpolicy-default.values.yaml")
+    np = find_network_policy(rendered)
+    assert np is not None, "FAIL networkpolicy-default: NetworkPolicy missing"
+    assert find_cilium_network_policy(rendered) is None, \
+        "FAIL networkpolicy-default: CiliumNetworkPolicy must be absent"
+    egress = np["spec"]["egress"]
+    # DNS rule + TCP/443 rule
+    assert any(
+        any(p.get("port") == 53 for p in r.get("ports", []))
+        for r in egress
+    ), "FAIL networkpolicy-default: DNS egress rule missing"
+    https_rules = [r for r in egress if any(p.get("port") == 443 for p in r.get("ports", []))]
+    assert https_rules, "FAIL networkpolicy-default: TCP/443 egress rule missing"
+    for r in https_rules:
+        for to in r.get("to", []):
+            ipb = to.get("ipBlock") or {}
+            assert ipb.get("cidr") == "0.0.0.0/0", \
+                f"FAIL networkpolicy-default: HTTPS rule cidr drift: {ipb!r}"
+            assert "except" not in ipb, \
+                f"FAIL networkpolicy-default: HTTPS rule retains except list: {ipb!r}"
+    print("PASS networkpolicy-default: vanilla NetworkPolicy egress (DNS + TCP/443 0.0.0.0/0 no except)")
+    assert_scalars_clean(rendered, "networkpolicy-default")
+
+    # PodDisruptionBudget was removed in chart 1.5.0. The exporter is a
+    # singleton (validateReplicaCount aborts at replicaCount > 1), which
+    # means a PDB rendering gate is unreachable for any production caller
+    # (you cannot have a "max-unavailable" budget across a single replica
+    # without blocking node drains). The chart no longer renders a PDB
+    # under any input. The replicas-zero case above keeps a positive
+    # `find_pdb is None` assertion to lock that in.
+
+    # Case 30 — cilium-egress-only.
+    rendered = helm_template("networkpolicy-cilium-defaults.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-egress-only: CiliumNetworkPolicy missing"
+    assert find_network_policy(rendered) is None, \
+        "FAIL cilium-egress-only: vanilla NetworkPolicy must be absent"
+    # Ingress lockdown asymmetry fix (R8): when ingressFrom is empty, the
+    # Cilium variant must explicitly set enableDefaultDeny.ingress: true so
+    # ingress is denied by default like vanilla NP. Without this Cilium
+    # leaves ingress unrestricted (the implicit deny does NOT apply when an
+    # endpoint has only egress rules).
+    edd = cnp["spec"].get("enableDefaultDeny") or {}
+    assert edd.get("ingress") is True, \
+        f"FAIL cilium-egress-only: enableDefaultDeny.ingress must be true to match vanilla NP semantics; got {edd!r}"
+    assert "ingress" not in cnp["spec"], \
+        f"FAIL cilium-egress-only: ingress key must be DROPPED (not [])"
+    assert "egress" in cnp["spec"], "FAIL cilium-egress-only: egress key required"
+    # FQDN block in egress
+    fqdn_rules = [r for r in cnp["spec"]["egress"] if "toFQDNs" in r]
+    assert fqdn_rules, "FAIL cilium-egress-only: no toFQDNs rule"
+    assert any(
+        any(f.get("matchName") == "api.hyperping.io" for f in r.get("toFQDNs", []))
+        for r in fqdn_rules
+    ), "FAIL cilium-egress-only: api.hyperping.io matchName missing"
+    # DNS proxy interception (R5): the DNS egress rule MUST carry
+    # rules.dns under toPorts so Cilium's DNS proxy intercepts queries and
+    # learns the FQDN-to-IP mapping consumed by the toFQDNs rule. Without
+    # this block, toFQDNs never matches and egress to api.hyperping.io is
+    # dropped on a real Cilium-enforced cluster.
+    dns_rules = [
+        r for r in cnp["spec"]["egress"]
+        if any(
+            (ep.get("matchLabels") or {}).get("k8s-app") == "kube-dns"
+            for ep in r.get("toEndpoints", [])
+        )
+    ]
+    assert dns_rules, "FAIL cilium-egress-only: kube-dns toEndpoints rule missing"
+    dns_rule = dns_rules[0]
+    to_ports = dns_rule.get("toPorts") or []
+    assert to_ports, "FAIL cilium-egress-only: kube-dns rule missing toPorts"
+    dns_proxy_spec = (to_ports[0].get("rules") or {}).get("dns")
+    assert dns_proxy_spec, \
+        f"FAIL cilium-egress-only: kube-dns toPorts must include rules.dns for FQDN interception; got {to_ports!r}"
+    assert any("matchPattern" in entry or "matchName" in entry for entry in dns_proxy_spec), \
+        f"FAIL cilium-egress-only: rules.dns must have matchPattern or matchName entries; got {dns_proxy_spec!r}"
+    print("PASS cilium-egress-only: CiliumNetworkPolicy egress-only with toFQDNs + rules.dns + enableDefaultDeny.ingress")
+    assert_scalars_clean(rendered, "cilium-egress-only")
+
+    # Case 31 — cilium-ingress-matchlabels.
+    # When the operator supplies only a podSelector (no namespaceSelector),
+    # the rendered fromEndpoints peer MUST be namespace-scoped to the
+    # release namespace via k8s:io.kubernetes.pod.namespace (R7). Cilium's
+    # EndpointSelector matches across ALL namespaces in the absence of
+    # this label, which would silently widen ingress trust compared to
+    # vanilla NetworkPolicy.from.podSelector (which is scoped to the
+    # policy's namespace).
+    rendered = helm_template("networkpolicy-cilium-with-ingress.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-matchlabels: CiliumNetworkPolicy missing"
+    assert "ingress" in cnp["spec"], "FAIL cilium-matchlabels: ingress key required"
+    from_endpoints = cnp["spec"]["ingress"][0]["fromEndpoints"]
+    assert from_endpoints[0]["matchLabels"]["app.kubernetes.io/name"] == "prometheus", \
+        f"FAIL cilium-matchlabels: matchLabels drift {from_endpoints!r}"
+    ns_label = from_endpoints[0]["matchLabels"].get("k8s:io.kubernetes.pod.namespace")
+    assert ns_label == "default", \
+        f"FAIL cilium-matchlabels: namespace scoping label missing; expected k8s:io.kubernetes.pod.namespace=default, got {from_endpoints[0]['matchLabels']!r}"
+    print("PASS cilium-ingress-matchlabels: matchLabels flatten into EndpointSelector and namespace-scope label is present")
+    assert_scalars_clean(rendered, "cilium-ingress-matchlabels")
+
+    # Case 32 — cilium-ingress-matchexpressions.
+    rendered = helm_template("networkpolicy-cilium-matchexpressions.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-matchexpressions: CiliumNetworkPolicy missing"
+    me = cnp["spec"]["ingress"][0]["fromEndpoints"][0].get("matchExpressions")
+    assert me, "FAIL cilium-matchexpressions: matchExpressions missing"
+    assert me[0]["key"] == "app.kubernetes.io/name" and me[0]["operator"] == "In", \
+        f"FAIL cilium-matchexpressions: drift {me!r}"
+    print("PASS cilium-ingress-matchexpressions: matchExpressions preserved")
+    assert_scalars_clean(rendered, "cilium-ingress-matchexpressions")
+
+    # Case 33 — cilium-ingress-mixed (matchLabels + matchExpressions + ns shortcut).
+    rendered = helm_template("networkpolicy-cilium-mixed.values.yaml")
+    cnp = find_cilium_network_policy(rendered)
+    assert cnp is not None, "FAIL cilium-mixed: CiliumNetworkPolicy missing"
+    peer = cnp["spec"]["ingress"][0]["fromEndpoints"][0]
+    assert peer["matchLabels"]["tier"] == "monitoring", \
+        f"FAIL cilium-mixed: matchLabels lost"
+    assert peer["matchLabels"]["k8s:io.kubernetes.pod.namespace"] == "monitoring", \
+        f"FAIL cilium-mixed: namespace shortcut conversion lost: {peer!r}"
+    assert peer["matchExpressions"][0]["key"] == "app.kubernetes.io/name", \
+        f"FAIL cilium-mixed: matchExpressions lost"
+    print("PASS cilium-ingress-mixed: matchLabels + matchExpressions + ns shortcut")
+    assert_scalars_clean(rendered, "cilium-ingress-mixed")
+
+    # Case 34 — cilium ipBlock-only abort.
+    assert_fail("cilium-ipblock-only-fails",
+                "networkpolicy-cilium-ipblock-only.values.yaml",
+                "ipBlock peers are not supported")
+
+    # Case 35 — cilium selectorless abort.
+    assert_fail("cilium-selectorless-fails",
+                "networkpolicy-cilium-selectorless.values.yaml",
+                "peer must have a podSelector or namespaceSelector")
+
+    # Case 36 — cilium foreign-ns-label abort.
+    assert_fail("cilium-foreign-ns-label-fails",
+                "networkpolicy-cilium-foreign-namespace-label.values.yaml",
+                "k8s:io.kubernetes.pod.namespace.labels")
+
+    # Case 39 — validateNoTestKeys rejects non-_test-prefixed keys (R4).
+    # The chart currently has NO consumer of `internal._test*` keys (the
+    # prior PDB rendering gate that honored `_testBypassReplicaCheck` was
+    # removed in 57cbbb2). The `_test`-prefix carve-out is reserved for
+    # future test-only knobs; this case exercises the REJECT path so a
+    # future regression that drops the prefix check surfaces immediately.
+    # The error message names the offending key and points the operator
+    # at the `_test` prefix rule.
+    assert_fail("internal-bogus-key-rejected",
+                "internal-bogus-key-fails.values.yaml",
+                "values.internal.bogus is not a documented chart key")
+
+    # Case 39a — validateNoTestKeys PASS path (C-2). The `_test`-prefix
+    # carve-out has no production consumer today but is reserved for
+    # future test-only knobs. Setting `internal._testFoo` must render
+    # normally, with the baseline args list and the chart-managed
+    # Secret present. This locks in the PASS path so a future regression
+    # that flips the prefix predicate would also surface here.
+    rendered = helm_template("internal-test-key-passes.values.yaml")
+    assert_eq(deployment_args(rendered), BASELINE_ARGS,
+              "internal-test-key-passes: args list equals baseline")
+    assert find_secret(rendered) is not None, \
+        "FAIL internal-test-key-passes: chart-managed Secret should render"
+    print("PASS internal-test-key-passes: _test-prefixed key under internal is accepted")
+    assert_scalars_clean(rendered, "internal-test-key-passes")
+
+    # Case 38 — config.webConfigFile is currently unsupported (R10).
+    # Setting it would put the binary into TLS mode, but the chart's
+    # probes default to HTTP and the ServiceMonitor's endpoint scheme is
+    # hardcoded to http. Operators must therefore see a render-time
+    # fail() with a clear message rather than a silently-broken Pod.
+    assert_fail("web-config-file-unsupported",
+                "web-config-file-fails.values.yaml",
+                "config.webConfigFile is not supported")
+
+    # Case 37 — servicemonitor enabled (template coverage).
+    rendered = helm_template("servicemonitor-enabled.values.yaml")
+    sm = [d for d in docs(rendered) if d.get("kind") == "ServiceMonitor"]
+    assert sm, "FAIL servicemonitor-enabled: ServiceMonitor missing"
+    assert_eq(sm[0]["apiVersion"], "monitoring.coreos.com/v1",
+              "servicemonitor-enabled: apiVersion")
+    assert_eq(sm[0]["spec"]["endpoints"][0]["interval"], "30s",
+              "servicemonitor-enabled: interval passes through")
+    assert_scalars_clean(rendered, "servicemonitor-enabled")
 
     print("\nALL RENDER TESTS PASSED")
     return 0

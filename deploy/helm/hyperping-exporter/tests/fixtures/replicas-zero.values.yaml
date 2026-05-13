@@ -1,0 +1,6 @@
+replicaCount: 0
+config:
+  apiKey: ""
+  existingSecret: ""
+externalSecret:
+  enabled: false

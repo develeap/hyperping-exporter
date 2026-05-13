@@ -1,15 +1,40 @@
+# The hyperping-exporter binary is a singleton. Its monitor cache is an
+# in-memory per-process map and tenant-aggregate metrics (totals, SLA
+# averages) would double-count under HA. The chart's validateReplicaCount
+# helper aborts the render with replicaCount > 1. Two supported values:
+#   - 1 (default): one Pod runs the exporter.
+#   - 0          : scaled-to-zero. The Deployment renders with replicas: 0;
+#                  no Pods run; secret-source validation is skipped (no
+#                  authentication context to enforce) and the env block is
+#                  suppressed if no source is configured. Scale-up without
+#                  configuring a source re-trips validateSecretSources.
+# To scale horizontally, shard monitor namespaces across separate releases.
 replicaCount: 1
 
 image:
   repository: khaledsalhabdeveleap/hyperping-exporter
   pullPolicy: IfNotPresent
-  tag: ""  # Defaults to chart appVersion
+  # Image tag. Empty string falls back to .Chart.AppVersion.
+  # Chart version (Chart.yaml `version`) and application version (Chart.yaml
+  # `appVersion` / image tag) are independent. The chart may be bumped for
+  # rendering changes without a binary release; the binary may be bumped
+  # without a chart change. Operators pinning a specific binary should set
+  # this tag explicitly rather than relying on appVersion drift.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
 config:
+  # Secret-source mutual exclusion (Contract C2.4). Exactly ONE of the
+  # following three must be set when replicaCount > 0:
+  #   - config.apiKey         (dev-only; plaintext in release metadata)
+  #   - config.existingSecret (recommended; consumes an externally-managed Secret)
+  #   - externalSecret.enabled: true  (lets External Secrets Operator manage it)
+  # validateSecretSources aborts the render on missing source AND on conflict
+  # (more than one source set). The replicaCount: 0 path exempts this check.
+  #
   # DEVELOPMENT ONLY: Hyperping API key passed inline.
   # WARNING: This value is stored in plaintext in Helm release metadata and
   # visible via `helm get values`. For production, use existingSecret with an
@@ -17,11 +42,23 @@ config:
   apiKey: ""
   # Name of an existing Secret with key 'api-key' (recommended for production).
   existingSecret: ""
+  # Must be a quoted Go duration string (e.g. "60s"). Bare integers (60)
+  # abort the render with a clear error pointing to validateCacheTTL.
   cacheTTL: "60s"
   metricsPath: "/metrics"
   logLevel: "info"
   logFormat: "text"
-  # Optional: path to web.config.file for TLS / basic auth
+  # Reserved for a future chart release. Setting `webConfigFile` to a
+  # non-empty path currently aborts the render via
+  # `validateWebConfigFile`: the binary's `--web.config.file` flag puts
+  # it into TLS mode, but the chart's `livenessProbe` /
+  # `readinessProbe` use `httpGet.scheme: HTTP` and the ServiceMonitor
+  # template hardcodes `scheme: http`. Enabling TLS in isolation would
+  # leave the pod permanently NotReady and would silently break
+  # Prometheus scrapes. Run the binary without `--web.config.file`
+  # (recommended; terminate TLS with a sidecar or at the Service edge),
+  # or wait for a chart release that wires probes + ServiceMonitor +
+  # tlsConfig together.
   webConfigFile: ""
   # Optional: Prometheus metric name prefix. Defaults to "hyperping" when empty.
   # Changing from the default requires updating any alert rules and Grafana
@@ -59,14 +96,40 @@ serviceMonitor:
   scrapeTimeout: "30s"
   additionalLabels: {}
 
+# Resource requests/limits empirically grounded by a 30-minute Docker
+# observation on 2026-05-12 against the live Hyperping API. The exporter ran
+# with `--read-only --user 65534:65534 --tmpfs /tmp` to match the chart's
+# runtime envelope (PSS-restricted; container SecurityContext below). Sample
+# data (60 samples at 30s cadence) lives at
+# `tests/artifacts/rss-cpu.txt`. Peak RSS observed: 11.47 MiB; peak CPU
+# observed: 6.33% (~63 millicores burst during scrape; most samples 0.00%).
+# The defaults below carry roughly 30% headroom above the measured peaks for
+# request floors and ~4x headroom on limits to absorb GC bursts and tenant
+# growth past the measurement window (rounded up to the nearest 10m / 16Mi
+# step). Operators with very large tenant footprints should override these.
 resources:
   requests:
-    cpu: 10m
-    memory: 32Mi
+    cpu: 50m
+    memory: 64Mi
   limits:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 200m
+    memory: 256Mi
 
+# Container-scope SecurityContext (item 4 — PSS-restricted contract).
+# These defaults satisfy the Kubernetes Pod Security Standard "restricted"
+# profile so the chart can be admitted into namespaces labelled
+# `pod-security.kubernetes.io/enforce: restricted`. Specifically:
+#   - runAsNonRoot: true             — required by PSS-restricted.
+#   - runAsUser / runAsGroup: 65534  — `nobody`; matches the container image.
+#   - allowPrivilegeEscalation: false — required by PSS-restricted.
+#   - readOnlyRootFilesystem: true   — empirically validated by the
+#     2026-05-12 30-minute Docker run; the binary tolerates a read-only
+#     rootfs (no scratch-disk writes outside /tmp).
+#   - capabilities.drop: [ALL]       — required by PSS-restricted.
+#   - seccompProfile.type: RuntimeDefault — required by PSS-restricted.
+# Operators MUST also label the target namespace
+# `pod-security.kubernetes.io/enforce=restricted` to actually enforce; the
+# chart does not create or label the Namespace itself.
 securityContext:
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
@@ -78,6 +141,12 @@ securityContext:
   seccompProfile:
     type: RuntimeDefault
 
+# Pod-scope SecurityContext (item 4 — PSS-restricted contract).
+# Mirrors the container-scope settings at the pod level so kubelet applies
+# the same identity to init containers, ephemeral containers, and any
+# future template that consumes podSecurityContext. `fsGroup: 65534`
+# matches the container uid/gid so any future emptyDir or PVC mount the
+# chart adds defaults to a group writable by the running process.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65534
@@ -92,28 +161,55 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# External Secrets Operator integration. When enabled, the chart renders an
+# `ExternalSecret` resource targeting the chart's standard Secret name; the
+# chart-managed Secret template is suppressed. This is mutually exclusive
+# with `config.apiKey` and `config.existingSecret` (validateSecretSources
+# enforces the conflict; see Contract C2.4 / R4-6).
+#
+# apiVersion defaults to `external-secrets.io/v1beta1` because that is the
+# version fully covered by the kubeconform CRDs-catalog tag this chart's
+# CI pins. Operators on ESO 0.10+ that have rolled to v1 should set
+# `apiVersion: external-secrets.io/v1` explicitly (their cluster will
+# accept the v1 CRD; kubeconform validation will skip until the
+# CRDs-catalog rolls v1 into a tagged release).
+externalSecret:
+  enabled: false
+  apiVersion: external-secrets.io/v1beta1
+  refreshInterval: 1h
+  creationPolicy: Owner
+  secretStoreRef:
+    name: ""
+    kind: SecretStore  # or ClusterSecretStore
+  remoteRef:
+    key: ""
+    property: ""
+    version: ""
+
 livenessProbe:
   httpGet:
     path: /healthz
     port: http
-  initialDelaySeconds: 5
-  periodSeconds: 30
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
 
 readinessProbe:
   httpGet:
     path: /readyz
     port: http
-  initialDelaySeconds: 10
-  periodSeconds: 15
-
-podDisruptionBudget:
-  enabled: false
-  # maxUnavailable is safer than minAvailable when replicaCount=1:
-  # minAvailable=1 with 1 replica blocks all voluntary disruptions (node drains).
-  maxUnavailable: 1
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3
 
 networkPolicy:
-  enabled: false
+  # Default-on as of chart 1.5.0. The vanilla NetworkPolicy admits ingress
+  # from `ingressFrom` peers on the metrics port and permits egress to
+  # kube-dns (UDP/TCP 53) plus TCP/443 to 0.0.0.0/0 with no `except:` list
+  # (the user's clusters may route api.hyperping.io via an in-cluster
+  # egress gateway in RFC1918 space). Operators who need fine-grained
+  # FQDN restriction enable the Cilium variant via `fqdnRestriction.enabled`.
+  enabled: true
   # Selectors for pods allowed to scrape metrics (e.g. Prometheus).
   # The default assumes Prometheus is in the SAME namespace as this chart.
   # For cross-namespace scraping, add a namespaceSelector to the entry:
@@ -128,3 +224,16 @@ networkPolicy:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: prometheus
+  # FQDN-restricted egress via CiliumNetworkPolicy. Requires Cilium 1.14+.
+  # When enabled, the vanilla NetworkPolicy template is suppressed and a
+  # CiliumNetworkPolicy (apiVersion: cilium.io/v2) is rendered instead.
+  # The two templates are mutually exclusive. CRDs (cilium.io/v2) must be
+  # installed in the cluster for kubectl apply to succeed; the chart's
+  # render-time validation does not require CRDs (kubeconform validates
+  # the schema offline against the pinned catalog tag).
+  fqdnRestriction:
+    enabled: false
+    # FQDN allow-list applied to the egress block. Defaults to the
+    # official Hyperping API host.
+    allowedHosts:
+      - api.hyperping.io

@@ -1,6 +1,8 @@
-{{- if and (not .Values.config.apiKey) (not .Values.config.existingSecret) }}
-{{- fail "Either apiKey or existingSecret must be set" }}
-{{- end }}
+{{- include "hyperping-exporter.validateNoTestKeys" . -}}
+{{- include "hyperping-exporter.validateCacheTTL" . -}}
+{{- include "hyperping-exporter.validateReplicaCount" . -}}
+{{- include "hyperping-exporter.validateSecretSources" . -}}
+{{- include "hyperping-exporter.validateWebConfigFile" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,29 +42,38 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - "--listen-address=:{{ .Values.service.port }}"
-            - "--metrics-path={{ .Values.config.metricsPath }}"
-            - "--cache-ttl={{ .Values.config.cacheTTL }}"
-            - "--log-level={{ .Values.config.logLevel }}"
-            - "--log-format={{ .Values.config.logFormat }}"
-            {{- if .Values.config.webConfigFile }}
-            - "--web.config.file={{ .Values.config.webConfigFile }}"
-            {{- end }}
+            - {{ include "hyperping-exporter.arg" (list "--listen-address" (printf ":%v" .Values.service.port)) }}
+            - {{ include "hyperping-exporter.arg" (list "--metrics-path" .Values.config.metricsPath) }}
+            - {{ include "hyperping-exporter.arg" (list "--cache-ttl" .Values.config.cacheTTL) }}
+            - {{ include "hyperping-exporter.arg" (list "--log-level" .Values.config.logLevel) }}
+            - {{ include "hyperping-exporter.arg" (list "--log-format" .Values.config.logFormat) }}
+            {{- /*
+              config.webConfigFile (TLS mode) is currently gated off by
+              validateWebConfigFile (R10): the chart's probes and
+              ServiceMonitor hardcode HTTP, so enabling TLS would
+              produce a permanently-NotReady pod. The validator
+              fail()s before this template would render the arg. The
+              arg-rendering line stays out of the template until the
+              chart wires httpGet.scheme + ServiceMonitor scheme +
+              tlsConfig coherently.
+            */}}
             {{- if .Values.config.namespace }}
-            - "--namespace={{ .Values.config.namespace }}"
+            - {{ include "hyperping-exporter.arg" (list "--namespace" .Values.config.namespace) }}
             {{- end }}
             {{- if .Values.config.excludeNamePattern }}
-            - {{ printf "--exclude-name-pattern=%s" .Values.config.excludeNamePattern | toJson }}
+            - {{ include "hyperping-exporter.arg" (list "--exclude-name-pattern" .Values.config.excludeNamePattern) }}
             {{- end }}
             {{- if .Values.config.mcpUrl }}
-            - {{ printf "--mcp-url=%s" .Values.config.mcpUrl | toJson }}
+            - {{ include "hyperping-exporter.arg" (list "--mcp-url" .Values.config.mcpUrl) }}
             {{- end }}
+          {{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}
           env:
             - name: HYPERPING_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "hyperping-exporter.secretName" . }}
                   key: api-key
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

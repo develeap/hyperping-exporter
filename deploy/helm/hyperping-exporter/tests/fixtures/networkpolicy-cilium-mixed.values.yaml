@@ -1,0 +1,19 @@
+config:
+  apiKey: x
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          tier: monitoring
+        matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+              - prometheus
+              - grafana-agent
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  fqdnRestriction:
+    enabled: true

@@ -1,0 +1,13 @@
+config:
+  apiKey: x
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+      namespaceSelector:
+        matchLabels:
+          team: platform
+  fqdnRestriction:
+    enabled: true

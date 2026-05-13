@@ -1,0 +1,14 @@
+config:
+  apiKey: x
+# Live-boot fixture. The default readinessProbe relies on a successful
+# Hyperping cache fetch (`/readyz`), which the kind cluster cannot
+# satisfy without an API key + egress. Point the probe at `/healthz`
+# so rollout status proves the Pod is admitted + tolerates the new
+# default NetworkPolicy without depending on Hyperping reachability.
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3

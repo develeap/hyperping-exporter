@@ -5,11 +5,13 @@ on:
     paths:
       - 'deploy/helm/**'
       - '.github/workflows/helm-ci.yml'
+      - 'Makefile'
   pull_request:
     branches: [main]
     paths:
       - 'deploy/helm/**'
       - '.github/workflows/helm-ci.yml'
+      - 'Makefile'
 
 permissions:
   contents: read
@@ -18,8 +20,10 @@ jobs:
   helm:
     name: Helm chart lint and render
     runs-on: ubuntu-latest
+    env:
+      KUBECONFORM_VERSION: v0.7.0
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Set up Helm
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
         with:
@@ -30,7 +34,81 @@ jobs:
           python-version: '3.12'
       - name: Install PyYAML
         run: python -m pip install --no-cache-dir 'pyyaml==6.0.3'
+      - name: Resolve pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash deploy/helm/hyperping-exporter/tests/scripts/resolve_pins.sh
       - name: Helm lint
         run: helm lint deploy/helm/hyperping-exporter/
       - name: Render tests
         run: python3 deploy/helm/hyperping-exporter/tests/render_test.py
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+      - name: Kubeconform schema validation
+        run: make helm-kubeconform
+      - name: Rewrite kind-pss.yaml placeholders
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          # Export anchors into the job env so subsequent steps (kind
+          # cluster, audit, teardown) read the same SSOT value rather
+          # than re-spelling literals (Contract C5.1 / R3).
+          echo "KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME}" >> "$GITHUB_ENV"
+          echo "TEST_NAMESPACE=${TEST_NAMESPACE}"       >> "$GITHUB_ENV"
+          echo "TEST_RELEASE_NAME=${TEST_RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "LIVE_BOOT_IMAGE=${LIVE_BOOT_IMAGE}"     >> "$GITHUB_ENV"
+          KINDEST_VERSION=$(tr -d '[:space:]' < deploy/helm/hyperping-exporter/tests/artifacts/kindest-version.txt)
+          KINDEST_DIGEST=$(tr -d '[:space:]' < deploy/helm/hyperping-exporter/tests/artifacts/kindest-digest.txt)
+          ABSPATH=$(cd deploy/helm/hyperping-exporter/tests/kind-pss-config && pwd)
+          sed -i \
+            -e "s|__KINDEST_VERSION__|${KINDEST_VERSION}|g" \
+            -e "s|__KINDEST_DIGEST__|${KINDEST_DIGEST}|g" \
+            -e "s|__ABSPATH__|${ABSPATH}|g" \
+            deploy/helm/hyperping-exporter/tests/kind-pss.yaml
+          if grep -E '__[A-Z_]+__' deploy/helm/hyperping-exporter/tests/kind-pss.yaml; then
+            echo "FATAL: placeholder substitution incomplete" >&2
+            exit 1
+          fi
+      - name: Create kind cluster (PSS-restricted)
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: deploy/helm/hyperping-exporter/tests/kind-pss.yaml
+          wait: 120s
+      - name: PSS admission live-boot tests
+        run: |
+          # shellcheck disable=SC1091
+          source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          bash deploy/helm/hyperping-exporter/tests/admission_test.sh
+      - name: Audit pins
+        if: always()
+        run: |
+          set -euo pipefail
+          # Workspace state of kind-pss.yaml is informational only:
+          # the workflow's substitution step rewrites the workspace copy in
+          # place, so this step is expected to report uncommitted changes
+          # on a successful run. The audit is the placeholder-survival
+          # check inside the substitution step itself (it errors out if
+          # any __X__ token remains after sed).
+          if git diff --quiet deploy/helm/hyperping-exporter/tests/kind-pss.yaml; then
+            echo "kind-pss.yaml: workspace copy clean (no rewrite happened)."
+          else
+            echo "kind-pss.yaml: workspace copy was rewritten in place (expected)."
+          fi
+          # Anchor audit: delegate to the external script so the audit's
+          # own pattern text cannot self-match (Contract C5 / R2). The
+          # script greps a closed set of files (workflow + Makefile +
+          # kind-pss.yaml) for hard-coded anchor literals that must come
+          # from admission_env.sh or pins.expected.yaml instead.
+          bash deploy/helm/hyperping-exporter/tests/scripts/audit_anchors.sh
+      - name: Cluster teardown
+        if: always()
+        run: |
+          # shellcheck disable=SC1091
+          source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          kind delete cluster --name "${KIND_CLUSTER_NAME}" 2>/dev/null || true
