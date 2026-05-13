@@ -86,6 +86,22 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if (.Values.tmpfs | default dict).enabled }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
+      {{- if (.Values.tmpfs | default dict).enabled }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmpfs.medium }}
+            medium: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.tmpfs.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
+      {{- end }}
       terminationGracePeriodSeconds: 15
       {{- with .Values.nodeSelector }}
       nodeSelector:

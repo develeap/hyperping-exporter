@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-05-13 [Chart only, binary unchanged]
+
+### Changed
+
+- `values.yaml` `externalSecret.apiVersion` default `external-secrets.io/v1beta1` -> `external-secrets.io/v1`. ESO promoted the `v1` CRD to GA in 0.10; chart 1.5.0 had to keep `v1beta1` because the kubeconform CRDs-catalog tag at the time did not ship the `v1` schema. 1.5.1 rolls the catalog pin forward (now a main-branch commit SHA, see below) so the new default is fully validated by `kubeconform -strict`. The validator still accepts `external-secrets.io/v1beta1` for operators pinned to ESO < 0.10.
+- `tests/pins.expected.yaml` `datreeio_crds_catalog_tag` renamed to `datreeio_crds_catalog_ref` and the value moved from `v0.0.12` to a specific commit SHA on the catalog's main branch. The upstream repo has not cut a tag since 2023-07; the schemas the chart relies on (`external-secrets.io/v1`, `cilium.io/v2` `enableDefaultDeny`) only exist on main. The resolver verifies the pinned SHA still resolves at `api.github.com` so a typo or upstream rebase fails loud rather than silently skipping schema validation.
+- `Makefile` `helm-kubeconform` drops `-skip CiliumNetworkPolicy`. The catalog SHA pin now ships the `cilium.io/v2` schema with `spec.enableDefaultDeny`, so CiliumNetworkPolicy fixtures get full kubeconform coverage end-to-end.
+
+### Added
+
+- `values.yaml` `tmpfs` block (default `enabled: false`). When enabled, the Deployment mounts an `emptyDir` at `/tmp` so the binary can write scratch files even with `readOnlyRootFilesystem: true`. The current binary does not need it (verified by the 30-minute Docker observation that grounded the resources defaults), so default-off preserves the prior behavior. Operators running a custom build, a sidecar, or an init container that needs `/tmp` enable it. `tmpfs.medium` (e.g. `"Memory"`) and `tmpfs.sizeLimit` (e.g. `"16Mi"`) pass through to the `emptyDir` spec when set.
+- `tests/fixtures/external-secret-v1beta1.values.yaml` + render-test case locking the backwards-compat path.
+- `tests/fixtures/tmpfs-enabled.values.yaml` + render-test case locking the `emptyDir` + `volumeMount` shape under `tmpfs.enabled: true`. The defaults case asserts neither block renders under chart defaults.
+
+### Upgrade notes
+
+- **`externalSecret.apiVersion` default flipped to `external-secrets.io/v1`.** Operators on ESO 0.10+ get the modern CRD automatically. Operators on ESO < 0.10 (where the `v1` CRD does not exist on the cluster) MUST set `externalSecret.apiVersion: external-secrets.io/v1beta1` in their overlay before upgrading, or the next `helm upgrade` will produce a manifest the cluster rejects at apply time.
+- **`tmpfs.enabled`** stays `false` by default. No-op upgrade for anyone who does not opt in.
+
 ## [1.5.0] - 2026-05-13 [Chart only, binary unchanged]
 
 ### Highlights
