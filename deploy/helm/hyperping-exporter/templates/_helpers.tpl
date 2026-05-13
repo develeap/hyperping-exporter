@@ -84,7 +84,7 @@ validateCacheTTL (Contract C2.3). `fail()`s if `config.cacheTTL` is not a
 non-empty string. Operators must quote bare integers (e.g. `"60s"` not
 `60`); the binary expects a Go duration and an empty value renders
 `--cache-ttl=` which `flag.Duration` rejects at startup. `kindIs` works
-on Sprig's typed kinds.
+on Sprig's typed kinds. cache-ttl is pre-rejected here; the safe-arg helper's typed-input path is only load-bearing for logLevel/logFormat/metricsPath/namespace/excludeNamePattern/mcpUrl.
 */}}
 {{- define "hyperping-exporter.validateCacheTTL" -}}
 {{- if or (not (kindIs "string" .Values.config.cacheTTL)) (eq .Values.config.cacheTTL "") -}}
