@@ -2,6 +2,8 @@
 
 > Companion to `2026-05-12-chart-hardening-prod-defaults.md`. Reconciles the user-approved testing strategy (PSS kind admission in CI as a blocking job; kubeconform as a separate CI step using `--schema-location` for CRDs; `replicaCount: 0` allowed; secret-source conflicts fail loudly via `{{- fail -}}`; single PR cutover) against the final plan's 10 durable contracts (C1-C10), the 8 round-4 resolutions (R4-1..R4-8), and the per-task fixture surface.
 
+> **WITHDRAWN — PDB cases T21 and T28 (Cases 20, 21, 29).** Per the R9 deferred decision in the implementation plan (line 15), the PDB rendering gate was unreachable in production (`validateReplicaCount` aborts on `replicaCount > 1` before the gate is ever reached), so the chart 1.5.0 release dropped the `podDisruptionBudget` block from `values.yaml` and removed `templates/pdb.yaml` entirely. The PDB-related test cases (T21 / Case 29; T28 / Cases 20, 21) and the `internal._testBypassReplicaCheck` test-only knob are therefore withdrawn from this plan. Case 13's `find_pdb is None` assertion on `replicas-zero` remains as a regression lock-in (covered by T16). See CHANGELOG.md 1.5.0 "Removed" section for the operator-facing upgrade note.
+
 ## Strategy reconciliation (no user approval required)
 
 The final plan does not invalidate any cost-shaping decision the user already approved. Three points where the plan extends the strategy without changing its scope:
@@ -291,7 +293,9 @@ These prove the new `fail()` validators (`validateSecretSources`, `validateRepli
 - **Actions:** render.
 - **Expected outcome:** exit != 0; stderr describes the missing-source condition and the three documented options. Source of truth: R4-6 step 3.
 
-#### T21 — Test-only bypass + `replicaCount: 2` + `podDisruptionBudget.enabled: true` ALWAYS aborts, AND no PDB appears in any captured stdout
+#### T21 — WITHDRAWN (R9): Test-only bypass + `replicaCount: 2` + `podDisruptionBudget.enabled: true` ALWAYS aborts, AND no PDB appears in any captured stdout
+
+> **WITHDRAWN per R9 deferred decision (implementation plan line 15).** The PDB template was removed in chart 1.5.0; `podDisruptionBudget.enabled` is no longer a chart value and `internal._testBypassReplicaCheck` is no longer referenced. The leakage-proof rationale no longer applies because there is no longer a gate to leak past. The historical specification below is preserved for review trace; do NOT implement.
 
 - **Name:** "Even when the test-only `internal._testBypassReplicaCheck` key is supplied, `replicaCount > 1` aborts the render BEFORE the PDB template renders; the failed render contains no `kind: PodDisruptionBudget`."
 - **Type:** invariant / regression (leakage proof per R4-8)
@@ -368,7 +372,9 @@ These prove every new template is structurally correct and exercised by at least
 - **Actions:** render each.
 - **Expected outcome:** each exits != 0; stderr identifies the peer index and the unsupported field; the foreign-label case names the canonical `k8s:io.kubernetes.pod.namespace.labels.<key>` form (per R4-5 plural-labels canonicalization).
 
-#### T28 — PDB-enabled at `replicaCount: 1` (no bypass) renders no PDB; the structural fixture with bypass renders a correct PDB
+#### T28 — WITHDRAWN (R9): PDB-enabled at `replicaCount: 1` (no bypass) renders no PDB; the structural fixture with bypass renders a correct PDB
+
+> **WITHDRAWN per R9 deferred decision (implementation plan line 15).** The PDB template and the `podDisruptionBudget.enabled` value were removed in chart 1.5.0; no PDB renders for any input. The `find_pdb is None` regression lock-in is preserved under T16 (Case 13, `replicas-zero`). The historical specification below is preserved for review trace; do NOT implement.
 
 - **Name:** Two cases (20, 21):
   - Case 20: "Operator setting `podDisruptionBudget.enabled: true` at the default `replicaCount: 1` (no test bypass) sees no PDB rendered (drain-safe)."
@@ -499,17 +505,18 @@ Empirically proves the chart's default config is admission-clean under PSS-restr
 - **Operator configuration knobs (every value in `values.yaml`):**
   - `apiKey`, `existingSecret`, `externalSecret.enabled` — T7, T17, T18, T19, T20, T22, T23, T24.
   - `cacheTTL`, `metricsPath`, `logLevel`, `logFormat`, `webConfigFile`, `namespace`, `excludeNamePattern`, `mcpUrl` — T2, T3, T4, T5, T6, T8, T9, T10, T11, T12, T13, T14.
-  - `replicaCount` (including 0, 1, 2+) — T15, T16, T21, T28.
-  - `podDisruptionBudget.enabled` — T28.
+  - `replicaCount` (including 0, 1, 2+) — T15, T16. (T21, T28 WITHDRAWN per R9.)
+  - `podDisruptionBudget.enabled` — WITHDRAWN per R9 (value removed from chart 1.5.0; no PDB template).
   - `networkPolicy.enabled` (default flip) — T1 (version label includes NP), T29.
   - `networkPolicy.fqdnRestriction.enabled` (Cilium variant) — T25, T26, T27.
   - `image.repository`, `image.tag` — T1.
-  - `internal._testBypassReplicaCheck` (test-only) — T21, T28.
+  - `internal._testBypassReplicaCheck` (test-only) — WITHDRAWN per R9 (test-only knob removed alongside the PDB template).
 - **Validators (every `fail()` in the chart):**
   - `validateCacheTTL` — T3.
   - `validateSecretSources` (every branch of the R4-6 tree) — T16, T17, T18, T19, T20.
-  - `validateReplicaCount` — T15, T21.
-  - `validateNoTestKeys` — implicitly via T21 (the bypass key MUST be allowed; any other `internal.*` key MUST be rejected). A dedicated `assert_fail` case for a non-`_test`-prefixed internal key is recommended as a future addition if the plan adds one.
+  - `validateReplicaCount` — T15. (T21 WITHDRAWN per R9.)
+  - `validateNoTestKeys` — Case 39 (`internal-bogus-key-fails`) covers the non-`_test`-prefixed rejection path directly.
+  - `validateWebConfigFile` — Case 38 (`web-config-file-fails`) covers the gating abort pending probe/ServiceMonitor TLS wiring.
 - **Templates (every file in `templates/`):**
   - `deployment.yaml` — T1, T2, T4..T14, T16.
   - `secret.yaml` — T1, T7, T22.
@@ -517,7 +524,7 @@ Empirically proves the chart's default config is admission-clean under PSS-restr
   - `servicemonitor.yaml` — covered by H2 schema validation; not asserted by H1 render harness (no behavior change in this PR).
   - `networkpolicy.yaml` — T29.
   - `networkpolicy-cilium.yaml` (new) — T25, T26, T27.
-  - `pdb.yaml` — T28.
+  - `pdb.yaml` — WITHDRAWN per R9 (template deleted in chart 1.5.0).
   - `externalsecret.yaml` (new) — T22, T23, T24.
 - **CI surfaces:**
   - `helm-ci.yml` job `helm` — every step exercised end-to-end by T30 + T31 + T32 + the audits.
