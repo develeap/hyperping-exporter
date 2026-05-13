@@ -19,6 +19,7 @@ nodes:
     image: kindest/node:__KINDEST_VERSION__@__KINDEST_DIGEST__
     kubeadmConfigPatches:
       - |
+        apiVersion: kubeadm.k8s.io/v1beta4
         kind: ClusterConfiguration
         apiServer:
           extraArgs:
