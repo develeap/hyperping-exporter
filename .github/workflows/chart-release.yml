@@ -158,6 +158,61 @@ jobs:
         if: always()
         run: helm registry logout "${OCI_REGISTRY}" || true
 
+      # Newly-published GHCR packages default to PRIVATE. helm pull then 401s
+      # for unauthenticated operators. The default `GITHUB_TOKEN` cannot
+      # change package visibility (the endpoint needs `admin:org`); we use an
+      # optional PAT stored as `GHCR_ADMIN_TOKEN` instead. When the secret is
+      # missing the step is a no-op with a clear hint, so the workflow still
+      # succeeds end-to-end for repos that prefer the org-level setting
+      # "Inherit access from source repository" or a one-time UI flip.
+      - name: Ensure GHCR package is public
+        env:
+          PAT: ${{ secrets.GHCR_ADMIN_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PKG_NAME: charts/hyperping-exporter
+        run: |
+          set -euo pipefail
+          # Percent-encode PKG_NAME for the path component (jq's @uri matches
+          # RFC 3986 unreserved set, so `/` becomes `%2F` etc.). Computed
+          # once so both the no-PAT notice and the PATCH call share the
+          # derived value.
+          ENCODED=$(printf '%s' "${PKG_NAME}" | jq -sRr @uri)
+          SETTINGS_URL="https://github.com/orgs/${OWNER}/packages/container/${ENCODED}/settings"
+          if [ -z "${PAT}" ]; then
+            echo "::notice::GHCR_ADMIN_TOKEN secret not set; skipping visibility flip."
+            echo "::notice::First-time pushes to GHCR default to PRIVATE. To make the chart pullable anonymously, either:"
+            echo "::notice::  (a) one-time fix at ${SETTINGS_URL} (Change visibility -> Public)"
+            echo "::notice::  (b) configure org-level Packages setting 'Inherit access from source repository' so future pushes inherit the public repo visibility"
+            echo "::notice::  (c) create a PAT with admin:org + write:packages and store it as the GHCR_ADMIN_TOKEN repo secret so this step automates (a) on every release"
+            exit 0
+          fi
+          # PATCH org-package visibility (REST). 204 = success; 422 = already
+          # public (idempotent). Anything else surfaces the body for triage.
+          HTTP=$(curl -sS -o /tmp/visibility-body -w '%{http_code}' \
+            -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${PAT}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/${OWNER}/packages/container/${ENCODED}/visibility" \
+            -d '{"visibility":"public"}')
+          case "${HTTP}" in
+            204) echo "GHCR package set to public (or was already)." ;;
+            422)
+              if grep -q -i 'already' /tmp/visibility-body; then
+                echo "GHCR package already public; no change."
+              else
+                echo "::error::Visibility change rejected (422):"
+                cat /tmp/visibility-body
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unexpected response (HTTP ${HTTP}):"
+              cat /tmp/visibility-body
+              exit 1
+              ;;
+          esac
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
