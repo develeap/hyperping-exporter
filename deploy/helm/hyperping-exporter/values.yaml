@@ -89,6 +89,13 @@ service:
   port: 9312
   annotations: {}
 
+# ServiceMonitor (Prometheus Operator CRD). Default off because rendering a
+# ServiceMonitor requires the cluster to have `monitoring.coreos.com` CRDs
+# installed; otherwise `helm install` fails. Operators running
+# kube-prometheus-stack, rancher-monitoring, or any other Prometheus Operator
+# distribution should set `serviceMonitor.enabled: true` explicitly. Clusters
+# that scrape via pod-annotation discovery use the prometheus.io/* annotations
+# on the Deployment (rendered unconditionally) and leave this disabled.
 serviceMonitor:
   enabled: false
   namespace: ""
@@ -97,16 +104,19 @@ serviceMonitor:
   additionalLabels: {}
 
 # Resource requests/limits empirically grounded by a 30-minute Docker
-# observation on 2026-05-12 against the live Hyperping API. The exporter ran
-# with `--read-only --user 65534:65534 --tmpfs /tmp` to match the chart's
-# runtime envelope (PSS-restricted; container SecurityContext below). Sample
-# data (60 samples at 30s cadence) lives at
-# `tests/artifacts/rss-cpu.txt`. Peak RSS observed: 11.47 MiB; peak CPU
-# observed: 6.33% (~63 millicores burst during scrape; most samples 0.00%).
-# The defaults below carry roughly 30% headroom above the measured peaks for
-# request floors and ~4x headroom on limits to absorb GC bursts and tenant
-# growth past the measurement window (rounded up to the nearest 10m / 16Mi
-# step). Operators with very large tenant footprints should override these.
+# observation on 2026-05-12 against the live Hyperping API (60 samples at 30s
+# cadence). The exporter ran with `--read-only --user 65534:65534 --tmpfs /tmp`
+# to match the chart's runtime envelope (PSS-restricted; container
+# SecurityContext below). Peak RSS observed: 11.47 MiB; peak CPU observed:
+# 6.33% (~63 millicores burst during scrape; most samples 0.00%). The defaults
+# below carry roughly 30% headroom above the measured peaks for request floors
+# and ~4x headroom on limits to absorb GC bursts and tenant growth past the
+# measurement window (rounded up to the nearest 10m / 16Mi step). The
+# measurement is workload-dependent: tenant size, scrape cadence, and MCP
+# enablement shift the envelope. Operators with large tenants or MCP enabled
+# should measure their own workload (any standard container metrics
+# pipeline works) and override these defaults rather than trusting them
+# verbatim in production.
 resources:
   requests:
     cpu: 50m
@@ -202,14 +212,15 @@ readinessProbe:
   periodSeconds: 5
   failureThreshold: 3
 
+# NetworkPolicy. Default off because the chart cannot know your cluster's CNI
+# capability, DNS topology (vanilla kube-dns vs NodeLocal DNSCache, label
+# conventions vary across managed clusters), or whether your platform team
+# reserves NetworkPolicy authority at a higher layer. Operators opt in
+# explicitly. When enabled, also review the `dns` and `egress` blocks below:
+# the defaults target vanilla kube-dns / CoreDNS and need overrides for
+# NodeLocal DNS or unusual CoreDNS label sets.
 networkPolicy:
-  # Default-on as of chart 1.5.0. The vanilla NetworkPolicy admits ingress
-  # from `ingressFrom` peers on the metrics port and permits egress to
-  # kube-dns (UDP/TCP 53) plus TCP/443 to 0.0.0.0/0 with no `except:` list
-  # (the user's clusters may route api.hyperping.io via an in-cluster
-  # egress gateway in RFC1918 space). Operators who need fine-grained
-  # FQDN restriction enable the Cilium variant via `fqdnRestriction.enabled`.
-  enabled: true
+  enabled: false
   # Selectors for pods allowed to scrape metrics (e.g. Prometheus).
   # The default assumes Prometheus is in the SAME namespace as this chart.
   # For cross-namespace scraping, add a namespaceSelector to the entry:
@@ -224,6 +235,35 @@ networkPolicy:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: prometheus
+  # DNS resolver targets. When `podLabels` is empty (default), the template
+  # falls back to vanilla kube-dns / CoreDNS selectors (k8s-app: kube-dns in
+  # kube-system), which is what most clusters ship. Setting `podLabels` to a
+  # non-empty map REPLACES the fallback wholesale (NOT a deep merge — this
+  # avoids the Helm map-merge footgun where an overlay's labels would leak
+  # the default `k8s-app: kube-dns` key into clusters with different DNS
+  # label sets). Override for:
+  #   - NodeLocal DNSCache: the cache runs host-network on link-local
+  #     169.254.20.10, so a pod-selector rule does not match it. Disable
+  #     the chart NetworkPolicy and manage DNS at the cluster baseline,
+  #     or add a manual NetworkPolicy via an overlay with an ipBlock for
+  #     the link-local target.
+  #   - EKS / managed clusters with non-default CoreDNS labels: set
+  #     `podLabels` to your cluster's actual label set.
+  dns:
+    namespace: kube-system
+    podLabels: {}
+  # API egress rule. Default permits TCP/443 to 0.0.0.0/0 except the
+  # RFC1918 private ranges, which blocks intra-cluster lateral movement
+  # while keeping the public Hyperping API reachable. Operators routing
+  # api.hyperping.io through an in-cluster egress gateway in RFC1918
+  # space should set `except: []` to permit the gateway endpoint.
+  egress:
+    cidr: 0.0.0.0/0
+    except:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+    port: 443
   # FQDN-restricted egress via CiliumNetworkPolicy. Requires Cilium 1.14+.
   # When enabled, the vanilla NetworkPolicy template is suppressed and a
   # CiliumNetworkPolicy (apiVersion: cilium.io/v2) is rendered instead.

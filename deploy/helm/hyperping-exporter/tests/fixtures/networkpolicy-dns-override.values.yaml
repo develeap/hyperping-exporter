@@ -1,0 +1,13 @@
+config:
+  apiKey: x
+networkPolicy:
+  enabled: true
+  dns:
+    namespace: dns-system
+    podLabels:
+      app: coredns
+      tier: control-plane
+  egress:
+    cidr: 0.0.0.0/0
+    except: []
+    port: 443

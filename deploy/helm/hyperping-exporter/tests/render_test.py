@@ -240,15 +240,22 @@ def main() -> int:
     assert_eq(deployment_image(rendered), EXPECTED_IMAGE_DEFAULT,
               "defaults: Deployment image equals published Docker Hub tag")
     versions = labels_with_version(rendered)
-    # Expect the label on every chart-labelled resource. Default render after
-    # Task 7 emits Secret, Service, Deployment, NetworkPolicy (NP flipped on
-    # by default in chart 1.5.0). Use set-difference enumeration so a future
-    # additional resource produces a clear "new resource" diff rather than a
-    # tuple mismatch (Contract C8.3).
+    # Expect the label on every chart-labelled resource. Default render emits
+    # Secret, Service, Deployment. NetworkPolicy is opt-in (architectural
+    # decision: NP enablement is a cluster fact the chart cannot assume).
+    # Cilium variant and ExternalSecret remain opt-in. Use set-difference
+    # enumeration so a future additional resource produces a clear "new
+    # resource" diff rather than a tuple mismatch (Contract C8.3).
     expected_versions: dict[str, str] = {}
-    for kind in ("Secret", "Service", "Deployment", "NetworkPolicy"):
+    for kind in ("Secret", "Service", "Deployment"):
         for d in find_all(rendered, kind):
             expected_versions[f"{kind}/{d['metadata']['name']}"] = EXPECTED_VERSION
+    # Lock the default-off contract: no NP/CNP under chart defaults.
+    assert find_network_policy(rendered) is None, \
+        "FAIL defaults: NetworkPolicy must be absent under chart defaults (NP is operator opt-in)"
+    assert find_cilium_network_policy(rendered) is None, \
+        "FAIL defaults: CiliumNetworkPolicy must be absent under chart defaults"
+    print("PASS defaults: no NetworkPolicy / CiliumNetworkPolicy rendered (operator opt-in)")
     missing = set(expected_versions) - set(versions)
     extra = set(versions) - set(expected_versions)
     if missing or extra:
@@ -500,29 +507,68 @@ def main() -> int:
     print("PASS metrics-path-with-special-chars: special chars round-trip")
     assert_scalars_clean(rendered, "metrics-path-with-special-chars")
 
-    # Case 19 — networkpolicy-default positive render.
+    # Case 19 — networkpolicy-default positive render. NP is opt-in, so the
+    # fixture sets enabled: true explicitly. Asserts vanilla NP shape: DNS
+    # egress targets default kube-dns selectors; TCP/443 egress carries the
+    # RFC1918 except list.
     rendered = helm_template("networkpolicy-default.values.yaml")
     np = find_network_policy(rendered)
     assert np is not None, "FAIL networkpolicy-default: NetworkPolicy missing"
     assert find_cilium_network_policy(rendered) is None, \
         "FAIL networkpolicy-default: CiliumNetworkPolicy must be absent"
     egress = np["spec"]["egress"]
-    # DNS rule + TCP/443 rule
-    assert any(
-        any(p.get("port") == 53 for p in r.get("ports", []))
-        for r in egress
-    ), "FAIL networkpolicy-default: DNS egress rule missing"
+    # DNS rule: matches default kube-dns selectors in kube-system.
+    dns_rules = [r for r in egress if any(p.get("port") == 53 for p in r.get("ports", []))]
+    assert dns_rules, "FAIL networkpolicy-default: DNS egress rule missing"
+    for r in dns_rules:
+        peer = (r.get("to") or [{}])[0]
+        ns_labels = (peer.get("namespaceSelector") or {}).get("matchLabels") or {}
+        pod_labels = (peer.get("podSelector") or {}).get("matchLabels") or {}
+        assert ns_labels.get("kubernetes.io/metadata.name") == "kube-system", \
+            f"FAIL networkpolicy-default: DNS rule namespaceSelector drift: {ns_labels!r}"
+        assert pod_labels.get("k8s-app") == "kube-dns", \
+            f"FAIL networkpolicy-default: DNS rule podSelector drift: {pod_labels!r}"
+    # HTTPS rule: 0.0.0.0/0 with RFC1918 except list restored (architectural
+    # rollback of 1.5.0's "remove except" choice; operators on in-cluster
+    # egress gateway override via networkPolicy.egress.except: []).
     https_rules = [r for r in egress if any(p.get("port") == 443 for p in r.get("ports", []))]
     assert https_rules, "FAIL networkpolicy-default: TCP/443 egress rule missing"
+    expected_except = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
     for r in https_rules:
         for to in r.get("to", []):
             ipb = to.get("ipBlock") or {}
             assert ipb.get("cidr") == "0.0.0.0/0", \
                 f"FAIL networkpolicy-default: HTTPS rule cidr drift: {ipb!r}"
-            assert "except" not in ipb, \
-                f"FAIL networkpolicy-default: HTTPS rule retains except list: {ipb!r}"
-    print("PASS networkpolicy-default: vanilla NetworkPolicy egress (DNS + TCP/443 0.0.0.0/0 no except)")
+            assert ipb.get("except") == expected_except, \
+                f"FAIL networkpolicy-default: HTTPS rule except drift: got {ipb.get('except')!r}, want {expected_except!r}"
+    print("PASS networkpolicy-default: vanilla NP egress shape (default DNS selectors + TCP/443 with RFC1918 except)")
     assert_scalars_clean(rendered, "networkpolicy-default")
+
+    # Case 19a — networkpolicy DNS and egress knob override. Locks the
+    # configurability contract: operators on NodeLocal-like setups or with
+    # different CoreDNS labels can retarget the DNS rule; operators on
+    # in-cluster egress gateways can clear the except list.
+    rendered = helm_template("networkpolicy-dns-override.values.yaml")
+    np = find_network_policy(rendered)
+    assert np is not None, "FAIL networkpolicy-dns-override: NetworkPolicy missing"
+    egress = np["spec"]["egress"]
+    dns_rules = [r for r in egress if any(p.get("port") == 53 for p in r.get("ports", []))]
+    assert dns_rules, "FAIL networkpolicy-dns-override: DNS egress rule missing"
+    peer = dns_rules[0]["to"][0]
+    ns_labels = peer["namespaceSelector"]["matchLabels"]
+    pod_labels = peer["podSelector"]["matchLabels"]
+    assert ns_labels.get("kubernetes.io/metadata.name") == "dns-system", \
+        f"FAIL networkpolicy-dns-override: DNS rule namespaceSelector did not honor override: {ns_labels!r}"
+    assert pod_labels == {"app": "coredns", "tier": "control-plane"}, \
+        f"FAIL networkpolicy-dns-override: DNS rule podSelector did not honor override: {pod_labels!r}"
+    https_rules = [r for r in egress if any(p.get("port") == 443 for p in r.get("ports", []))]
+    for r in https_rules:
+        for to in r.get("to", []):
+            ipb = to.get("ipBlock") or {}
+            assert "except" not in ipb, \
+                f"FAIL networkpolicy-dns-override: empty except: [] should drop the key, got {ipb!r}"
+    print("PASS networkpolicy-dns-override: dns.namespace, dns.podLabels, and egress.except: [] honored")
+    assert_scalars_clean(rendered, "networkpolicy-dns-override")
 
     # PodDisruptionBudget was removed in chart 1.5.0. The exporter is a
     # singleton (validateReplicaCount aborts at replicaCount > 1), which

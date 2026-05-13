@@ -1,10 +1,15 @@
 config:
   apiKey: x
-# Live-boot fixture. The default readinessProbe relies on a successful
-# Hyperping cache fetch (`/readyz`), which the kind cluster cannot
-# satisfy without an API key + egress. Point the probe at `/healthz`
-# so rollout status proves the Pod is admitted + tolerates the new
-# default NetworkPolicy without depending on Hyperping reachability.
+# Dual-purpose fixture: render-test (Case 19) and kind PSS live-boot
+# (admission_test.sh). Render-test asserts the vanilla NP egress shape with
+# default DNS selectors + RFC1918 except. Live-boot proves the Pod is admitted
+# AND tolerates a rendered NetworkPolicy. The default readinessProbe targets
+# /readyz, which depends on a successful Hyperping cache fetch the kind
+# cluster cannot satisfy (no API key + no egress to Hyperping); point the
+# probe at /healthz so rollout-status wait succeeds as soon as the binary is
+# listening.
+networkPolicy:
+  enabled: true
 readinessProbe:
   httpGet:
     path: /healthz
