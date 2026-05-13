@@ -169,12 +169,50 @@ clear message rather than silently break the install.
 {{- end -}}
 
 {{/*
-validateNoTestKeys (R4-8, Contract C8.1). The chart exposes ONE test-only
-key, `internal._testBypassReplicaCheck`, which is undocumented in
-values.yaml and consumed ONLY by the PDB rendering gate. Any other key
-under `.Values.internal` is a footgun and aborts the render here. The
-leading-underscore prefix `_test` marks keys as test-only; production
-callers cannot stumble into them.
+validateExternalSecretApiVersion (C-3). When externalSecret.enabled, the
+chart pins the rendered apiVersion to a known-good External Secrets
+Operator CRD revision. Without this guard a typo like
+`external-secrets.io/v1beata1` renders verbatim and CI passes, then
+GitOps surfaces `no matches for kind ExternalSecret in version ...` at
+apply time. Skipped entirely when externalSecret is disabled because the
+externalsecret.yaml template is not rendered in that case.
+*/}}
+{{- define "hyperping-exporter.validateExternalSecretApiVersion" -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if $es.enabled -}}
+{{- $allowed := list "external-secrets.io/v1beta1" "external-secrets.io/v1" -}}
+{{- $av := $es.apiVersion | default "external-secrets.io/v1beta1" -}}
+{{- if not (has $av $allowed) -}}
+{{- fail (printf "externalSecret.apiVersion %q is not supported. Allowed values: %s. A typo here renders the ExternalSecret with an unknown apiVersion and surfaces only at apply time as `no matches for kind ExternalSecret`." $av (join ", " $allowed)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+validateExternalSecretStoreKind (C-3). Same rationale as
+validateExternalSecretApiVersion: pin secretStoreRef.kind to the two
+values External Secrets Operator accepts so a typo fails at render time
+rather than at apply time.
+*/}}
+{{- define "hyperping-exporter.validateExternalSecretStoreKind" -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if $es.enabled -}}
+{{- $allowed := list "SecretStore" "ClusterSecretStore" -}}
+{{- $ref := $es.secretStoreRef | default dict -}}
+{{- $kind := $ref.kind | default "SecretStore" -}}
+{{- if not (has $kind $allowed) -}}
+{{- fail (printf "externalSecret.secretStoreRef.kind %q is not supported. Allowed values: %s." $kind (join ", " $allowed)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+validateNoTestKeys (R4-8, Contract C8.1). The chart currently has NO
+consumer of `internal._test*` keys (the prior PDB rendering gate that
+honored `internal._testBypassReplicaCheck` was removed in 57cbbb2). The
+`_test`-prefix carve-out is reserved for future test-only knobs; any
+other key under `.Values.internal` is a footgun and aborts the render
+here so production callers cannot stumble into an undocumented key.
 */}}
 {{- define "hyperping-exporter.validateNoTestKeys" -}}
 {{- $internal := .Values.internal | default dict -}}
