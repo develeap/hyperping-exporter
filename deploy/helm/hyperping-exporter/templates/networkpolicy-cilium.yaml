@@ -38,10 +38,22 @@ spec:
         {{- if not (or $hasPod $nsSel) }}
         {{- fail (printf "networkPolicy.ingressFrom[%d]: peer must have a podSelector or namespaceSelector. Selector-less peers are not supported by the Cilium variant." $i) }}
         {{- end }}
-        {{- /* Build the flattened matchLabels map: pod matchLabels + namespace shortcut. */}}
+        {{- /*
+          Build the flattened matchLabels map: pod matchLabels + namespace
+          shortcut. When the operator supplies ONLY a podSelector (no
+          namespaceSelector), we MUST scope the EndpointSelector to the
+          release namespace via k8s:io.kubernetes.pod.namespace (R7).
+          Cilium's EndpointSelector matches across all namespaces in the
+          absence of this label, which would silently widen the ingress
+          trust domain compared to vanilla NetworkPolicy.from.podSelector
+          (which is implicitly scoped to the policy's namespace).
+        */}}
         {{- $labels := dict }}
         {{- range $k, $v := ($podSel.matchLabels | default dict) }}
         {{- $_ := set $labels $k $v }}
+        {{- end }}
+        {{- if not $nsSel }}
+        {{- $_ := set $labels "k8s:io.kubernetes.pod.namespace" $.Release.Namespace }}
         {{- end }}
         {{- if $nsSel }}
         {{- $nsExprs := $nsSel.matchExpressions | default list }}

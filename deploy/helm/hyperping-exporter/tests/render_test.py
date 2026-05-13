@@ -581,6 +581,13 @@ def main() -> int:
     assert_scalars_clean(rendered, "cilium-egress-only")
 
     # Case 31 — cilium-ingress-matchlabels.
+    # When the operator supplies only a podSelector (no namespaceSelector),
+    # the rendered fromEndpoints peer MUST be namespace-scoped to the
+    # release namespace via k8s:io.kubernetes.pod.namespace (R7). Cilium's
+    # EndpointSelector matches across ALL namespaces in the absence of
+    # this label, which would silently widen ingress trust compared to
+    # vanilla NetworkPolicy.from.podSelector (which is scoped to the
+    # policy's namespace).
     rendered = helm_template("networkpolicy-cilium-with-ingress.values.yaml")
     cnp = find_cilium_network_policy(rendered)
     assert cnp is not None, "FAIL cilium-matchlabels: CiliumNetworkPolicy missing"
@@ -588,7 +595,10 @@ def main() -> int:
     from_endpoints = cnp["spec"]["ingress"][0]["fromEndpoints"]
     assert from_endpoints[0]["matchLabels"]["app.kubernetes.io/name"] == "prometheus", \
         f"FAIL cilium-matchlabels: matchLabels drift {from_endpoints!r}"
-    print("PASS cilium-ingress-matchlabels: matchLabels flatten into EndpointSelector")
+    ns_label = from_endpoints[0]["matchLabels"].get("k8s:io.kubernetes.pod.namespace")
+    assert ns_label == "default", \
+        f"FAIL cilium-matchlabels: namespace scoping label missing; expected k8s:io.kubernetes.pod.namespace=default, got {from_endpoints[0]['matchLabels']!r}"
+    print("PASS cilium-ingress-matchlabels: matchLabels flatten into EndpointSelector and namespace-scope label is present")
     assert_scalars_clean(rendered, "cilium-ingress-matchlabels")
 
     # Case 32 — cilium-ingress-matchexpressions.
