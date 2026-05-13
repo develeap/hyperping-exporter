@@ -39,7 +39,7 @@ PATTERNS=(
   # (which contains the cluster name) is also matched separately. Use
   # word boundaries to avoid false matches inside paths or comments.
   'hyperping-pss-test'
-  'hyperping-pss[^-]'
+  'hyperping-pss($|[^-])'
   'khaledsalhabdeveleap/hyperping-exporter:1\.4\.1'
 )
 
