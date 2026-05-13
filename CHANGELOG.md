@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `templates/externalsecret.yaml` rendering `external-secrets.io/v1beta1 ExternalSecret` (default; override via `externalSecret.apiVersion` to `external-secrets.io/v1` on ESO 0.10+).
+- `templates/externalsecret.yaml` rendering `external-secrets.io/v1beta1 ExternalSecret` (default; override via `externalSecret.apiVersion` to `external-secrets.io/v1` on ESO 0.10+). The plan originally targeted `external-secrets.io/v1` as the default, but the pinned `datreeio/CRDs-catalog` tag does not ship the `v1` schema, which would have left `kubeconform -strict` unable to validate the fixture. The default was therefore rolled back to `v1beta1` for chart 1.5.0 with the operator opt-in preserved (see Upgrade notes).
 - `templates/networkpolicy-cilium.yaml` rendering `cilium.io/v2 CiliumNetworkPolicy` when `networkPolicy.fqdnRestriction.enabled: true`; mutually exclusive with the vanilla `templates/networkpolicy.yaml`.
 - `_helpers.tpl` helpers: `hyperping-exporter.arg` (safe-arg rendering), `secretSourceCount`, `validateSecretSources`, `validateReplicaCount`, `validateCacheTTL`, `validateNoTestKeys`.
 - `tests/admission_env.sh`, `tests/admission_test.sh`, `tests/kind-pss.yaml`, `tests/kind-pss-config/admission-config.yaml`, `tests/scripts/resolve_pins.sh`, `tests/pins.expected.yaml` — admission-test harness and pin resolver.
@@ -37,6 +37,7 @@ All notable changes to this project will be documented in this file.
 - **`replicaCount: 2` (or higher) now aborts the render** with a `validateReplicaCount` error. The exporter is a singleton; scale horizontally by sharding monitor namespaces across separate releases.
 - **`cacheTTL` MUST be a quoted Go duration string** (e.g. `"60s"`). Bare integers abort the render via `validateCacheTTL`.
 - **NetworkPolicy default-on.** Existing releases that relied on `networkPolicy.enabled: false` should set it explicitly if they wish to keep that behaviour; the default flipped to `true` with an egress rule permitting kube-dns plus TCP/443 to `0.0.0.0/0` (no `except:`).
+- **ExternalSecret apiVersion default is `external-secrets.io/v1beta1`.** Operators running ESO 0.10+ (where the `v1` CRD is GA and `v1beta1` is deprecated) MUST set `externalSecret.apiVersion: external-secrets.io/v1` explicitly. The chart's `kubeconform` job pins a CRDs-catalog tag that does not yet ship the `v1` schema; the chart will roll the default to `v1` in a subsequent chart bump once the catalog tag does.
 
 ## [1.4.1] - 2026-05-12
 

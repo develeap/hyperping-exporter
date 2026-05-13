@@ -6,7 +6,9 @@
 
 **Architecture:** Single-PR cutover on the existing `chore/chart-hardening-prod-defaults` worktree branch. The chart already partially implements items 1, 2, 4, 5, 8; this work reconciles those surfaces against the user's contract and adds ExternalSecret support, three render-time `fail()` guards (secret-source mutual-exclusion, multi-replica, cacheTTL-non-string), a `cilium.io/v2 CiliumNetworkPolicy` variant with explicit peer-shape conversion, a uniform safe-arg rendering pipeline (`toString | toJson` everywhere `printf`'d), a `replicaCount: 0` scaled-to-zero path with secret-source exemption, and a runtime read-only-rootfs proof. Three CI surfaces gate the chart inside a single `helm` job: the PyYAML render harness, offline `kubeconform` validation, and `kind` PSS-restricted live-admission. Every commit on the branch keeps `python3 render_test.py` AND `helm lint` AND `kubeconform` green (no bisect-red windows).
 
-**Tech Stack:** Helm v3.20.2 (assertions use substring-match on `v3.20.` so v3.20.x patch drift does not break tests), PyYAML 6.0.3, `kubeconform` v0.7.0, `kind` (latest at execution time, captured by Task 1 Step 6; minimum v0.31.0 required for `kindest/node:v1.34.x`), Kubernetes 1.34 (PSS-restricted semantics), `external-secrets.io/v1` (default, with `v1beta1` override for ESO ≤ 0.15), `cilium.io/v2 CiliumNetworkPolicy`. Go binary unchanged.
+**Tech Stack:** Helm v3.20.2 (assertions use substring-match on `v3.20.` so v3.20.x patch drift does not break tests), PyYAML 6.0.3, `kubeconform` v0.7.0, `kind` (latest at execution time, captured by Task 1 Step 6; minimum v0.31.0 required for `kindest/node:v1.34.x`), Kubernetes 1.34 (PSS-restricted semantics), `external-secrets.io/v1beta1` (default; see Deferred decision: ESO apiVersion below for the rationale and the rollover path to `external-secrets.io/v1`), `cilium.io/v2 CiliumNetworkPolicy`. Go binary unchanged.
+
+> **Deferred decision: ESO `apiVersion` default.** During execution the pinned `datreeio/CRDs-catalog` tag (`v1.36.0`) was found not to ship the `external-secrets.io/v1` schema; only `v1beta1` schemas are present. Defaulting the chart to `v1` would have left `kubeconform -strict` red on the ExternalSecret fixtures with no operator-visible fix path. The default was therefore rolled back to `external-secrets.io/v1beta1` for v1.5.0 and the `externalSecret.apiVersion` value remains configurable so operators on ESO ≥ 0.10 (where `v1` is GA and `v1beta1` is deprecated) can opt in explicitly. The rollover to a `v1` default is gated on the CRDs-catalog tag shipping the `v1` schemas; when that lands, bump `KUBECONFORM_CATALOG_REF` and flip this default in the same chart release.
 
 ---
 
@@ -315,7 +317,7 @@ Eight contradictions raised in round 4 issue review are resolved as follows. The
 
 ### Files created
 
-- `deploy/helm/hyperping-exporter/templates/externalsecret.yaml` — renders `external-secrets.io/v1 ExternalSecret` (or `v1beta1` per `externalSecret.apiVersion` override) when `externalSecret.enabled: true`. Mutually exclusive with `templates/secret.yaml`.
+- `deploy/helm/hyperping-exporter/templates/externalsecret.yaml` — renders `external-secrets.io/v1beta1 ExternalSecret` by default (deferred decision: the pinned CRDs-catalog tag lacks `v1` schemas, so the v1 default planned at task time was rolled back to `v1beta1`; operators on ESO ≥ 0.10 set `externalSecret.apiVersion: external-secrets.io/v1` explicitly) when `externalSecret.enabled: true`. Mutually exclusive with `templates/secret.yaml`.
 - `deploy/helm/hyperping-exporter/templates/networkpolicy-cilium.yaml` — renders `cilium.io/v2 CiliumNetworkPolicy` when `networkPolicy.enabled: true` AND `networkPolicy.fqdnRestriction.enabled: true`. Mutually exclusive with `templates/networkpolicy.yaml`. Implements the C3 peer-shape conversion.
 - `deploy/helm/hyperping-exporter/tests/fixtures/pss-restricted.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/external-secret.values.yaml`
@@ -694,7 +696,7 @@ This is the largest single commit. Contract C1.1 requires the legacy two-line `a
 
 - [ ] **Step 4: Modify `deployment.yaml` env block** — wrap in `{{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}` (int-vs-int per R4-2; the inner `int` cast is required because `include` returns a string).
 
-- [ ] **Step 5: Create `templates/externalsecret.yaml`** rendering `external-secrets.io/v1` (with values-driven `externalSecret.apiVersion` override defaulting to `external-secrets.io/v1`).
+- [ ] **Step 5: Create `templates/externalsecret.yaml`** rendering an ExternalSecret whose `apiVersion` is driven by `externalSecret.apiVersion` and defaults to `external-secrets.io/v1beta1` (deferred decision; the planned `v1` default was rolled back because the pinned CRDs-catalog tag does not ship `v1` schemas. The override knob lets operators on ESO ≥ 0.10 set `external-secrets.io/v1` explicitly.).
 
 - [ ] **Step 6: Modify `templates/secret.yaml`** to suppress when `externalSecret.enabled: true`.
 

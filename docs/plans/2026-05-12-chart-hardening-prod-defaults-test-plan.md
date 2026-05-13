@@ -306,7 +306,7 @@ These prove the new `fail()` validators (`validateSecretSources`, `validateRepli
 
 These prove every new template is structurally correct and exercised by at least one positive render.
 
-#### T22 — ExternalSecret enabled renders an `external-secrets.io/v1 ExternalSecret` and suppresses the chart-managed Secret
+#### T22 — ExternalSecret enabled renders an `external-secrets.io/v1beta1 ExternalSecret` (deferred decision; see plan tech-stack note) and suppresses the chart-managed Secret
 
 - **Name:** "Operator enabling `externalSecret.enabled: true` with a valid `secretStoreRef` sees an `ExternalSecret` resource rendered targeting the chart's Secret name; no chart-managed `Secret` in the release."
 - **Type:** scenario / coverage
