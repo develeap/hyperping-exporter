@@ -9,9 +9,15 @@ name: Chart Release
 #   helm install foo oci://ghcr.io/develeap/charts/hyperping-exporter \
 #     --version 1.5.0
 #
-# Pre-flight: the tag's chart version (chart-v1.5.0 -> 1.5.0) must match
-# Chart.yaml `version` exactly. Mismatch aborts the run before any artifact
-# is published.
+# Release-time gates (re-run independently of branch CI, so a defect that
+# slipped past main does not ship to operators):
+#   - tag <-> Chart.yaml version match
+#   - tag commit reachable from origin/main (no tagging from feature branches)
+#   - helm dependency build (cheap insurance against silently broken artifacts)
+#   - helm lint --strict
+#   - render_test.py
+#   - kubeconform schema validation
+#   - CHANGELOG entry MUST exist for the tag version (no fallback)
 
 on:
   push:
@@ -22,10 +28,19 @@ permissions:
   contents: write   # create GitHub Release
   packages: write   # push OCI chart artifact to GHCR
 
+concurrency:
+  # Serialize concurrent runs on the same tag ref so re-runs do not race on
+  # the OCI push or the GitHub Release creation. cancel-in-progress: false
+  # because a half-finished release (OCI pushed but no Release created) is
+  # worse than a queued retry; let the running job complete.
+  group: chart-release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CHART_DIR: deploy/helm/hyperping-exporter
   OCI_REGISTRY: ghcr.io
   OCI_REPO: develeap/charts
+  KUBECONFORM_VERSION: v0.7.0
 
 jobs:
   release:
@@ -36,10 +51,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
-        with:
-          version: v3.20.2
+      - name: Verify tag commit is reachable from origin/main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main; then
+            echo "::error::tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not reachable from origin/main. Refusing to publish a chart release from a non-main commit."
+            exit 1
+          fi
 
       - name: Verify tag matches Chart.yaml version
         run: |
@@ -54,8 +73,37 @@ jobs:
           fi
           echo "CHART_VERSION=${CHART_VERSION}" >> "${GITHUB_ENV}"
 
-      - name: Helm lint
-        run: helm lint "${CHART_DIR}"
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Helm dependency build
+        run: helm dependency build "${CHART_DIR}"
+
+      - name: Helm lint (strict)
+        run: helm lint --strict "${CHART_DIR}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: python -m pip install --no-cache-dir 'pyyaml==6.0.3'
+
+      - name: Render tests
+        run: python3 "${CHART_DIR}/tests/render_test.py"
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Kubeconform schema validation
+        run: make helm-kubeconform
 
       - name: Package chart
         id: package
@@ -69,6 +117,30 @@ jobs:
             exit 1
           fi
           echo "package=${PKG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          set -euo pipefail
+          # Pulls the section between `## [<version>] ...` and the next `## [` heading.
+          awk -v ver="${CHART_VERSION}" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/      { exit }
+            capture                  { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::no CHANGELOG entry found for chart version ${CHART_VERSION}. Add a '## [${CHART_VERSION}]' section to CHANGELOG.md before tagging."
+            exit 1
+          fi
+          {
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```sh'
+            echo "helm install hyperping-exporter \\"
+            echo "  oci://${OCI_REGISTRY}/${OCI_REPO}/hyperping-exporter \\"
+            echo "  --version ${CHART_VERSION}"
+            echo '```'
+          } >> release-notes.md
 
       - name: Helm registry login (GHCR)
         run: |
@@ -85,30 +157,6 @@ jobs:
       - name: Helm registry logout
         if: always()
         run: helm registry logout "${OCI_REGISTRY}" || true
-
-      - name: Extract release notes from CHANGELOG
-        id: notes
-        run: |
-          set -euo pipefail
-          # Pulls the section between `## [<version>] ...` and the next `## [` heading.
-          awk -v ver="${CHART_VERSION}" '
-            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
-            capture && /^## \[/      { exit }
-            capture                  { print }
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "::warning::no CHANGELOG entry found for ${CHART_VERSION}; falling back to short notes"
-            printf 'Chart release %s. See CHANGELOG.md for details.\n' "${CHART_VERSION}" > release-notes.md
-          fi
-          {
-            echo "## Install"
-            echo
-            echo '```sh'
-            echo "helm install hyperping-exporter \\"
-            echo "  oci://${OCI_REGISTRY}/${OCI_REPO}/hyperping-exporter \\"
-            echo "  --version ${CHART_VERSION}"
-            echo '```'
-          } >> release-notes.md
 
       - name: Create GitHub Release
         env:
