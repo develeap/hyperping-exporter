@@ -12,6 +12,8 @@
 
 ---
 
+> **Deferred decision: PodDisruptionBudget (R9).** Post-implementation review caught that the PDB rendering gate (`{{- if and .Values.podDisruptionBudget.enabled (or (gt (int .Values.replicaCount) 1) $bypass) }}`) is unreachable for any production caller because `validateReplicaCount` aborts the render at `replicaCount > 1` and the only path that reaches the gate is the test-only `internal._testBypassReplicaCheck` key. The plan's prior shape (rendering the PDB structurally via the bypass) baked a test-only path into the operator-visible surface and left `podDisruptionBudget.enabled` as dead config in production. The chart 1.5.0 release therefore drops the `podDisruptionBudget` block from `values.yaml` and removes `templates/pdb.yaml` entirely. The PDB-related render-test cases (Cases 20, 21, 29) and their fixtures are dropped in the same commit; Case 13's `find_pdb is None` assertion on `replicas-zero` stays as a regression lock-in. The PDB-specific text below in the original plan is preserved for historical context but no longer reflects the shipped chart.
+
 ## Scope Check
 
 Single PR per user decision #4. All ten items target one Helm chart, share one test harness, and have interlocking semantics (secret-source mutual exclusion crosses ExternalSecret, multi-replica, and replicaCount:0; NetworkPolicy default-on touches every render-harness fixture's expected label set). No natural split survives the mutual-exclusion testing. Single PR is correct.

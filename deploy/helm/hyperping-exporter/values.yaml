@@ -192,12 +192,6 @@ readinessProbe:
   periodSeconds: 5
   failureThreshold: 3
 
-podDisruptionBudget:
-  enabled: false
-  # maxUnavailable is safer than minAvailable when replicaCount=1:
-  # minAvailable=1 with 1 replica blocks all voluntary disruptions (node drains).
-  maxUnavailable: 1
-
 networkPolicy:
   # Default-on as of chart 1.5.0. The vanilla NetworkPolicy admits ingress
   # from `ingressFrom` peers on the metrics port and permits egress to

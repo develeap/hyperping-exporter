@@ -503,34 +503,13 @@ def main() -> int:
     print("PASS networkpolicy-default: vanilla NetworkPolicy egress (DNS + TCP/443 0.0.0.0/0 no except)")
     assert_scalars_clean(rendered, "networkpolicy-default")
 
-    # Case 20 — pdb-enabled at replicaCount=1 with no bypass: PDB suppressed.
-    rendered = helm_template("pdb-enabled.values.yaml")
-    assert find_pdb(rendered) is None, \
-        "FAIL pdb-enabled: PDB must be suppressed at replicaCount=1 without bypass"
-    print("PASS pdb-enabled: PDB suppressed at replicaCount=1 (drain-safe gate)")
-    assert_scalars_clean(rendered, "pdb-enabled")
-
-    # Case 21 — pdb-structural with internal bypass: PDB renders with required shape.
-    rendered = helm_template("pdb-structural.values.yaml")
-    pdb = find_pdb(rendered)
-    assert pdb is not None, "FAIL pdb-structural: PDB missing under bypass"
-    assert_eq(pdb["apiVersion"], "policy/v1",
-              "pdb-structural: PDB apiVersion")
-    assert_eq(pdb["spec"]["maxUnavailable"], 1,
-              "pdb-structural: maxUnavailable default is 1")
-    sel_labels = pdb["spec"]["selector"]["matchLabels"]
-    assert "app.kubernetes.io/name" in sel_labels and "app.kubernetes.io/instance" in sel_labels, \
-        f"FAIL pdb-structural: selector matchLabels missing standard keys: {sel_labels!r}"
-    print("PASS pdb-structural: PDB structurally correct under internal bypass")
-    assert_scalars_clean(rendered, "pdb-structural")
-
-    # Case 29 — pdb-structural with bypass + replicaCount=2: validator still aborts; no PDB.
-    assert_fail(
-        "pdb-structural-internal-bypass-multi-replica-fails",
-        "pdb-structural-internal-bypass-multi-replica.values.yaml",
-        "replicaCount must be 0 or 1",
-        forbidden_stdout_substring="kind: PodDisruptionBudget",
-    )
+    # PodDisruptionBudget was removed in chart 1.5.0. The exporter is a
+    # singleton (validateReplicaCount aborts at replicaCount > 1), which
+    # means a PDB rendering gate is unreachable for any production caller
+    # (you cannot have a "max-unavailable" budget across a single replica
+    # without blocking node drains). The chart no longer renders a PDB
+    # under any input. The replicas-zero case above keeps a positive
+    # `find_pdb is None` assertion to lock that in.
 
     # Case 30 — cilium-egress-only.
     rendered = helm_template("networkpolicy-cilium-defaults.values.yaml")

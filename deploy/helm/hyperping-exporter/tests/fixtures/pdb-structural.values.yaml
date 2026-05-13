@@ -1,7 +1,0 @@
-replicaCount: 1
-config:
-  apiKey: x
-podDisruptionBudget:
-  enabled: true
-internal:
-  _testBypassReplicaCheck: true

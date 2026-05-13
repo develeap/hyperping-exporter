@@ -30,6 +30,10 @@ All notable changes to this project will be documented in this file.
 - `templates/deployment.yaml` arg lines migrated to the safe-arg helper; the legacy 2-line `apiKey || existingSecret` guard replaced by validator includes; the env block now gates on `secretSourceCount > 0` so `replicaCount: 0` deployments without a secret source render cleanly.
 - `templates/secret.yaml` now suppresses when `externalSecret.enabled: true`.
 
+### Removed
+
+- The `podDisruptionBudget` block has been removed from `values.yaml` and the `templates/pdb.yaml` template has been deleted. The exporter is a singleton (`validateReplicaCount` aborts the render at `replicaCount > 1`), which means a PodDisruptionBudget rendering gate is unreachable for any production caller: you cannot run a maxUnavailable budget across a single replica without blocking node drains. The previous knob was therefore dead config and is no longer documented. Operators who had previously set `podDisruptionBudget.enabled: true` should remove the entry from their values overlays; Helm ignores unknown values keys, so the chart will still render cleanly but the value has no effect. If you need to gate voluntary disruptions for the singleton pod, the supported pattern is a cluster-level node-drain orchestration policy (e.g. PriorityClass + scheduling rules), not a PDB.
+
 ### Upgrade notes
 
 - **PSS namespace labelling.** The chart does not create or label the target Namespace. Operators MUST label the target namespace `pod-security.kubernetes.io/enforce=restricted` to enforce; the chart's container and pod SecurityContext defaults already satisfy that profile.
