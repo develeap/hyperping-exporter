@@ -88,7 +88,7 @@ jobs:
       - name: Audit pins
         if: always()
         run: |
-          set -e
+          set -euo pipefail
           # Workspace state of kind-pss.yaml is informational only:
           # the workflow's substitution step rewrites the workspace copy in
           # place, so this step is expected to report uncommitted changes
