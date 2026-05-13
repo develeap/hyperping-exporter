@@ -14,6 +14,8 @@
 
 > **Deferred decision: PodDisruptionBudget (R9).** Post-implementation review caught that the PDB rendering gate (`{{- if and .Values.podDisruptionBudget.enabled (or (gt (int .Values.replicaCount) 1) $bypass) }}`) is unreachable for any production caller because `validateReplicaCount` aborts the render at `replicaCount > 1` and the only path that reaches the gate is the test-only `internal._testBypassReplicaCheck` key. The plan's prior shape (rendering the PDB structurally via the bypass) baked a test-only path into the operator-visible surface and left `podDisruptionBudget.enabled` as dead config in production. The chart 1.5.0 release therefore drops the `podDisruptionBudget` block from `values.yaml` and removes `templates/pdb.yaml` entirely. The PDB-related render-test cases (Cases 20, 21, 29) and their fixtures are dropped in the same commit; Case 13's `find_pdb is None` assertion on `replicas-zero` stays as a regression lock-in. The PDB-specific text below in the original plan is preserved for historical context but no longer reflects the shipped chart.
 
+> **Deferred decision: `validateWebConfigFile` (R10).** Added during fix-round 1 to gate `config.webConfigFile` pending probe/ServiceMonitor TLS wiring. The binary's `--web.config.file` flag puts the server into TLS mode, but the chart's `livenessProbe.httpGet.scheme`, `readinessProbe.httpGet.scheme`, and ServiceMonitor `endpoints[].scheme` hardcode HTTP; enabling the flag in isolation would leave the pod permanently NotReady and silently break Prometheus scrapes. `validateWebConfigFile` aborts the render with operator-actionable guidance until a follow-up release wires `httpGet.scheme` + ServiceMonitor `scheme` + `tlsConfig` together. Tracked in CHANGELOG.md 1.5.0 Upgrade notes ("`config.webConfigFile` is currently unsupported"). Case 38 (`web-config-file-fails`) exercises the validator via `assert_fail`.
+
 ## Scope Check
 
 Single PR per user decision #4. All ten items target one Helm chart, share one test harness, and have interlocking semantics (secret-source mutual exclusion crosses ExternalSecret, multi-replica, and replicaCount:0; NetworkPolicy default-on touches every render-harness fixture's expected label set). No natural split survives the mutual-exclusion testing. Single PR is correct.
@@ -327,8 +329,9 @@ Eight contradictions raised in round 4 issue review are resolved as follows. The
 - `deploy/helm/hyperping-exporter/tests/fixtures/external-secret-missing-store.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/replicas-zero.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/replicas-multi.values.yaml`
-- `deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml`
-- `deploy/helm/hyperping-exporter/tests/fixtures/pdb-structural.values.yaml` — uses `replicaCount: 1`, `podDisruptionBudget.enabled: true`, and the test-only key `internal._testBypassReplicaCheck: true` (C8 PDB-structural test, per R4-8). This fixture is the SOLE caller of the bypass key; no production-shape fixture sets it.
+- ~~`deploy/helm/hyperping-exporter/tests/fixtures/pdb-enabled.values.yaml`~~ — **SUPERSEDED per R9 deferred decision (line 15):** PDB template removed from chart 1.5.0; fixture not created.
+- ~~`deploy/helm/hyperping-exporter/tests/fixtures/pdb-structural.values.yaml`~~ — **SUPERSEDED per R9 deferred decision (line 15):** test-only `internal._testBypassReplicaCheck` knob removed alongside the PDB template; fixture not created. The historical description below is preserved for review trace.
+  - Historical: uses `replicaCount: 1`, `podDisruptionBudget.enabled: true`, and the test-only key `internal._testBypassReplicaCheck: true` (C8 PDB-structural test, per R4-8). This fixture is the SOLE caller of the bypass key; no production-shape fixture sets it.
 - `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-default.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium-defaults.values.yaml`
 - `deploy/helm/hyperping-exporter/tests/fixtures/networkpolicy-cilium-with-ingress.values.yaml`
@@ -746,7 +749,9 @@ Verify Contract C1.
 
 ### Task 7: PDB guard, NetworkPolicy default-on, Cilium FQDN variant, replicaCount:0 support, Case 1 enumeration update (single commit)
 
-**Files:** Create `templates/networkpolicy-cilium.yaml`, seven Cilium fixtures, `pdb-structural.values.yaml`, `pdb-enabled.values.yaml`, `networkpolicy-default.values.yaml`. Modify `templates/pdb.yaml`, `templates/networkpolicy.yaml`, `values.yaml` (flip `networkPolicy.enabled` to `true`, add `fqdnRestriction` block), `tests/render_test.py` (extend Case 1; add Cilium and PDB cases).
+> **PARTIALLY SUPERSEDED per R9 deferred decision (line 15).** The PDB portions of this task (Steps 1, 6, and Step 9 Cases 20/21/29) were removed in chart 1.5.0; `templates/pdb.yaml` and the `pdb-*.values.yaml` fixtures were never landed (or, where landed in an earlier round, were deleted). The NetworkPolicy default-on flip, the Cilium variant, replicaCount:0 support, and the Case 1 `expected_versions` extension all shipped as described. The PDB steps below are preserved for historical context; do NOT execute them.
+
+**Files:** Create `templates/networkpolicy-cilium.yaml`, seven Cilium fixtures, ~~`pdb-structural.values.yaml`, `pdb-enabled.values.yaml`~~ (SUPERSEDED per R9), `networkpolicy-default.values.yaml`. Modify ~~`templates/pdb.yaml`~~ (SUPERSEDED per R9), `templates/networkpolicy.yaml`, `values.yaml` (flip `networkPolicy.enabled` to `true`, add `fqdnRestriction` block), `tests/render_test.py` (extend Case 1; add Cilium ~~and PDB~~ cases).
 
 This commit lands the NetworkPolicy default flip atomically with Case 1's `expected_versions` extension (Contract C1.1) AND introduces the Cilium variant with full peer-shape coverage (Contract C3).
 
