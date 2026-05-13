@@ -1,0 +1,121 @@
+name: Chart Release
+
+# Cuts a Helm chart release on `chart-v*` tags.
+#
+# Disjoint from `release.yml` (which fires on `v*` and ships the Go binary).
+# A chart-v1.5.0 tag triggers ONLY this workflow; no Docker images are built
+# or republished. Operators install with:
+#
+#   helm install foo oci://ghcr.io/develeap/charts/hyperping-exporter \
+#     --version 1.5.0
+#
+# Pre-flight: the tag's chart version (chart-v1.5.0 -> 1.5.0) must match
+# Chart.yaml `version` exactly. Mismatch aborts the run before any artifact
+# is published.
+
+on:
+  push:
+    tags:
+      - 'chart-v*'
+
+permissions:
+  contents: write   # create GitHub Release
+  packages: write   # push OCI chart artifact to GHCR
+
+env:
+  CHART_DIR: deploy/helm/hyperping-exporter
+  OCI_REGISTRY: ghcr.io
+  OCI_REPO: develeap/charts
+
+jobs:
+  release:
+    name: Package and publish chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Verify tag matches Chart.yaml version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"                  # e.g. chart-v1.5.0
+          TAG_VERSION="${TAG#chart-v}"              # e.g. 1.5.0
+          CHART_VERSION=$(awk '/^version:/ {print $2; exit}' "${CHART_DIR}/Chart.yaml")
+          echo "tag=${TAG_VERSION}  Chart.yaml=${CHART_VERSION}"
+          if [ "${TAG_VERSION}" != "${CHART_VERSION}" ]; then
+            echo "::error::tag ${TAG} implies chart version ${TAG_VERSION}, but Chart.yaml is ${CHART_VERSION}"
+            exit 1
+          fi
+          echo "CHART_VERSION=${CHART_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Helm lint
+        run: helm lint "${CHART_DIR}"
+
+      - name: Package chart
+        id: package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          helm package "${CHART_DIR}" -d dist
+          PKG="dist/hyperping-exporter-${CHART_VERSION}.tgz"
+          if [ ! -f "${PKG}" ]; then
+            echo "::error::expected package ${PKG} not produced"
+            exit 1
+          fi
+          echo "package=${PKG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Helm registry login (GHCR)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login "${OCI_REGISTRY}" \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Helm push to OCI
+        run: |
+          helm push "${{ steps.package.outputs.package }}" \
+            "oci://${OCI_REGISTRY}/${OCI_REPO}"
+
+      - name: Helm registry logout
+        if: always()
+        run: helm registry logout "${OCI_REGISTRY}" || true
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          set -euo pipefail
+          # Pulls the section between `## [<version>] ...` and the next `## [` heading.
+          awk -v ver="${CHART_VERSION}" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/      { exit }
+            capture                  { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::no CHANGELOG entry found for ${CHART_VERSION}; falling back to short notes"
+            printf 'Chart release %s. See CHANGELOG.md for details.\n' "${CHART_VERSION}" > release-notes.md
+          fi
+          {
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "helm install hyperping-exporter \\"
+            echo "  oci://${OCI_REGISTRY}/${OCI_REPO}/hyperping-exporter \\"
+            echo "  --version ${CHART_VERSION}"
+            echo '```'
+          } >> release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Chart ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            "${{ steps.package.outputs.package }}"
