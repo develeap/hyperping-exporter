@@ -503,8 +503,9 @@ Empirically proves the chart's default config is admission-clean under PSS-restr
 ### Covered action space
 
 - **Operator configuration knobs (every value in `values.yaml`):**
-  - `apiKey`, `existingSecret`, `externalSecret.enabled` — T7, T17, T18, T19, T20, T22, T23, T24.
-  - `cacheTTL`, `metricsPath`, `logLevel`, `logFormat`, `webConfigFile`, `namespace`, `excludeNamePattern`, `mcpUrl` — T2, T3, T4, T5, T6, T8, T9, T10, T11, T12, T13, T14.
+  - `apiKey`, `existingSecret`, `externalSecret.enabled` — T7, T17, T18, T19, T20, T22, T23, T24; Cases 12a (`externalsecret-bad-apiversion`) and 12b (`externalsecret-bad-storekind`) cover the Group B apiVersion / storeKind validators.
+  - `cacheTTL`, `metricsPath`, `logLevel`, `logFormat`, `namespace`, `excludeNamePattern`, `mcpUrl` — T2, T3, T4, T5, T6, T8, T9, T10, T11, T12, T13, T14.
+  - `webConfigFile` — Case 38 (`web-config-file-fails`); see Validators inventory for `validateWebConfigFile`.
   - `replicaCount` (including 0, 1, 2+) — T15, T16. (T21, T28 WITHDRAWN per R9.)
   - `podDisruptionBudget.enabled` — WITHDRAWN per R9 (value removed from chart 1.5.0; no PDB template).
   - `networkPolicy.enabled` (default flip) — T1 (version label includes NP), T29.
@@ -521,11 +522,16 @@ Empirically proves the chart's default config is admission-clean under PSS-restr
   - `deployment.yaml` — T1, T2, T4..T14, T16.
   - `secret.yaml` — T1, T7, T22.
   - `service.yaml` — T1.
-  - `servicemonitor.yaml` — covered by H2 schema validation; not asserted by H1 render harness (no behavior change in this PR).
+  - `servicemonitor.yaml` — Case 37 (`servicemonitor-enabled`) covers positive render; H2 covers schema validation.
   - `networkpolicy.yaml` — T29.
   - `networkpolicy-cilium.yaml` (new) — T25, T26, T27.
   - `pdb.yaml` — WITHDRAWN per R9 (template deleted in chart 1.5.0).
   - `externalsecret.yaml` (new) — T22, T23, T24.
+- **Late-added cases (fix-rounds, not enumerated under T1..T36):**
+  - Case 37 (`servicemonitor-enabled`) — positive render of `servicemonitor.yaml`.
+  - Case 38 (`web-config-file-fails`) — `validateWebConfigFile` aborts when `config.webConfigFile` is set (R10).
+  - Case 39 (`internal-bogus-key-fails`) — `validateNoTestKeys` aborts on any `internal.*` key not prefixed `_test`; Case 39a covers the `_test`-prefixed pass path.
+  - Cases 12a/12b — `validateExternalSecretApiVersion` and `validateExternalSecretStoreKind` (Group B follow-up).
 - **CI surfaces:**
   - `helm-ci.yml` job `helm` — every step exercised end-to-end by T30 + T31 + T32 + the audits.
   - `Makefile` targets — `helm-ci-fast` covers T30 + audits; `helm-ci` adds T31 + T32.
