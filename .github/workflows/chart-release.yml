@@ -178,12 +178,17 @@ jobs:
 
           GH_PAGES_DIR="${RUNNER_TEMP}/gh-pages-wt"
 
-          # Try to fetch gh-pages; create orphan branch if missing (first run).
-          if git fetch origin gh-pages 2>/dev/null && git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+          # Separate "branch exists on remote?" from "fetch succeeded?" so a
+          # transient fetch failure does not silently fall through to orphan
+          # creation. ls-remote --exit-code returns 2 when the ref is absent;
+          # anything else (0 = found, 1+ = error) is handled distinctly.
+          if git ls-remote --exit-code origin refs/heads/gh-pages >/dev/null 2>&1; then
+            echo "gh-pages exists on remote; fetching."
+            git fetch origin gh-pages
             git worktree add "${GH_PAGES_DIR}" FETCH_HEAD
             (cd "${GH_PAGES_DIR}" && git checkout -B gh-pages)
           else
-            echo "gh-pages branch does not exist; creating orphan branch."
+            echo "gh-pages does not exist on remote; creating orphan branch."
             mkdir -p "${GH_PAGES_DIR}"
             git worktree add --detach "${GH_PAGES_DIR}" HEAD
             (cd "${GH_PAGES_DIR}" && git checkout --orphan gh-pages && git rm -rf . >/dev/null 2>&1 || true)
