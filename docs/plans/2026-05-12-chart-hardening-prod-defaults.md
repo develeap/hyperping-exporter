@@ -28,9 +28,9 @@ This plan's correctness depends on these literal anchors. **Every occurrence of 
 
 | Anchor | Value | Where it appears (must be kept in lockstep) |
 |---|---|---|
-| `CHART_VERSION` | `1.5.0` | `Chart.yaml`, `render_test.py` `EXPECTED_CHART_LABEL` constant, CHANGELOG `## [1.5.0] - 2026-05-12` header, PR body |
+| `CHART_VERSION` | `1.5.0` | `Chart.yaml`, `render_test.py` `EXPECTED_CHART_LABEL` constant, CHANGELOG `## [1.5.0] - 2026-05-13` header, PR body |
 | `APP_VERSION` | `1.4.1` | `Chart.yaml`, `render_test.py` `EXPECTED_VERSION` and `EXPECTED_IMAGE_DEFAULT` constants, assertion message strings (Case 1: `f"app.kubernetes.io/version label must be {EXPECTED_VERSION}"`), upgrade notes |
-| `CHANGELOG_DATE` | `2026-05-12` | CHANGELOG header. Same date as v1.4.1 entry; explicit `[Chart 1.5.0]` qualifier added to the header to defeat date-only sorters. See Contract C9 below. |
+| `CHANGELOG_DATE` | `2026-05-13` | CHANGELOG header for the 1.5.0 chart entry (one day after the 1.4.1 binary entry, which keeps its `2026-05-12` date). Explicit `[Chart only — binary unchanged]` qualifier in the header defeats date-only sorters. See Contract C9 below. |
 | `KIND_CLUSTER_NAME` | `hyperping-pss` | `tests/admission_env.sh` (sole producer), referenced by `kind-pss.yaml`, workflow `cluster_name`, defensive teardown, `make helm-pss-clean`, `admission_test.sh` |
 | `TEST_RELEASE_NAME` | `testrel` | `tests/admission_env.sh`, every `kubectl rollout status deploy/...` reference |
 | `TEST_NAMESPACE` | `hyperping-pss-test` | `tests/admission_env.sh`, every `kubectl -n` reference, `--namespace` flag to `helm template` |
@@ -287,13 +287,13 @@ Eight contradictions raised in round 4 issue review are resolved as follows. The
 
 **Mechanics:**
 
-1. **Header form:** `## [1.5.0] - 2026-05-12 [Chart only — binary unchanged]`. The `[Chart only ...]` qualifier sits IN the header, after the date, so date-only sorters (release-drafter, GHA scrapers) treat it as the same date but keep semver-descending order. Keep-a-changelog grammar tolerates header suffixes after the date.
+1. **Header form:** `## [1.5.0] - 2026-05-13 [Chart only — binary unchanged]`. The `[Chart only ...]` qualifier sits IN the header, after the date, so date-only sorters (release-drafter, GHA scrapers) treat the suffix as opaque and keep semver-descending order. Keep-a-changelog grammar tolerates header suffixes after the date.
 
-2. **Anchor stability:** the header is keyed for HTML-anchor lookup as `1.5.0--2026-05-12-chart-only-binary-unchanged`. We don't rely on this; CHANGELOG consumers should match by version, not anchor.
+2. **Anchor stability:** the header is keyed for HTML-anchor lookup as `1.5.0--2026-05-13-chart-only-binary-unchanged`. We don't rely on this; CHANGELOG consumers should match by version, not anchor.
 
-3. **Single CHANGELOG, dual-namespace:** the file's existing `## [1.4.1] - 2026-05-12` entry is BINARY-NAMESPACED; this PR's `## [1.5.0] - 2026-05-12 [Chart only — binary unchanged]` is CHART-NAMESPACED. The chart and binary share `1.x.y` slots because Helm chart SemVer is independent of app SemVer. We document this trade-off in CHANGELOG's header comment (which Keep-a-changelog allows).
+3. **Single CHANGELOG, dual-namespace:** the file's existing `## [1.4.1] - 2026-05-12` entry is BINARY-NAMESPACED; this PR's `## [1.5.0] - 2026-05-13 [Chart only — binary unchanged]` is CHART-NAMESPACED. The chart and binary share `1.x.y` slots because Helm chart SemVer is independent of app SemVer. We document this trade-off in CHANGELOG's header comment (which Keep-a-changelog allows).
 
-**Gate:** Task 9 Step (CHANGELOG audit) runs `grep -c '^## \[1\.5\.0\]'` on `CHANGELOG.md`; expect exactly 1. Runs `grep -c '^## \[1\.4\.1\]'`; expect exactly 1. Both pre-existing and new entries dated `2026-05-12` are present and unique.
+**Gate:** Task 9 Step (CHANGELOG audit) runs `grep -c '^## \[1\.5\.0\]'` on `CHANGELOG.md`; expect exactly 1. Runs `grep -c '^## \[1\.4\.1\]'`; expect exactly 1. The 1.4.1 entry is dated `2026-05-12` (binary ship date); the 1.5.0 chart entry is dated `2026-05-13`. Both are present and unique.
 
 **Test:** CHANGELOG parses with `python3 -c "from packaging.version import Version; ..."` (no parse error).
 
@@ -401,7 +401,7 @@ Eight contradictions raised in round 4 issue review are resolved as follows. The
   - Job body extended with named steps: `resolve-pins`, `lint-and-render`, `kubeconform`, `kind-pss-rewrite-placeholders`, `pss-admission`, `audit-pins`.
   - Branch protection: if any rule matches by `name:` instead of job-key, the rule needs updating; Task 11 Step (final) audits via `gh api`.
 - `Makefile` — `helm-ci`, `helm-ci-fast`, `helm-render`, `helm-kubeconform`, `helm-pss`, `helm-pss-clean` targets. `helm-ci-fast` excludes `helm-pss` (Contract C5.4).
-- `CHANGELOG.md` — add `## [1.5.0] - 2026-05-12 [Chart only — binary unchanged]` chart-section between `## [Unreleased]` and `## [1.4.1]` (Contract C9).
+- `CHANGELOG.md` — add `## [1.5.0] - 2026-05-13 [Chart only — binary unchanged]` chart-section between `## [Unreleased]` and `## [1.4.1]` (Contract C9).
 - `.gitignore` — add `deploy/helm/hyperping-exporter/tests/artifacts/` (Contract C7).
 
 ### Files explicitly NOT modified
@@ -887,9 +887,9 @@ This commit atomically bumps every anchor that depends on the chart version. Con
 
 - [ ] **Step 3: Extend Case 1** to assert the `helm.sh/chart` label equals `EXPECTED_CHART_LABEL` on every labelled resource.
 
-- [ ] **Step 4: Add `CHANGELOG.md` entry**: `## [1.5.0] - 2026-05-12 [Chart only — binary unchanged]` between `[Unreleased]` and `[1.4.1]` (Contract C9.1). Sections: Highlights, Added, Changed, Security (empty), Upgrade notes.
+- [ ] **Step 4: Add `CHANGELOG.md` entry**: `## [1.5.0] - 2026-05-13 [Chart only — binary unchanged]` between `[Unreleased]` and `[1.4.1]` (Contract C9.1). Sections: Highlights, Added, Changed, Security (empty), Upgrade notes.
 
-- [ ] **Step 5: Audit CHANGELOG**: `grep -c '^## \[1\.5\.0\]' CHANGELOG.md` returns 1; `grep -c '^## \[1\.4\.1\]'` returns 1. Both dated 2026-05-12. (Contract C9 gate.)
+- [ ] **Step 5: Audit CHANGELOG**: `grep -c '^## \[1\.5\.0\]' CHANGELOG.md` returns 1; `grep -c '^## \[1\.4\.1\]'` returns 1. The 1.4.1 entry is dated 2026-05-12 (binary ship date); the 1.5.0 chart entry is dated 2026-05-13. (Contract C9 gate.)
 
 - [ ] **Step 6: Run full harness + lint + kubeconform**
 

@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.5.0] - 2026-05-12 [Chart only — binary unchanged]
+## [1.5.0] - 2026-05-13 [Chart only — binary unchanged]
 
 ### Highlights
 
