@@ -1,14 +1,8 @@
 config:
   apiKey: x
-# Live-boot fixture. The default readinessProbe relies on a successful
-# Hyperping cache fetch (`/readyz`), which the kind cluster cannot
-# satisfy without an API key + egress. Point the probe at `/healthz`
-# so rollout status proves the Pod is admitted + tolerates the new
-# default NetworkPolicy without depending on Hyperping reachability.
-readinessProbe:
-  httpGet:
-    path: /healthz
-    port: http
-  initialDelaySeconds: 5
-  periodSeconds: 5
-  failureThreshold: 3
+# Render-test fixture: enables the chart's default NetworkPolicy explicitly
+# (1.5.1 defaults NetworkPolicy off). Asserts the vanilla NP shape: DNS
+# egress to kube-dns, TCP/443 egress to 0.0.0.0/0 with the RFC1918 except
+# list intact.
+networkPolicy:
+  enabled: true

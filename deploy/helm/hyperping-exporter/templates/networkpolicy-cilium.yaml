@@ -1,5 +1,10 @@
 {{- $fqdn := (.Values.networkPolicy.fqdnRestriction | default dict) -}}
 {{- if and .Values.networkPolicy.enabled $fqdn.enabled }}
+{{- $dns := (.Values.networkPolicy.dns | default dict) -}}
+{{- /* DNS podLabels fallback: empty operator value -> default kube-dns
+       selector. Replace-not-merge (see vanilla networkpolicy.yaml). */ -}}
+{{- $dnsPodLabels := $dns.podLabels | default dict -}}
+{{- if not $dnsPodLabels }}{{- $dnsPodLabels = (dict "k8s-app" "kube-dns") }}{{- end -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -98,8 +103,10 @@ spec:
     # hosts can actually be connected to on port 443).
     - toEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: {{ $dns.namespace | default "kube-system" }}
+            {{- range $k, $v := $dnsPodLabels }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
       toPorts:
         - ports:
             - port: "53"

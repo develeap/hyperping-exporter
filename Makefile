@@ -16,7 +16,8 @@ KUBECONFORM_CATALOG_REF := $(shell awk -F'"' '/^datreeio_crds_catalog_tag:/{prin
 HELM_RENDER_FIXTURES := \
 	default external-secret external-secret-defaults \
 	replicas-zero \
-	networkpolicy-default networkpolicy-cilium-defaults \
+	networkpolicy-default networkpolicy-dns-override \
+	networkpolicy-cilium-defaults \
 	networkpolicy-cilium-with-ingress networkpolicy-cilium-matchexpressions \
 	networkpolicy-cilium-mixed cache-ttl-numeric log-level-numeric \
 	metrics-path-with-special-chars pss-restricted ascii-regex \

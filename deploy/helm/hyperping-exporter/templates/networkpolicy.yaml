@@ -1,5 +1,12 @@
 {{- $fqdn := (.Values.networkPolicy.fqdnRestriction | default dict) -}}
 {{- if and .Values.networkPolicy.enabled (not $fqdn.enabled) }}
+{{- $dns := (.Values.networkPolicy.dns | default dict) -}}
+{{- $eg := (.Values.networkPolicy.egress | default dict) -}}
+{{- /* DNS podLabels fallback: empty operator value -> default kube-dns
+       selector. Replace-not-merge avoids Helm's map deep-merge leaking the
+       default label into overrides that target a different DNS deployment. */ -}}
+{{- $dnsPodLabels := $dns.podLabels | default dict -}}
+{{- if not $dnsPodLabels }}{{- $dnsPodLabels = (dict "k8s-app" "kube-dns") }}{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -24,31 +31,33 @@ spec:
           port: {{ .Values.service.port }}
   {{- end }}
   egress:
-    # Allow DNS resolution (scoped to kube-system).
+    # DNS resolution. Targets are operator-configurable via networkPolicy.dns
+    # (default: k8s-app: kube-dns in kube-system, matching vanilla
+    # kube-dns/CoreDNS deployments). See values.yaml for NodeLocal DNS and
+    # managed-cluster override guidance.
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: {{ $dns.namespace | default "kube-system" }}
           podSelector:
             matchLabels:
-              k8s-app: kube-dns
+              {{- toYaml $dnsPodLabels | nindent 14 }}
       ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
-    # Allow HTTPS to external endpoints (Hyperping API).
-    # 0.0.0.0/0 with no `except:` list, per Task 7 / round-3 review decision:
-    # the user's clusters may legitimately route api.hyperping.io traffic
-    # via an in-cluster egress gateway that lives in a private RFC1918
-    # range; the vanilla NetworkPolicy cannot enumerate every legitimate
-    # private destination. Operators wanting fine-grained FQDN restriction
-    # enable `networkPolicy.fqdnRestriction.enabled: true` which switches
-    # to the CiliumNetworkPolicy variant.
+    # API egress (Hyperping). Defaults block intra-cluster lateral movement by
+    # excluding RFC1918 ranges; operators on in-cluster egress-gateway
+    # topologies can clear `networkPolicy.egress.except` in their overlay.
     - to:
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: {{ $eg.cidr | default "0.0.0.0/0" }}
+            {{- with $eg.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
       ports:
         - protocol: TCP
-          port: 443
+          port: {{ $eg.port | default 443 }}
 {{- end }}
