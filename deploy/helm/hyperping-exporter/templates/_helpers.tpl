@@ -142,9 +142,11 @@ have to guess which two values to reconcile.
 {{/*
 validateReplicaCount (R4-1, Contract C1.1). The exporter is a singleton:
 its cache is in-memory and per-process, and tenant-aggregate metrics
-would double-count under HA. ALWAYS aborts on replicaCount > 1; the
-internal._testBypassReplicaCheck key is honored ONLY by the PDB
-rendering gate, never here.
+would double-count under HA. ALWAYS aborts on replicaCount > 1. The
+chart currently has NO consumer of `internal._test*` keys (the prior
+PDB rendering gate that honored `_testBypassReplicaCheck` was removed
+in 57cbbb2); the `_test`-prefix carve-out is reserved for future
+test-only knobs.
 */}}
 {{- define "hyperping-exporter.validateReplicaCount" -}}
 {{- if gt (int .Values.replicaCount) 1 -}}

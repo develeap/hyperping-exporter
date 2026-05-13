@@ -635,12 +635,13 @@ def main() -> int:
                 "k8s:io.kubernetes.pod.namespace.labels")
 
     # Case 39 — validateNoTestKeys rejects non-_test-prefixed keys (R4).
-    # Belt-and-braces coverage: T21 only exercises validateNoTestKeys's
-    # PASS path via _testBypassReplicaCheck on positive fixtures. This
-    # case exercises the REJECT path so a future regression that drops
-    # the prefix check surfaces immediately. The error message names
-    # the offending key and points the operator at the `_test` prefix
-    # rule.
+    # The chart currently has NO consumer of `internal._test*` keys (the
+    # prior PDB rendering gate that honored `_testBypassReplicaCheck` was
+    # removed in 57cbbb2). The `_test`-prefix carve-out is reserved for
+    # future test-only knobs; this case exercises the REJECT path so a
+    # future regression that drops the prefix check surfaces immediately.
+    # The error message names the offending key and points the operator
+    # at the `_test` prefix rule.
     assert_fail("internal-bogus-key-rejected",
                 "internal-bogus-key-fails.values.yaml",
                 "values.internal.bogus is not a documented chart key")
