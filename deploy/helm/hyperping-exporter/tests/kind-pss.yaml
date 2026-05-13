@@ -9,7 +9,11 @@
 # placeholder and fails if substitution leaked into source.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-name: hyperping-pss
+# `name:` is intentionally omitted (Contract C5.1 / R3). The cluster
+# name is sourced from `tests/admission_env.sh` (KIND_CLUSTER_NAME) via:
+#   - the helm-ci workflow's `cluster_name:` input (env-driven), and
+#   - `admission_test.sh` passing `--name "$KIND_CLUSTER_NAME"`.
+# Embedding the name here would re-spell the anchor in two places.
 nodes:
   - role: control-plane
     image: kindest/node:__KINDEST_VERSION__@__KINDEST_DIGEST__

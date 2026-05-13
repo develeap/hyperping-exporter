@@ -620,6 +620,17 @@ def main() -> int:
                 "networkpolicy-cilium-foreign-namespace-label.values.yaml",
                 "k8s:io.kubernetes.pod.namespace.labels")
 
+    # Case 39 — validateNoTestKeys rejects non-_test-prefixed keys (R4).
+    # Belt-and-braces coverage: T21 only exercises validateNoTestKeys's
+    # PASS path via _testBypassReplicaCheck on positive fixtures. This
+    # case exercises the REJECT path so a future regression that drops
+    # the prefix check surfaces immediately. The error message names
+    # the offending key and points the operator at the `_test` prefix
+    # rule.
+    assert_fail("internal-bogus-key-rejected",
+                "internal-bogus-key-fails.values.yaml",
+                "values.internal.bogus is not a documented chart key")
+
     # Case 38 — config.webConfigFile is currently unsupported (R10).
     # Setting it would put the binary into TLS mode, but the chart's
     # probes default to HTTP and the ServiceMonitor's endpoint scheme is

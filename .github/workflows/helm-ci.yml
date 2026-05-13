@@ -55,6 +55,13 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           source deploy/helm/hyperping-exporter/tests/admission_env.sh
+          # Export anchors into the job env so subsequent steps (kind
+          # cluster, audit, teardown) read the same SSOT value rather
+          # than re-spelling literals (Contract C5.1 / R3).
+          echo "KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME}" >> "$GITHUB_ENV"
+          echo "TEST_NAMESPACE=${TEST_NAMESPACE}"       >> "$GITHUB_ENV"
+          echo "TEST_RELEASE_NAME=${TEST_RELEASE_NAME}" >> "$GITHUB_ENV"
+          echo "LIVE_BOOT_IMAGE=${LIVE_BOOT_IMAGE}"     >> "$GITHUB_ENV"
           KINDEST_VERSION=$(tr -d '[:space:]' < deploy/helm/hyperping-exporter/tests/artifacts/kindest-version.txt)
           KINDEST_DIGEST=$(tr -d '[:space:]' < deploy/helm/hyperping-exporter/tests/artifacts/kindest-digest.txt)
           ABSPATH=$(cd deploy/helm/hyperping-exporter/tests/kind-pss-config && pwd)
@@ -70,7 +77,7 @@ jobs:
       - name: Create kind cluster (PSS-restricted)
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
         with:
-          cluster_name: hyperping-pss
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
           config: deploy/helm/hyperping-exporter/tests/kind-pss.yaml
           wait: 120s
       - name: PSS admission live-boot tests
@@ -93,14 +100,12 @@ jobs:
           else
             echo "kind-pss.yaml: workspace copy was rewritten in place (expected)."
           fi
-          # Confirm the Makefile does not embed literal anchor values
-          # that should come from admission_env.sh or pins.expected.yaml.
-          if grep -nE 'hyperping-pss-test\b|khaledsalhabdeveleap/hyperping-exporter:1\.4\.1' \
-              Makefile; then
-            echo "FATAL: anchor literal embedded in Makefile; source from admission_env.sh / pins.expected.yaml" >&2
-            exit 1
-          fi
-          echo "OK Makefile anchor audit"
+          # Anchor audit: delegate to the external script so the audit's
+          # own pattern text cannot self-match (Contract C5 / R2). The
+          # script greps a closed set of files (workflow + Makefile +
+          # kind-pss.yaml) for hard-coded anchor literals that must come
+          # from admission_env.sh or pins.expected.yaml instead.
+          bash deploy/helm/hyperping-exporter/tests/scripts/audit_anchors.sh
       - name: Cluster teardown
         if: always()
         run: |

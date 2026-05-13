@@ -132,9 +132,17 @@ if [ -n "$digest_line" ]; then
   echo "$digest" > "$ARTIFACTS/kindest-digest.txt"
   echo "kindest/node version=$version digest=$digest" >&2
 else
-  echo "WARNING: kindest/node ${minor}.x digest not found in $got_kind release notes" >&2
-  echo "${minor}.0" > "$ARTIFACTS/kindest-version.txt"
-  echo "" > "$ARTIFACTS/kindest-digest.txt"
+  # Fail-loud contract (R6). The downstream workflow's substitution
+  # step would otherwise write an empty digest into kind-pss.yaml; the
+  # placeholder-survival check would pass (no `__X__` left), and
+  # `kind create cluster` would die with an opaque pull error against
+  # `kindest/node:<minor>.0@`. Surface the failure here instead so the
+  # operator sees a clear diagnostic at resolution time.
+  echo "FATAL: kindest/node ${minor}.x digest not found in $got_kind release notes." >&2
+  echo "       Check kind release notes for the expected 'kindest/node:${minor}.X@sha256:...' line." >&2
+  echo "       USER DECISION REQUIRED: update pins.expected.yaml kindest_node_minor or wait for a kind release with a ${minor}.x digest." >&2
+  rm -f "$ARTIFACTS/kindest-version.txt" "$ARTIFACTS/kindest-digest.txt"
+  exit 1
 fi
 
 echo "OK resolver completed; artifacts in $ARTIFACTS" >&2
