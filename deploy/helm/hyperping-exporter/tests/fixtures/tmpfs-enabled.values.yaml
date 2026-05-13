@@ -1,0 +1,6 @@
+config:
+  apiKey: x
+tmpfs:
+  enabled: true
+  medium: Memory
+  sizeLimit: 16Mi

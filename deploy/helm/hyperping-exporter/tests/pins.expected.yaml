@@ -6,10 +6,14 @@ kindest_node_minor: v1.34
 actions_checkout_tag: v6
 azure_setup_helm_tag: v5.0.0
 actions_setup_python_tag: v6.2.0
-# Captured from datreeio/CRDs-catalog releases; resolver verifies the tag
-# exists. The repo publishes daily-dated tags (YYYY.MM.DD-...); we pin a
-# specific dated release so schema drift is a deliberate update.
-datreeio_crds_catalog_tag: "v0.0.12"
+# datreeio/CRDs-catalog ref. The repo has not cut a tag since v0.0.12
+# (2023-07-02) but main is actively maintained, and the schemas the chart
+# needs (external-secrets.io/v1, cilium.io/v2 enableDefaultDeny, etc.) only
+# exist on main. We pin to a specific commit SHA so the schema set is still
+# reproducible while we wait for upstream to resume tagging. The resolver
+# verifies the SHA resolves at api.github.com so a typo or upstream rebase
+# surfaces as a fail-loud diff rather than a silent kubeconform regression.
+datreeio_crds_catalog_ref: "0c4b71928a420187ee523cf3e11b311dcb2b6649"
 docker_hub_image_repo: khaledsalhabdeveleap/hyperping-exporter
 docker_hub_image_tag: "1.4.1"
 # kindest/node minor v1.34.x — the resolver captures the patch+digest

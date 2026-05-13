@@ -171,21 +171,39 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# Opt-in emptyDir mounted at /tmp. The chart sets readOnlyRootFilesystem:
+# true on the container, so anything that tries to write to disk (including
+# Go's os.CreateTemp default location) fails at runtime. The current binary
+# does not write to /tmp (verified by the 30-min Docker observation that
+# grounded the resources defaults), so this is off by default. Enable it
+# proactively if you are running a custom build, a sidecar, or an init
+# container that needs scratch space, or as future-proofing in case a
+# dependency starts touching /tmp.
+tmpfs:
+  enabled: false
+  # Optional emptyDir medium. Leave empty for node-disk-backed scratch;
+  # set "Memory" for a tmpfs backed by the node's RAM (subject to the
+  # pod's memory limit).
+  medium: ""
+  # Optional sizeLimit (e.g. "16Mi"). Empty leaves it unbounded within the
+  # node's available space (or the pod's memory limit when medium=Memory).
+  sizeLimit: ""
+
 # External Secrets Operator integration. When enabled, the chart renders an
 # `ExternalSecret` resource targeting the chart's standard Secret name; the
 # chart-managed Secret template is suppressed. This is mutually exclusive
 # with `config.apiKey` and `config.existingSecret` (validateSecretSources
 # enforces the conflict; see Contract C2.4 / R4-6).
 #
-# apiVersion defaults to `external-secrets.io/v1beta1` because that is the
-# version fully covered by the kubeconform CRDs-catalog tag this chart's
-# CI pins. Operators on ESO 0.10+ that have rolled to v1 should set
-# `apiVersion: external-secrets.io/v1` explicitly (their cluster will
-# accept the v1 CRD; kubeconform validation will skip until the
-# CRDs-catalog rolls v1 into a tagged release).
+# apiVersion defaults to `external-secrets.io/v1` (GA in ESO 0.10+). The
+# validator still accepts `external-secrets.io/v1beta1` for operators
+# pinned to an older ESO; chart 1.5.0 shipped with `v1beta1` as the
+# default because the kubeconform CRDs-catalog tag at the time did not
+# ship the `v1` schema. 1.5.1 rolls the CRDs-catalog pin forward (now a
+# main-branch SHA) so `v1` is fully validated; the default flips to match.
 externalSecret:
   enabled: false
-  apiVersion: external-secrets.io/v1beta1
+  apiVersion: external-secrets.io/v1
   refreshInterval: 1h
   creationPolicy: Owner
   secretStoreRef:
