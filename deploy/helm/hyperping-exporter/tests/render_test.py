@@ -240,20 +240,19 @@ def main() -> int:
     assert_eq(deployment_image(rendered), EXPECTED_IMAGE_DEFAULT,
               "defaults: Deployment image equals published Docker Hub tag")
     versions = labels_with_version(rendered)
-    # Expect the label on every chart-labelled resource. Default render in
-    # 1.5.1 emits Secret, Service, Deployment. NetworkPolicy is no longer
-    # default-on (architectural correction: NP enablement is a cluster
-    # decision, not a binary fact). Cilium variant and ExternalSecret remain
-    # opt-in. Use set-difference enumeration so a future additional resource
-    # produces a clear "new resource" diff rather than a tuple mismatch
-    # (Contract C8.3).
+    # Expect the label on every chart-labelled resource. Default render emits
+    # Secret, Service, Deployment. NetworkPolicy is opt-in (architectural
+    # decision: NP enablement is a cluster fact the chart cannot assume).
+    # Cilium variant and ExternalSecret remain opt-in. Use set-difference
+    # enumeration so a future additional resource produces a clear "new
+    # resource" diff rather than a tuple mismatch (Contract C8.3).
     expected_versions: dict[str, str] = {}
     for kind in ("Secret", "Service", "Deployment"):
         for d in find_all(rendered, kind):
             expected_versions[f"{kind}/{d['metadata']['name']}"] = EXPECTED_VERSION
     # Lock the default-off contract: no NP/CNP under chart defaults.
     assert find_network_policy(rendered) is None, \
-        "FAIL defaults: NetworkPolicy must be absent under chart defaults (1.5.1 reverted NP default-on)"
+        "FAIL defaults: NetworkPolicy must be absent under chart defaults (NP is operator opt-in)"
     assert find_cilium_network_policy(rendered) is None, \
         "FAIL defaults: CiliumNetworkPolicy must be absent under chart defaults"
     print("PASS defaults: no NetworkPolicy / CiliumNetworkPolicy rendered (operator opt-in)")
@@ -508,10 +507,10 @@ def main() -> int:
     print("PASS metrics-path-with-special-chars: special chars round-trip")
     assert_scalars_clean(rendered, "metrics-path-with-special-chars")
 
-    # Case 19 — networkpolicy-default positive render. 1.5.1 reverted the
-    # default to off, so the fixture sets enabled: true explicitly. Asserts
-    # vanilla NP shape: DNS egress targets default kube-dns selectors;
-    # TCP/443 egress retains the RFC1918 except list (1.5.0 had stripped it).
+    # Case 19 — networkpolicy-default positive render. NP is opt-in, so the
+    # fixture sets enabled: true explicitly. Asserts vanilla NP shape: DNS
+    # egress targets default kube-dns selectors; TCP/443 egress carries the
+    # RFC1918 except list.
     rendered = helm_template("networkpolicy-default.values.yaml")
     np = find_network_policy(rendered)
     assert np is not None, "FAIL networkpolicy-default: NetworkPolicy missing"
