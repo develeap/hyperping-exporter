@@ -114,7 +114,22 @@ if ! semver_ge "$got_kind" "$exp_kind"; then
   exit 1
 fi
 
-# actions/checkout, azure/setup-helm, actions/setup-python — exact-match audit.
+# Return 0 iff got matches the expected track. exp is either an exact tag
+# (e.g. v5.0.0) or a major-version track (e.g. v6) that floats to vN or vN.x.y.
+# Accept exact match, or exp as a dotted prefix of got.
+matches_track() {
+  local got="$1" exp="$2"
+  [ -n "$got" ] && [ -n "$exp" ] || return 1
+  [ "$got" = "$exp" ] && return 0
+  case "$got" in
+    "${exp}."*) return 0 ;;
+  esac
+  return 1
+}
+
+# actions/checkout, azure/setup-helm, actions/setup-python — track audit.
+# pins.expected.yaml may pin a major track (v6) or an exact tag (v5.0.0);
+# drift is anything outside that track.
 for repo in actions/checkout azure/setup-helm actions/setup-python; do
   case "$repo" in
     actions/checkout)        exp="$(pin actions_checkout_tag)" ;;
@@ -129,7 +144,7 @@ for repo in actions/checkout azure/setup-helm actions/setup-python; do
     echo "FATAL: $repo tag resolution failed after retries. USER DECISION REQUIRED: investigate gh API / network." >&2
     exit 1
   fi
-  if [ "$got" != "$exp" ]; then
+  if ! matches_track "$got" "$exp"; then
     echo "USER DECISION REQUIRED: pin drift for $repo: expected=$exp resolved=$got" >&2
     exit 1
   fi
