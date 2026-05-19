@@ -105,7 +105,7 @@ serviceMonitor:
 
 # Resource requests/limits empirically grounded by a 30-minute Docker
 # observation on 2026-05-12 against the live Hyperping API (60 samples at 30s
-# cadence). The exporter ran with `--read-only --user 65534:65534 --tmpfs /tmp`
+# cadence). The exporter ran with `--read-only --user 65532:65532 --tmpfs /tmp`
 # to match the chart's runtime envelope (PSS-restricted; container
 # SecurityContext below). Peak RSS observed: 11.47 MiB; peak CPU observed:
 # 6.33% (~63 millicores burst during scrape; most samples 0.00%). The defaults
@@ -130,7 +130,9 @@ resources:
 # profile so the chart can be admitted into namespaces labelled
 # `pod-security.kubernetes.io/enforce: restricted`. Specifically:
 #   - runAsNonRoot: true             — required by PSS-restricted.
-#   - runAsUser / runAsGroup: 65534  — `nobody`; matches the container image.
+#   - runAsUser / runAsGroup: 65532  — `nonroot`; matches the container image
+#     (distroless/static:nonroot, which provisions uid/gid 65532 and the
+#     `/home/nonroot` WORKDIR owned by that uid).
 #   - allowPrivilegeEscalation: false — required by PSS-restricted.
 #   - readOnlyRootFilesystem: true   — empirically validated by the
 #     2026-05-12 30-minute Docker run; the binary tolerates a read-only
@@ -144,8 +146,8 @@ securityContext:
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
   runAsNonRoot: true
-  runAsUser: 65534
-  runAsGroup: 65534
+  runAsUser: 65532
+  runAsGroup: 65532
   capabilities:
     drop: [ALL]
   seccompProfile:
@@ -154,14 +156,14 @@ securityContext:
 # Pod-scope SecurityContext (item 4 — PSS-restricted contract).
 # Mirrors the container-scope settings at the pod level so kubelet applies
 # the same identity to init containers, ephemeral containers, and any
-# future template that consumes podSecurityContext. `fsGroup: 65534`
+# future template that consumes podSecurityContext. `fsGroup: 65532`
 # matches the container uid/gid so any future emptyDir or PVC mount the
 # chart adds defaults to a group writable by the running process.
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 65534
-  runAsGroup: 65534
-  fsGroup: 65534
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 
