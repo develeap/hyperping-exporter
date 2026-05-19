@@ -55,7 +55,7 @@ HYPERPING_API_KEY=your_key hyperping-exporter
 helm repo add develeap https://develeap.github.io/hyperping-exporter
 helm repo update
 helm install hyperping-exporter develeap/hyperping-exporter \
-  --version 1.5.0 \
+  --version 1.5.1 \
   --set config.existingSecret=hyperping-api-key
 ```
 

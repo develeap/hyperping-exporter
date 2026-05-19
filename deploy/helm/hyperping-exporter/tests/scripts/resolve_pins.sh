@@ -150,14 +150,21 @@ for repo in actions/checkout azure/setup-helm actions/setup-python; do
   fi
 done
 
-# datreeio/CRDs-catalog — capture latest tag if expected is empty,
-# otherwise verify expected tag still exists upstream.
-exp_catalog="$(pin datreeio_crds_catalog_tag)"
+# datreeio/CRDs-catalog — pinned to a specific git ref (commit SHA on main
+# because upstream stopped tagging in 2023-07). Fail loud if the SHA no
+# longer resolves at the catalog repo (typo, force-push, repo deletion).
+exp_catalog="$(pin datreeio_crds_catalog_ref)"
 got_catalog="$(retry latest_release_tag datreeio/CRDs-catalog || echo "")"
 if [ -z "$exp_catalog" ]; then
   echo "$got_catalog" > "$ARTIFACTS/datreeio-CRDs-catalog-tag.txt"
   echo "datreeio/CRDs-catalog resolved=$got_catalog (expected was empty, captured)" >&2
 else
+  # Verify the pinned ref resolves at GitHub (SHA, tag, or branch all work
+  # through the commits endpoint). 404 surfaces a fail-loud diff.
+  if ! retry gh api "repos/datreeio/CRDs-catalog/commits/${exp_catalog}" >/dev/null 2>&1; then
+    echo "FATAL: datreeio/CRDs-catalog ref '${exp_catalog}' does not resolve at github.com. USER DECISION REQUIRED: typo, force-push, or upstream deletion. Update pins.expected.yaml." >&2
+    exit 1
+  fi
   echo "$exp_catalog" > "$ARTIFACTS/datreeio-CRDs-catalog-tag.txt"
   echo "datreeio/CRDs-catalog using pinned=$exp_catalog (latest upstream=$got_catalog)" >&2
 fi

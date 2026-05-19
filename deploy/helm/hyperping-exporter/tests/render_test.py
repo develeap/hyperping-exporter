@@ -219,7 +219,7 @@ BASELINE_ARGS = [
 # Published binary: khaledsalhabdeveleap/hyperping-exporter:1.4.0.
 EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.1"
 EXPECTED_VERSION = "1.4.1"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.0"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.1"
 
 
 def main() -> int:
@@ -256,6 +256,16 @@ def main() -> int:
     assert find_cilium_network_policy(rendered) is None, \
         "FAIL defaults: CiliumNetworkPolicy must be absent under chart defaults"
     print("PASS defaults: no NetworkPolicy / CiliumNetworkPolicy rendered (operator opt-in)")
+    # Lock the tmpfs default-off contract: no volumes / volumeMounts under
+    # chart defaults. Operators enable tmpfs.enabled explicitly for /tmp
+    # scratch space against readOnlyRootFilesystem.
+    dep_default = find_deployment(rendered)
+    container_default = dep_default["spec"]["template"]["spec"]["containers"][0]
+    assert "volumeMounts" not in container_default, \
+        f"FAIL defaults: container must not have volumeMounts under defaults; got {container_default.get('volumeMounts')!r}"
+    assert "volumes" not in dep_default["spec"]["template"]["spec"], \
+        f"FAIL defaults: pod spec must not have volumes under defaults; got {dep_default['spec']['template']['spec'].get('volumes')!r}"
+    print("PASS defaults: no volumes / volumeMounts (tmpfs opt-in)")
     missing = set(expected_versions) - set(versions)
     extra = set(versions) - set(expected_versions)
     if missing or extra:
@@ -379,13 +389,48 @@ def main() -> int:
     print("PASS external-secret: ExternalSecret rendered with chart Secret absent")
     assert_scalars_clean(rendered, "external-secret")
 
-    # Case 11 — external-secret-defaults (default refreshInterval).
+    # Case 11 — external-secret-defaults (default refreshInterval + apiVersion).
+    # apiVersion default flipped to external-secrets.io/v1 in chart 1.5.1
+    # (CRDs-catalog pin moved to a main-branch SHA that ships the v1 schema).
     rendered = helm_template("external-secret-defaults.values.yaml")
     es = find_external_secret(rendered)
     assert es is not None, "FAIL external-secret-defaults: ExternalSecret missing"
+    assert_eq(es["apiVersion"], "external-secrets.io/v1",
+              "external-secret-defaults: apiVersion default is v1")
     assert_eq(es["spec"]["refreshInterval"], "1h",
               "external-secret-defaults: refreshInterval default is 1h")
     assert_scalars_clean(rendered, "external-secret-defaults")
+
+    # Case 11a — external-secret-v1beta1 backwards-compat path. Operators
+    # pinned to ESO < 0.10 (no v1 CRD) explicitly opt into v1beta1.
+    rendered = helm_template("external-secret-v1beta1.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL external-secret-v1beta1: ExternalSecret missing"
+    assert_eq(es["apiVersion"], "external-secrets.io/v1beta1",
+              "external-secret-v1beta1: apiVersion honored as v1beta1")
+    assert_scalars_clean(rendered, "external-secret-v1beta1")
+
+    # Case 11b — tmpfs.enabled mounts an emptyDir at /tmp. Verifies the
+    # opt-in knob for readOnlyRootFilesystem: true future-proofing.
+    rendered = helm_template("tmpfs-enabled.values.yaml")
+    dep_t = find_deployment(rendered)
+    pod_spec = dep_t["spec"]["template"]["spec"]
+    container_t = pod_spec["containers"][0]
+    mounts = container_t.get("volumeMounts") or []
+    tmp_mounts = [m for m in mounts if m.get("name") == "tmp"]
+    assert len(tmp_mounts) == 1, f"FAIL tmpfs-enabled: expected one 'tmp' volumeMount, got {mounts!r}"
+    assert_eq(tmp_mounts[0]["mountPath"], "/tmp",
+              "tmpfs-enabled: mountPath is /tmp")
+    volumes = pod_spec.get("volumes") or []
+    tmp_vols = [v for v in volumes if v.get("name") == "tmp"]
+    assert len(tmp_vols) == 1, f"FAIL tmpfs-enabled: expected one 'tmp' volume, got {volumes!r}"
+    emptydir = tmp_vols[0].get("emptyDir") or {}
+    assert_eq(emptydir.get("medium"), "Memory",
+              "tmpfs-enabled: emptyDir.medium honored as Memory")
+    assert_eq(emptydir.get("sizeLimit"), "16Mi",
+              "tmpfs-enabled: emptyDir.sizeLimit honored as 16Mi")
+    print("PASS tmpfs-enabled: /tmp emptyDir mount and volume rendered with knob values")
+    assert_scalars_clean(rendered, "tmpfs-enabled")
 
     # Case 12 — external-secret-missing-store assert_fail.
     assert_fail("external-secret-missing-store",

@@ -12,9 +12,10 @@ COMPOSE    := docker compose -f deploy/docker-compose.yml
 CHART_DIR        := deploy/helm/hyperping-exporter
 CHART_TESTS_DIR  := $(CHART_DIR)/tests
 PINS_FILE        := $(CHART_TESTS_DIR)/pins.expected.yaml
-KUBECONFORM_CATALOG_REF := $(shell awk -F'"' '/^datreeio_crds_catalog_tag:/{print $$2}' $(PINS_FILE))
+KUBECONFORM_CATALOG_REF := $(shell awk -F'"' '/^datreeio_crds_catalog_ref:/{print $$2}' $(PINS_FILE))
 HELM_RENDER_FIXTURES := \
 	default external-secret external-secret-defaults \
+	external-secret-v1beta1 tmpfs-enabled \
 	replicas-zero \
 	networkpolicy-default networkpolicy-dns-override \
 	networkpolicy-cilium-defaults \
@@ -76,18 +77,15 @@ all: fmt vet lint test build
 helm-render:
 	python3 $(CHART_TESTS_DIR)/render_test.py
 
-# Run kubeconform against every fixture's rendered output. Catalog tag
+# Run kubeconform against every fixture's rendered output. Catalog ref
 # is pinned via $(KUBECONFORM_CATALOG_REF) (read from pins.expected.yaml)
 # so schema drift is a deliberate update, never an upstream surprise.
 #
-# CiliumNetworkPolicy is skipped because the pinned CRDs-catalog tag
-# (v0.0.12) does not include the `spec.enableDefaultDeny` field that
-# Cilium 1.14+ shipped and that the chart now relies on for the
-# ingress-lockdown parity fix (R8). Schema validation for CNP will be
-# re-enabled when the catalog tag is rolled forward to one that ships
-# the Cilium v1.14+ schema. Until then, render_test.py keeps strong
-# structural assertions on the rendered Cilium spec, and the live
-# Cilium CRD accepts the field without complaint.
+# The catalog ref is now a commit SHA on main rather than a tag because
+# the upstream repo has not cut a tag since 2023-07 and the schemas the
+# chart relies on (external-secrets.io/v1, cilium.io/v2 enableDefaultDeny)
+# only exist on main. The SHA pin keeps the schema set reproducible while
+# still covering every kind the chart renders.
 helm-kubeconform:
 	@command -v kubeconform >/dev/null || { echo "kubeconform not on PATH"; exit 2; }
 	@if [ -z "$(KUBECONFORM_CATALOG_REF)" ]; then echo "KUBECONFORM_CATALOG_REF empty (pins.expected.yaml)"; exit 2; fi
@@ -95,7 +93,7 @@ helm-kubeconform:
 	for f in $(HELM_RENDER_FIXTURES); do \
 		echo "=== kubeconform: $$f ==="; \
 		helm template testrel $(CHART_DIR) -f $(CHART_TESTS_DIR)/fixtures/$$f.values.yaml \
-		  | kubeconform -strict -summary -skip CiliumNetworkPolicy -schema-location default \
+		  | kubeconform -strict -summary -schema-location default \
 		      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/$(KUBECONFORM_CATALOG_REF)/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
 		      -; \
 	done
