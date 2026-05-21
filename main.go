@@ -175,20 +175,42 @@ func run() int {
 	logger := setupLogger(cfg.logLevel, cfg.logFormat)
 	registry := newBaseRegistry(cfg.namespace)
 	clientMetrics := collector.NewClientMetrics(registry, cfg.namespace)
+	mcpMetrics := collector.NewMCPMetrics(registry, cfg.namespace)
 	apiClient := hyperping.NewClient(cfg.apiKey, hyperping.WithMaxRetries(2), hyperping.WithMetrics(clientMetrics))
 
-	// Initialize MCP client for advanced metrics
+	// Initialize MCP client for advanced metrics. The raw SDK transport is
+	// wrapped in an ObservedTransport so handshake/recovery/rate-limit events
+	// flow into hyperping_mcp_* counters; see issue #60 for context.
 	mcpTransport, err := hyperping.NewMcpTransport(cfg.apiKey, cfg.mcpURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: initialize MCP transport: %v\n", err)
 		return 1
 	}
-	mcpClient := hyperping.NewMCPClient(mcpTransport)
+	observedTransport := collector.NewObservedTransport(mcpTransport, mcpMetrics)
+	// Eagerly initialize the MCP session at startup so:
+	//   1) MCP connectivity issues surface at boot (not mid-first-scrape).
+	//   2) The handshake goes through ObservedTransport.Initialize so
+	//      hyperping_mcp_initialize_total counts it. The SDK's lazy init
+	//      inside CallTool calls its own *McpTransport.Initialize directly,
+	//      bypassing the decorator — pre-initializing here is the only way
+	//      to observe the handshake from outside the SDK. Transparent
+	//      session-loss recoveries remain invisible (SDK-private).
+	// On error, log and continue; the SDK will lazy-retry on first tool call.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if _, initErr := observedTransport.Initialize(initCtx); initErr != nil {
+		logger.Warn("eager MCP initialize failed; SDK will lazy-retry on first tool call", "error", initErr)
+	}
+	initCancel()
+	mcpClient := hyperping.NewMCPClient(observedTransport)
 
 	if cfg.excludeNameRx != nil {
 		logger.Info("monitor exclusion filter active", "pattern", cfg.excludeNamePattern)
 	}
-	c := collector.NewCollector(apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace, collector.WithExcludePattern(cfg.excludeNameRx))
+	c := collector.NewCollector(
+		apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
+		collector.WithExcludePattern(cfg.excludeNameRx),
+		collector.WithMCPMetrics(mcpMetrics),
+	)
 	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)
 	if err != nil {
