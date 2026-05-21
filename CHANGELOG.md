@@ -4,23 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP rate-limit failure class (#60).** Bumped `github.com/develeap/hyperping-go` from `v0.4.0` to `v0.5.0`, which captures `Mcp-Session-Id` from the `initialize` response and echoes it on every subsequent JSON-RPC request per the MCP 2025-03-26 Streamable HTTP spec. The previous SDK sent sessionless `tools/call` requests, which Hyperping's server bucketed against the `initialize` rate limit and rejected with WARN-logged `-32000` errors on every refresh against any tenant with more than a handful of monitors. v0.5.0 also adds one-shot session-loss recovery (single re-`initialize` + retry under the existing init mutex) and exports an `ErrSessionLost` sentinel for callers to match via `errors.Is`.
+- **Nil dereference in `fetchMcpData`.** Latent bug surfaced by the new regression test: when the high-level `MCPClient.ListRecentAlerts` returned `(nil, nil)` (legitimate "empty content" response shape from upstream), the exporter unconditionally dereferenced `alerts.Total` and would have crashed the scrape. Added a nil guard that retains the previous cached `totalAlerts` value.
+
 ### Added
 
 - **MCP observability counters** under the `hyperping_mcp_*` subsystem:
-  - `hyperping_mcp_initialize_total` — number of successful MCP `initialize` handshakes. Steady state is `1` per process lifetime; values >>1 indicate the SDK is re-handshaking on every tool call (issue #60).
-  - `hyperping_mcp_session_refresh_total` — number of times the MCP transport detected a lost session and re-initialized. Steady state is `0`.
-  - `hyperping_mcp_call_rate_limited_total{method}` — number of MCP tool calls rejected with a rate-limit error. Steady state is `0`; non-zero indicates the sessionless-request bug from issue #60 is still active (upstream SDK does not yet propagate `Mcp-Session-Id`).
-  - `hyperping_mcp_partial_refresh_total` — number of cache refreshes where one or more per-monitor MCP fetches failed and the cached values were retained as graceful degradation.
+  - `hyperping_mcp_initialize_total` — counts handshakes observed through `ObservedTransport`. main.go now eagerly initializes the MCP session at process startup, so steady state is `1`. Transparent in-SDK session-loss recoveries are NOT counted here (the SDK calls its own `Initialize` receiver method directly, bypassing the `MCPTransport` interface). `0` means the eager init failed and the SDK is doing lazy init on first tool call.
+  - `hyperping_mcp_session_lost_total` — counts tool calls that returned `hyperping.ErrSessionLost` after the SDK's one-shot recovery (re-`initialize` + retry) failed. Steady state is `0`. Non-zero indicates two consecutive session expirations on the same call or the server rejecting newly-issued session ids.
+  - `hyperping_mcp_call_rate_limited_total{method}` — counts tool calls rejected with a rate-limit error. Steady state is `0`; non-zero indicates either a tool-call budget burst or (regression) a return of the sessionless-request bug from #60.
+  - `hyperping_mcp_partial_refresh_total` — counts cache refreshes where one or more per-monitor MCP fetches failed and the cached values were retained as graceful degradation.
 - New `collector.ObservedTransport` wraps the raw `hyperping.MCPTransport` and feeds the counters. Wired into `main.go`; `MCPMetrics` is also threaded into `NewCollector` via the new `WithMCPMetrics` option for partial-refresh accounting.
-- `internal/collector/mcp_session_test.go` — fakes Hyperping's session-id behavior with `httptest.NewServer` and locks the eventual contract (exactly one `initialize` per process; every `tools/call` carries the session header). Skipped until `go.mod` bumps to a hyperping-go release that propagates `Mcp-Session-Id`; un-skip is a one-line delete on that bump.
+- Eager MCP `Initialize` at process startup (`main.go`). Surfaces MCP connectivity errors at boot rather than mid-first-scrape, and is the only point at which the wrapper's `Initialize` method is invoked through the `MCPTransport` interface (the SDK's lazy-init path bypasses the interface).
+- `internal/collector/mcp_session_test.go` — fakes Hyperping's session-id behavior with `httptest.NewServer` and locks the contract end-to-end (exactly one `initialize` per process; every `tools/call` carries the session header).
 
 ### Changed
 
 - `cache refreshed` log line gains an `mcp_partial=<bool>` field. The pre-existing `mcp_metrics=<bool>` field reflects only the top-level fetchMcpData outcome (it never returned an error in practice); `mcp_partial` is the load-bearing signal for "we kept stale cached MCP values for one or more monitors this refresh".
-
-### Notes
-
-- With chart 1.5.1 deployments currently in production, `hyperping_mcp_call_rate_limited_total` will tick up on every refresh until the upstream hyperping-go session-id fix ships and the exporter bumps to the fixed SDK release. The counter ticking up *is* the issue #60 signal; once the bump lands it falls to zero.
 
 ## [1.5.1] - 2026-05-13 [Chart only, binary unchanged]
 

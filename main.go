@@ -187,6 +187,20 @@ func run() int {
 		return 1
 	}
 	observedTransport := collector.NewObservedTransport(mcpTransport, mcpMetrics)
+	// Eagerly initialize the MCP session at startup so:
+	//   1) MCP connectivity issues surface at boot (not mid-first-scrape).
+	//   2) The handshake goes through ObservedTransport.Initialize so
+	//      hyperping_mcp_initialize_total counts it. The SDK's lazy init
+	//      inside CallTool calls its own *McpTransport.Initialize directly,
+	//      bypassing the decorator — pre-initializing here is the only way
+	//      to observe the handshake from outside the SDK. Transparent
+	//      session-loss recoveries remain invisible (SDK-private).
+	// On error, log and continue; the SDK will lazy-retry on first tool call.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if _, initErr := observedTransport.Initialize(initCtx); initErr != nil {
+		logger.Warn("eager MCP initialize failed; SDK will lazy-retry on first tool call", "error", initErr)
+	}
+	initCancel()
 	mcpClient := hyperping.NewMCPClient(observedTransport)
 
 	if cfg.excludeNameRx != nil {

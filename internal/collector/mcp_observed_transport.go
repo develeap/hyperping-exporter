@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	hyperping "github.com/develeap/hyperping-go"
@@ -54,7 +55,7 @@ func (o *ObservedTransport) CallTool(ctx context.Context, toolName string, args 
 			o.metrics.CallRateLimited.WithLabelValues(toolName).Inc()
 		}
 		if isSessionLostError(err) {
-			o.metrics.SessionRefreshTotal.Inc()
+			o.metrics.SessionLostTotal.Inc()
 		}
 	}
 	return result, err
@@ -79,15 +80,15 @@ func isRateLimitError(err error) bool {
 		strings.Contains(msg, "reuse your existing MCP session")
 }
 
-// isSessionLostError matches the sentinel that hyperping-go v0.5.0+ will
-// return when the server drops our session (see the upstream PR linked from
-// issue #60). Until v0.5.0 ships, no error matches this and the counter
-// stays at 0. When the SDK exports ErrSessionLost, this function can switch
-// to errors.Is(err, hyperping.ErrSessionLost) — substring is a transitional
-// shim.
+// isSessionLostError matches the sentinel that hyperping-go v0.5.0+ returns
+// when the SDK's one-shot session-loss recovery exhausts and bubbles the
+// error to the caller. Successful transparent recoveries are NOT visible at
+// this layer (the SDK re-inits internally and returns success); they show
+// up only as a bump in mcp_initialize_total. A non-zero count here means
+// the SDK gave up after its single re-initialize attempt.
 func isSessionLostError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "MCP session lost")
+	return errors.Is(err, hyperping.ErrSessionLost)
 }

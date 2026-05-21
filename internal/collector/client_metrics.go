@@ -73,19 +73,23 @@ func (m *prometheusClientMetrics) RecordCircuitBreakerState(_ context.Context, s
 // rate-limit / session-id failure class described in
 // https://github.com/develeap/hyperping-exporter/issues/60.
 //
-// In a healthy steady state with a fixed hyperping-go SDK (v0.5.0+ — see
-// issue #60 for the upstream fix):
-//   - InitializeTotal == 1 over the process lifetime
-//   - SessionRefreshTotal == 0
+// With hyperping-go v0.5.0+ (which propagates Mcp-Session-Id and performs
+// one-shot session-loss recovery transparently), a healthy steady state is:
+//   - InitializeTotal == 1 (set at startup by main.go's eager Initialize
+//     through ObservedTransport; see CounterOpts.Help below for why
+//     in-process transparent recoveries do not bump this counter)
+//   - SessionLostTotal == 0
 //   - CallRateLimited{*} == 0
-//   - PartialRefreshTotal == 0 (modulo legitimate per-monitor MCP outages)
+//   - PartialRefreshTotal == 0 modulo legitimate per-monitor MCP outages
 //
-// Until the upstream SDK fix lands, CallRateLimited{*} is expected to tick up
-// on every refresh: it is the load-bearing diagnostic that the production
-// rate-limit error in #60 is the same class of bug as anticipated.
+// SessionLostTotal counts ONLY cases where the SDK's one-shot recovery
+// exhausted and the error bubbled to the caller. Transparent recoveries
+// (success on first retry after re-init) are invisible at this layer
+// because the SDK's lazy init bypasses the MCPTransport interface (calls
+// its own receiver method directly).
 type MCPMetrics struct {
 	InitializeTotal     prometheus.Counter
-	SessionRefreshTotal prometheus.Counter
+	SessionLostTotal    prometheus.Counter
 	CallRateLimited     *prometheus.CounterVec
 	PartialRefreshTotal prometheus.Counter
 }
@@ -99,27 +103,27 @@ func NewMCPMetrics(registry *prometheus.Registry, namespace string) *MCPMetrics 
 			Namespace: namespace,
 			Subsystem: "mcp",
 			Name:      "initialize_total",
-			Help:      "Number of successful MCP `initialize` handshakes. Steady state is 1 per process lifetime; values >>1 indicate the SDK is re-handshaking on every tool call (issue #60).",
+			Help:      "Number of MCP `initialize` handshakes observed through the ObservedTransport. main.go eagerly initializes once at process start, so this is `1` in steady state. Transparent session-loss recoveries inside the SDK bypass the MCPTransport interface and are NOT counted here — they appear only via SessionLostTotal (if recovery exhausts) or CallRateLimited (if a regression sends sessionless requests). A value of 0 means the eager init failed and the SDK is doing a lazy init on first tool call instead.",
 		}),
-		SessionRefreshTotal: prometheus.NewCounter(prometheus.CounterOpts{
+		SessionLostTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: "mcp",
-			Name:      "session_refresh_total",
-			Help:      "Number of times the MCP transport detected a lost session and re-initialized. Steady state is 0; rare events indicate server-side session expiry or restart.",
+			Name:      "session_lost_total",
+			Help:      "Number of MCP tool calls that returned ErrSessionLost after the SDK's one-shot recovery (re-initialize + retry) failed. Steady state is 0. Non-zero values mean two consecutive session expirations on the same call OR the server is rejecting newly-issued session ids. Transparent successful recoveries are NOT counted here (see InitializeTotal).",
 		}),
 		CallRateLimited: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: "mcp",
 			Name:      "call_rate_limited_total",
-			Help:      "Number of MCP tool calls rejected by the server with a rate-limit error. Steady state is 0; values >0 indicate the sessionless-request bug from issue #60 is still active (upstream SDK does not yet propagate Mcp-Session-Id).",
+			Help:      "Number of MCP tool calls rejected by the server with a rate-limit error. Steady state is 0. Non-zero indicates either the Hyperping account has burst above its tool-call budget, or (regression) the SDK is sending sessionless requests again (issue #60).",
 		}, []string{"method"}),
 		PartialRefreshTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: "mcp",
 			Name:      "partial_refresh_total",
-			Help:      "Number of cache refreshes where one or more per-monitor MCP fetches failed and the cached values were retained as graceful degradation. A non-zero rate indicates intermittent MCP-side errors not captured by InitializeTotal/SessionRefreshTotal/CallRateLimited.",
+			Help:      "Number of cache refreshes where one or more per-monitor MCP fetches failed and the cached values were retained as graceful degradation. A non-zero rate indicates intermittent MCP-side errors not captured by InitializeTotal/SessionLostTotal/CallRateLimited.",
 		}),
 	}
-	registry.MustRegister(m.InitializeTotal, m.SessionRefreshTotal, m.CallRateLimited, m.PartialRefreshTotal)
+	registry.MustRegister(m.InitializeTotal, m.SessionLostTotal, m.CallRateLimited, m.PartialRefreshTotal)
 	return m
 }

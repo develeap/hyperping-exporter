@@ -449,6 +449,12 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 			c.logger.Warn("failed to fetch recent alerts from MCP", "error", err)
 			return
 		}
+		// hyperping-go returns (nil, nil) when the MCP server responds with
+		// an empty content array (a legitimate "no alerts" shape). Retain
+		// the previous cached totalAlerts in that case rather than zeroing.
+		if alerts == nil {
+			return
+		}
 		mu.Lock()
 		res.totalAlerts = alerts.Total
 		mu.Unlock()

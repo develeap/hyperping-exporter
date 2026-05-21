@@ -20,14 +20,14 @@ import (
 	hyperping "github.com/develeap/hyperping-go"
 )
 
-// TestMCPSessionPropagation locks the contract from issue #60: the MCP
-// transport must capture Mcp-Session-Id from the initialize response and
-// echo it on every subsequent tools/call. A fake MCP server enforces
-// session ownership exactly the way Hyperping production does: sessionless
-// tools/call requests get JSON-RPC -32000 ("rate limit exceeded for
-// initialize"); sessioned requests succeed.
+// TestMCPSessionPropagation locks the contract from issue #60: hyperping-go
+// (v0.5.0+) captures Mcp-Session-Id from the initialize response and echoes
+// it on every subsequent tools/call. A fake MCP server enforces session
+// ownership the way Hyperping production does: sessionless tools/call
+// requests get JSON-RPC -32000 (the rate-limit-on-initialize error string);
+// sessioned requests succeed.
 //
-// The test runs the real exporter wiring (hyperping.NewMcpTransport ->
+// Runs the real exporter wiring (hyperping.NewMcpTransport ->
 // ObservedTransport -> MCPClient -> Collector.fetchMcpData) against 50
 // mock monitors and asserts:
 //   - the server observed exactly 1 "initialize" JSON-RPC method;
@@ -35,15 +35,9 @@ import (
 //   - the ObservedTransport counters match: initialize_total == 1,
 //     call_rate_limited_total{*} == 0.
 //
-// The test is SKIPPED until hyperping-go ships the session-id fix
-// (tracked at develeap/hyperping-go#TBD, will be referenced from this
-// repo's issue #60 once the upstream PR opens). Un-skip by deleting the
-// t.Skip line below as soon as go.mod requires hyperping-go v0.5.0+.
+// If a future SDK bump regresses session-id propagation, this test goes red
+// on a clean checkout — no production deploy needed to detect the regression.
 func TestMCPSessionPropagation(t *testing.T) {
-	t.Skip("blocked on develeap/hyperping-go session-id propagation fix " +
-		"(see develeap/hyperping-exporter#60); un-skip after bumping " +
-		"go.mod to hyperping-go v0.5.0+")
-
 	const sessionID = "test-sess-abc"
 	var (
 		initializeCount   atomic.Int64
@@ -130,6 +124,13 @@ func TestMCPSessionPropagation(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	mcpMetrics := NewMCPMetrics(reg, "hyperping")
 	observed := NewObservedTransport(rawTransport, mcpMetrics)
+	// Eager init through the wrapper, mirroring what main.go does at process
+	// startup. The SDK's lazy init bypasses the MCPTransport interface
+	// (calls its own receiver method directly), so without this explicit
+	// call the wrapper's InitializeTotal counter would stay at 0 even when
+	// the SDK successfully handshakes.
+	_, err = observed.Initialize(context.Background())
+	require.NoError(t, err)
 	mcpClient := hyperping.NewMCPClient(observed)
 
 	// 50 mock monitors. We don't need real API data; only the MCP path is
