@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,6 +27,16 @@ type CollectorOption func(*Collector)
 func WithExcludePattern(rx *regexp.Regexp) CollectorOption {
 	return func(c *Collector) {
 		c.excludePattern = rx
+	}
+}
+
+// WithMCPMetrics enables MCP observability counters (initialize, session
+// refresh, rate-limit, partial refresh). The same MCPMetrics value should be
+// supplied to NewObservedTransport so transport-layer and refresh-layer
+// counters share one registration.
+func WithMCPMetrics(m *MCPMetrics) CollectorOption {
+	return func(c *Collector) {
+		c.mcpMetrics = m
 	}
 }
 
@@ -211,6 +222,7 @@ type collectorSnapshot struct {
 type Collector struct {
 	api            HyperpingAPI
 	mcp            *hyperping.MCPClient
+	mcpMetrics     *MCPMetrics // optional; nil-safe
 	cacheTTL       time.Duration
 	logger         *slog.Logger
 	excludePattern *regexp.Regexp
@@ -377,6 +389,11 @@ type mcpData struct {
 	anomalyCount map[string]int
 	anomalyScore map[string]float64
 	totalAlerts  int
+	// partial is true when at least one per-monitor MCP fetch failed and a
+	// stale cached value was retained in place of a fresh one. Surfaced
+	// via the mcp_partial=true field in the cache-refreshed log line and
+	// via the hyperping_mcp_partial_refresh_total counter.
+	partial bool
 }
 
 // fetchMcpData fetches advanced metrics from the MCP server in parallel.
@@ -412,6 +429,13 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	// failures counts the number of per-call MCP errors observed across this
+	// refresh (global alerts fetch + per-monitor response-time / mtta /
+	// anomalies). A non-zero value at the end of the refresh means we served
+	// at least one stale-cached MCP value instead of a fresh one, which
+	// increments mcp_partial_refresh_total. Context-cancellation aborts are
+	// not counted; the refresh is being abandoned, not partial.
+	var failures atomic.Int64
 
 	// 1. Fetch global alert history
 	wg.Add(1)
@@ -419,6 +443,9 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 		defer wg.Done()
 		alerts, err := c.mcp.ListRecentAlerts(ctx)
 		if err != nil {
+			if ctx.Err() == nil {
+				failures.Add(1)
+			}
 			c.logger.Warn("failed to fetch recent alerts from MCP", "error", err)
 			return
 		}
@@ -476,6 +503,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						} else if ctx.Err() != nil {
 							return
 						} else if err != nil {
+							failures.Add(1)
 							c.logger.Debug("failed to fetch response time", "uuid", uuid, "error", err)
 						}
 					}
@@ -492,6 +520,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						} else if ctx.Err() != nil {
 							return
 						} else if err != nil {
+							failures.Add(1)
 							c.logger.Debug("failed to fetch mtta", "uuid", uuid, "error", err)
 						}
 					}
@@ -515,6 +544,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 						} else if ctx.Err() != nil {
 							return
 						} else {
+							failures.Add(1)
 							c.logger.Debug("failed to fetch anomalies", "uuid", uuid, "error", err)
 						}
 					}
@@ -524,6 +554,17 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 	}
 
 	wg.Wait()
+
+	// Surface "we kept stale cached values for at least one MCP call" both
+	// as a flag on the returned struct (for the log line) and as a counter
+	// increment (for /metrics). Reading failures after wg.Wait is safe; the
+	// writers have synchronized through the WaitGroup.
+	if failures.Load() > 0 {
+		res.partial = true
+		if c.mcpMetrics != nil {
+			c.mcpMetrics.PartialRefreshTotal.Inc()
+		}
+	}
 	return res, nil
 }
 
@@ -626,6 +667,10 @@ func (c *Collector) Refresh(ctx context.Context) {
 	c.everSucceeded = true
 	c.lastSuccessTime = time.Now()
 
+	// mcp_metrics is true when the top-level fetchMcpData call succeeded
+	// (no fatal error); mcp_partial is true when fetchMcpData succeeded
+	// but at least one per-monitor call retained its stale cached value.
+	// The latter is also surfaced as hyperping_mcp_partial_refresh_total.
 	c.logger.Info("cache refreshed",
 		"monitors", len(core.monitors),
 		"healthchecks", len(core.healthchecks),
@@ -633,6 +678,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 		"maintenance_windows", len(c.maintenanceWindows),
 		"incidents", len(c.incidents),
 		"mcp_metrics", mcpErr == nil,
+		"mcp_partial", mcp.partial,
 		"duration", dur,
 	)
 }

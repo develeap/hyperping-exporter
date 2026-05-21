@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP observability counters** under the `hyperping_mcp_*` subsystem:
+  - `hyperping_mcp_initialize_total` — number of successful MCP `initialize` handshakes. Steady state is `1` per process lifetime; values >>1 indicate the SDK is re-handshaking on every tool call (issue #60).
+  - `hyperping_mcp_session_refresh_total` — number of times the MCP transport detected a lost session and re-initialized. Steady state is `0`.
+  - `hyperping_mcp_call_rate_limited_total{method}` — number of MCP tool calls rejected with a rate-limit error. Steady state is `0`; non-zero indicates the sessionless-request bug from issue #60 is still active (upstream SDK does not yet propagate `Mcp-Session-Id`).
+  - `hyperping_mcp_partial_refresh_total` — number of cache refreshes where one or more per-monitor MCP fetches failed and the cached values were retained as graceful degradation.
+- New `collector.ObservedTransport` wraps the raw `hyperping.MCPTransport` and feeds the counters. Wired into `main.go`; `MCPMetrics` is also threaded into `NewCollector` via the new `WithMCPMetrics` option for partial-refresh accounting.
+- `internal/collector/mcp_session_test.go` — fakes Hyperping's session-id behavior with `httptest.NewServer` and locks the eventual contract (exactly one `initialize` per process; every `tools/call` carries the session header). Skipped until `go.mod` bumps to a hyperping-go release that propagates `Mcp-Session-Id`; un-skip is a one-line delete on that bump.
+
+### Changed
+
+- `cache refreshed` log line gains an `mcp_partial=<bool>` field. The pre-existing `mcp_metrics=<bool>` field reflects only the top-level fetchMcpData outcome (it never returned an error in practice); `mcp_partial` is the load-bearing signal for "we kept stale cached MCP values for one or more monitors this refresh".
+
+### Notes
+
+- With chart 1.5.1 deployments currently in production, `hyperping_mcp_call_rate_limited_total` will tick up on every refresh until the upstream hyperping-go session-id fix ships and the exporter bumps to the fixed SDK release. The counter ticking up *is* the issue #60 signal; once the bump lands it falls to zero.
+
 ## [1.5.1] - 2026-05-13 [Chart only, binary unchanged]
 
 ### Fixed
