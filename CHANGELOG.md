@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-05-21 [Chart bump to ship binary 1.4.2]
+
+### Changed
+
+- `Chart.yaml` `version` `1.5.1` -> `1.5.2`; `appVersion` `"1.4.1"` -> `"1.4.2"`. The new image (`khaledsalhabdeveleap/hyperping-exporter:1.4.2`) is what carries the MCP session-id fix; deploying chart 1.5.2 is the path operators take to clear the WARN logs from issue #60.
+
+### Upgrade notes
+
+- **Pull in chart 1.5.2 to fix the MCP rate-limit WARN class.** Chart 1.5.0/1.5.1 ships image `1.4.1`, which was built against `hyperping-go v0.4.0` and sends sessionless `tools/call` requests. Hyperping's server rejects them with `-32000` rate-limit-on-initialize errors and the exporter emits one WARN per refresh. Bump to chart 1.5.2 (image `1.4.2`) and the counters `hyperping_mcp_call_rate_limited_total{*}` flatline at 0 without any values.yaml change.
+
+## [1.4.2] - 2026-05-21 [Binary release]
+
 ### Fixed
 
 - **MCP rate-limit failure class (#60).** Bumped `github.com/develeap/hyperping-go` from `v0.4.0` to `v0.5.0`, which captures `Mcp-Session-Id` from the `initialize` response and echoes it on every subsequent JSON-RPC request per the MCP 2025-03-26 Streamable HTTP spec. The previous SDK sent sessionless `tools/call` requests, which Hyperping's server bucketed against the `initialize` rate limit and rejected with WARN-logged `-32000` errors on every refresh against any tenant with more than a handful of monitors. v0.5.0 also adds one-shot session-loss recovery (single re-`initialize` + retry under the existing init mutex) and exports an `ErrSessionLost` sentinel for callers to match via `errors.Is`.

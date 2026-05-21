@@ -216,10 +216,12 @@ BASELINE_ARGS = [
 # default must resolve on Docker Hub, and `appVersion` must match a tag
 # that actually understands the flags this chart now renders
 # (`--mcp-url` since v1.2.0, `--exclude-name-pattern` since v1.3.0).
-# Published binary: khaledsalhabdeveleap/hyperping-exporter:1.4.0.
-EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.1"
-EXPECTED_VERSION = "1.4.1"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.1"
+# Published binary: khaledsalhabdeveleap/hyperping-exporter:1.4.2 (the
+# release that adopts hyperping-go v0.5.0 and fixes the MCP rate-limit
+# class from issue #60; chart 1.5.2 ships this image as its default).
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.4.2"
+EXPECTED_VERSION = "1.4.2"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.2"
 
 
 def main() -> int:
