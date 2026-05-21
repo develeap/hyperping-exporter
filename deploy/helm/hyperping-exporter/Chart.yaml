@@ -2,8 +2,8 @@ apiVersion: v2
 name: hyperping-exporter
 description: Prometheus exporter for the Hyperping monitoring service
 type: application
-version: 1.5.1
-appVersion: "1.4.1"
+version: 1.5.2
+appVersion: "1.4.2"
 keywords:
   - prometheus
   - hyperping
