@@ -1717,3 +1717,200 @@ hyperping_tenant_health_score 100
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_health_score")
 	require.NoError(t, err)
 }
+
+// --- tiered-mode integration tests (chunk 6) ---
+//
+// These tests exercise the Collector's mode-switching dispatch: Start()
+// runs the tiered refresh loop instead of the legacy one when cacheMode
+// is CacheModeTiered, and Collect() emits metrics from the tier snapshots.
+
+func newTieredCollectorForTest(api HyperpingAPI, mcp *hyperping.MCPClient) *Collector {
+	return NewCollector(api, mcp, 60*time.Second, newTestLogger(), "hyperping",
+		WithCacheMode(CacheModeTiered),
+		WithTierTTLs(30*time.Millisecond, 60*time.Millisecond, 120*time.Millisecond),
+	)
+}
+
+func TestCollector_TieredMode_IsReadyAfterHotSucceeds(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	c := newTieredCollectorForTest(api, nil)
+	assert.False(t, c.IsReady(), "before any refresh /readyz must be unready")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.Start(ctx)
+		close(done)
+	}()
+	require.Eventually(t, c.IsReady, time.Second, 5*time.Millisecond, "IsReady must latch after first HOT refresh")
+	cancel()
+	<-done
+}
+
+func TestCollector_TieredMode_DataAgeReflectsHotTier(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	c := newTieredCollectorForTest(api, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.Start(ctx)
+		close(done)
+	}()
+	require.Eventually(t, c.IsReady, time.Second, 5*time.Millisecond)
+	cancel()
+	<-done
+
+	// hyperping_data_age_seconds is emitted iff dataAge > 0 (i.e. the HOT
+	// snapshot has a non-zero refreshedAt).
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "hyperping_data_age_seconds" {
+			found = true
+			require.Len(t, mf.GetMetric(), 1)
+			v := mf.GetMetric()[0].GetGauge().GetValue()
+			assert.Greater(t, v, 0.0, "data_age must be > 0 after HOT refresh")
+		}
+	}
+	assert.True(t, found, "hyperping_data_age_seconds must be present in tiered mode")
+}
+
+func TestCollector_TieredMode_PromMetricsMatchLegacy(t *testing.T) {
+	mkAPI := func() *mockAPI {
+		sslDays := 90
+		return &mockAPI{
+			monitors: []hyperping.Monitor{
+				{UUID: "mon_1", Name: "Web", URL: "https://example.com", Protocol: "http",
+					Status: "up", CheckFrequency: 60, SSLExpiration: &sslDays,
+					ProjectUUID: "proj_1", HTTPMethod: "GET"},
+			},
+			healthchecks: []hyperping.Healthcheck{{UUID: "hc_1", Name: "Job", Period: 300}},
+		}
+	}
+
+	// Legacy: build snapshot via single Refresh()
+	legacy := NewCollector(mkAPI(), nil, 60*time.Second, newTestLogger(), "hyperping")
+	legacy.Refresh(context.Background())
+
+	// Tiered: drive each tier directly.
+	apiT := mkAPI()
+	tieredC := newTieredCollectorForTest(apiT, nil)
+	require.NotNil(t, tieredC.tiered)
+	tieredC.tiered.refreshHot(context.Background())
+	tieredC.tiered.refreshWarm(context.Background())
+	tieredC.tiered.refreshCold(context.Background())
+
+	// Compare a stable subset of metric values that are independent of
+	// data_age (which is time-dependent) and tier labels.
+	gather := func(c *Collector) map[string]float64 {
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(c)
+		mfs, err := reg.Gather()
+		require.NoError(t, err)
+		out := map[string]float64{}
+		for _, mf := range mfs {
+			for _, m := range mf.GetMetric() {
+				if g := m.GetGauge(); g != nil {
+					labels := ""
+					for _, lp := range m.GetLabel() {
+						labels += "|" + lp.GetName() + "=" + lp.GetValue()
+					}
+					out[mf.GetName()+labels] = g.GetValue()
+				}
+			}
+		}
+		return out
+	}
+	want := gather(legacy)
+	got := gather(tieredC)
+
+	// Only compare a handful of representative scalar metrics: monitor
+	// up/paused/checkinterval, monitor in_maintenance, hyperping_monitors,
+	// hyperping_healthchecks, hyperping_tenant_monitors_up_ratio. Full
+	// equality would drift on data_age; the focused subset is enough to
+	// catch a wiring regression (e.g. HOT publishing nothing).
+	for _, k := range []string{
+		"hyperping_monitor_up|name=Web|tenant=|tier=unknown|uuid=mon_1",
+		"hyperping_monitor_paused|name=Web|tenant=|tier=unknown|uuid=mon_1",
+		"hyperping_monitor_check_interval_seconds|name=Web|tenant=|tier=unknown|uuid=mon_1",
+		"hyperping_monitors",
+		"hyperping_healthchecks",
+		"hyperping_tenant_monitors_up_ratio",
+	} {
+		assert.InDelta(t, want[k], got[k], 0.001, "metric %s differs between modes: legacy=%v tiered=%v", k, want[k], got[k])
+	}
+}
+
+func TestCollector_TieredMode_ColdReportsFailureDoesNotZeroSLA(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+		reports: []hyperping.MonitorReport{
+			{UUID: "mon_1", Name: "Web", SLA: 99.7},
+		},
+	}
+	c := newTieredCollectorForTest(api, nil)
+
+	// First COLD run: succeeds, populates snapshot.
+	c.tiered.refreshCold(context.Background())
+	first := c.tiered.cold.Load()
+	require.NotNil(t, first)
+	require.NotEmpty(t, first.report30d)
+
+	// Second COLD run: ALL windows fail.
+	api.reportsErr = errors.New("reports unavailable")
+	c.tiered.refreshCold(context.Background())
+
+	// The pointer must be the SAME identity as the first snapshot (no
+	// store on both-fail).
+	second := c.tiered.cold.Load()
+	assert.Same(t, first, second, "both-fail COLD refresh must retain the previous snapshot pointer")
+}
+
+func TestCollector_TieredMode_ConcurrentScrapeAndRefresh(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	c := newTieredCollectorForTest(api, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Start(ctx)
+	require.Eventually(t, c.IsReady, time.Second, 5*time.Millisecond)
+
+	// Hammer Collect concurrently with the tier refreshes for ~100ms; this
+	// only catches data races under `go test -race`.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_, err := reg.Gather()
+					_ = err
+				}
+			}
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
