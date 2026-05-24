@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Tiered cache mode** behind the new `--cache-mode=tiered` flag. The legacy single-`cacheTTL` ticker is replaced by three independent HOT / WARM / COLD goroutines each owning its own subset of endpoints and atomic snapshot pointer. HOT (60s default) carries monitors, healthchecks, incidents, ongoing outages (via `ListOutages(ctx, hyperping.WithStatus("ongoing"))`), and ongoing maintenance. WARM (5m default) carries the MCP per-monitor metric pool, the 24h SLA report, the full maintenance list, and the global alert count. COLD (15m default) carries the 7d / 30d SLA reports. Per-tier failure isolation: a tier whose refresh aborts before `Store(...)` leaves its previous snapshot pointer untouched; readers stitch three atomic `Load()` calls in `buildCollectorSnapshot`. See `docs/tiered-cache-design.md` for the full design (tier assignments, concurrency model, migration plan). Default remains `--cache-mode=legacy` so existing deployments see no behaviour change.
+- **Helm chart knobs** for tiered mode: `config.cacheMode` ("legacy" / "tiered"; default "legacy"), `config.hotTTL` ("60s"), `config.warmTTL` ("5m"), `config.coldTTL` ("15m"). New chart helpers `validateCacheMode` and `validateTierTTLs` fail() the render with a clear, named-value error on invalid mode or sub-floor TTLs (hot >= 30s, warm >= 60s, cold >= 300s) — same shape as the existing `validateCacheTTL`.
+- **CLI flags**: `--cache-mode`, `--hot-ttl`, `--warm-ttl`, `--cold-ttl`.
+
+### Changed
+
+- **`HyperpingAPI` interface `ListOutages` signature** widened to accept variadic `hyperping.OutageListOption` values so the HOT tier can pass `hyperping.WithStatus("ongoing")` while the legacy `Refresh()` continues to call it with no options. Pinned `github.com/develeap/hyperping-go` to the local `feat/list-status-filter` branch via a `replace` directive in `go.mod`; this is dev-only and removed before the chart release that flips the default to tiered.
+- **`hyperping_data_age_seconds` semantics** under tiered mode track the HOT tier's last successful refresh. HOT is the tier closest to the legacy `cacheTTL` semantics, so dashboards keyed on `hyperping_data_age_seconds` continue to behave intuitively. (Note: no new `tier` label is added to the metric in this release; the design doc's Q5 future work is deferred.)
+
+### Note
+
+- **Cold-start gap in tiered mode**: `hyperping_tenant_health_score` requires the 30d SLA window which is owned by the COLD tier. Until COLD's first tick (default 15 min after pod boot), the metric is absent. Documented per design doc Q3.
+- **`hyperping_mcp_partial_refresh_total` will gain a `tier` label** in a follow-up release once the chart default flips to tiered (planned for 1.6.0). Until then, the counter is emitted without a `tier` label and existing dashboards / alerts keep working. Consumer-side migration of queries in `/home/khaledsa/projects/hyp/hyperping-automation/grafana/` and `recording_rules.yaml` is tracked as BACKLOG item **T2**. This is intentionally NOT done in this release.
+
+### Migration
+
+- **Phase 1 (this release)**: ships behind a flag, default `legacy`. No existing deployment changes behaviour.
+- **Phase 2 (separate change)**: operators opt in per-environment via `--cache-mode=tiered` / `config.cacheMode: tiered`.
+- **Phase 3 (chart 1.6.0)**: flip default to tiered, drop the `go.mod` replace directive, add the `tier` label to `partial_refresh_total`, do the consumer-side query migration.
+- **Phase 4 (later)**: remove the legacy `Refresh()`. Out of scope.
+
 ## [1.5.2] - 2026-05-21 [Chart bump to ship binary 1.4.2]
 
 ### Changed
