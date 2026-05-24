@@ -8,8 +8,8 @@ github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ3
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/develeap/hyperping-go v0.5.1-0.20260524091922-d500fc039324 h1:gFjexRjB+K/t1oud3LniO7bcAdinbQUlX8RBqb3QXCQ=
-github.com/develeap/hyperping-go v0.5.1-0.20260524091922-d500fc039324/go.mod h1:LReXmCFW1WF/KKJ6Qa+uJe8HgyihFMd4fEDYGQ0wPII=
+github.com/develeap/hyperping-go v0.6.0 h1:18hGv9tad9fSiYmwSK6y09hxR4nTl2zvpdN5TS12mBc=
+github.com/develeap/hyperping-go v0.6.0/go.mod h1:LReXmCFW1WF/KKJ6Qa+uJe8HgyihFMd4fEDYGQ0wPII=
 github.com/golang-jwt/jwt/v5 v5.3.0 h1:pv4AsKCKKZuqlgs5sUmn4x8UlGa0kEVt/puTpKx9vvo=
 github.com/golang-jwt/jwt/v5 v5.3.0/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

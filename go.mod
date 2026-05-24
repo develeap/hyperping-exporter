@@ -3,10 +3,7 @@ module github.com/develeap/hyperping-exporter
 go 1.26.2
 
 require (
-	// Pinned to feat/list-status-filter (hyperping-go PR #27) for the
-	// `hyperping.WithStatus("ongoing")` option used by the HOT tier. Swap
-	// to the next tagged release of hyperping-go once that PR lands.
-	github.com/develeap/hyperping-go v0.5.1-0.20260524091922-d500fc039324
+	github.com/develeap/hyperping-go v0.6.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/exporter-toolkit v0.16.0
