@@ -62,3 +62,11 @@ Issues identified during code review and PR #6 (`fix/code-review-issues`) review
 - [x] **F4** `sanitizeURL` fallback strips query params via `strings.IndexAny("?#")` when `url.Parse()` fails
 - [x] **F5** `deploy/k8s/secret.yaml.example` recommends `kubectl create secret --from-literal` over `kubectl apply`
 - [x] **F6** `IsReady()` latch behavior documented in code comment; `HyperpingDataStale` alert covers permanent API key rotation
+
+---
+
+## Tiered cache refactor (in flight)
+
+- [ ] **T1** Tiered cache refactor design and implementation. See [`docs/tiered-cache-design.md`](docs/tiered-cache-design.md) for the full design (tier assignments, file map, test plan, migration plan).
+- [ ] **T2** Consumer-side migration for the new `tier` label on `hyperping_mcp_partial_refresh_total`. Update the queries in `/home/khaledsa/projects/hyp/hyperping-automation/grafana/` and `recording_rules.yaml` to add the `tier` label to any `partial_refresh_total` queries. To be done **after** the exporter chart 1.6.0 release flips the default `config.cacheMode` to `tiered`; before that flip, the metric is emitted without the `tier` label and existing queries keep working.
+- [ ] **T3** Remove the `replace github.com/develeap/hyperping-go => ../hyperping-go` directive from `go.mod` once an upstream tag of hyperping-go ships `WithStatus`. Replace with a pinned `require` line in a follow-up commit before merge.
