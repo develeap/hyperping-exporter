@@ -12,8 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **`HyperpingAPI` interface `ListOutages` signature** widened to accept variadic `hyperping.OutageListOption` values so the HOT tier can pass `hyperping.WithStatus("ongoing")` while the legacy `Refresh()` continues to call it with no options. Pinned `github.com/develeap/hyperping-go` to the local `feat/list-status-filter` branch via a `replace` directive in `go.mod`; this is dev-only and removed before the chart release that flips the default to tiered.
-- **`hyperping_data_age_seconds` semantics** under tiered mode track the HOT tier's last successful refresh. HOT is the tier closest to the legacy `cacheTTL` semantics, so dashboards keyed on `hyperping_data_age_seconds` continue to behave intuitively. (Note: no new `tier` label is added to the metric in this release; the design doc's Q5 future work is deferred.)
+- **`HyperpingAPI` interface `ListOutages` signature** widened to accept variadic `hyperping.OutageListOption` values so the HOT tier can pass `hyperping.WithStatus("ongoing")` while the legacy `Refresh()` continues to call it with no options. `github.com/develeap/hyperping-go` is pinned via a Go pseudo-version (`v0.5.1-0.20260524091922-d500fc039324`) to the `feat/list-status-filter` branch commit; swap to the tagged release once that PR lands.
+- **`hyperping_data_age_seconds` now carries a `tier` label.** Legacy mode emits a single series with `tier="hot"` (matches the prior single-ticker semantics most closely). Tiered mode emits up to three series, one per populated tier. PromQL like `hyperping_data_age_seconds > 300` continues to fire when any tier stalls; PromQL that previously matched the unlabelled series will need an explicit tier selector (e.g. `hyperping_data_age_seconds{tier="hot"}` or `max(hyperping_data_age_seconds)`).
 
 ### Note
 

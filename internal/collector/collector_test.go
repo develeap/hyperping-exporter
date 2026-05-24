@@ -17,6 +17,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1926,22 +1927,69 @@ func TestCollector_TieredMode_DataAgeReflectsHotTier(t *testing.T) {
 	cancel()
 	<-done
 
-	// hyperping_data_age_seconds is emitted iff dataAge > 0 (i.e. the HOT
-	// snapshot has a non-zero refreshedAt).
+	// hyperping_data_age_seconds is emitted once per tier that has succeeded
+	// at least once. Right after readiness only HOT is guaranteed; WARM/COLD
+	// may or may not have completed their first tick depending on scheduler
+	// timing in test environments, so this assertion checks HOT specifically
+	// and tolerates the other two as best-effort.
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
 	found := false
+	tiers := map[string]float64{}
 	for _, mf := range mfs {
 		if mf.GetName() == "hyperping_data_age_seconds" {
 			found = true
-			require.Len(t, mf.GetMetric(), 1)
-			v := mf.GetMetric()[0].GetGauge().GetValue()
-			assert.Greater(t, v, 0.0, "data_age must be > 0 after HOT refresh")
+			for _, m := range mf.GetMetric() {
+				var tier string
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "tier" {
+						tier = lp.GetValue()
+					}
+				}
+				require.NotEmpty(t, tier, "every data_age series must carry a tier label")
+				tiers[tier] = m.GetGauge().GetValue()
+			}
 		}
 	}
 	assert.True(t, found, "hyperping_data_age_seconds must be present in tiered mode")
+	require.Contains(t, tiers, "hot", "HOT tier data_age must be present after IsReady")
+	assert.Greater(t, tiers["hot"], 0.0, "HOT data_age must be > 0 after first refresh")
+}
+
+// TestCollector_DataAgeTierLabel_LegacyEmitsHotOnly verifies legacy mode
+// still produces a single data_age series, now carrying tier="hot" to match
+// the new tiered-mode semantics. Existing PromQL like
+// `hyperping_data_age_seconds > 300` continues to fire when the legacy
+// refresh stalls, just on a labelled series.
+func TestCollector_DataAgeTierLabel_LegacyEmitsHotOnly(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{{UUID: "hc_1", Name: "Job"}},
+	}
+	c := NewCollector(api, nil, time.Minute, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	var series []*dto.Metric
+	for _, mf := range mfs {
+		if mf.GetName() == "hyperping_data_age_seconds" {
+			series = mf.GetMetric()
+		}
+	}
+	require.Len(t, series, 1, "legacy mode must emit exactly one data_age series")
+	var tier string
+	for _, lp := range series[0].GetLabel() {
+		if lp.GetName() == "tier" {
+			tier = lp.GetValue()
+		}
+	}
+	assert.Equal(t, "hot", tier, `legacy mode labels its single series tier="hot"`)
 }
 
 func TestCollector_TieredMode_PromMetricsMatchLegacy(t *testing.T) {

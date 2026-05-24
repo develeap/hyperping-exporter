@@ -68,7 +68,7 @@ func TestTieredRefresher_BuildCollectorSnapshot_AllNilTiers(t *testing.T) {
 	assert.Equal(t, 0, snap.excludedCount)
 	assert.False(t, snap.scrapeOK)
 	assert.True(t, snap.lastSuccessTime.IsZero())
-	assert.Equal(t, 0.0, snap.dataAge)
+	assert.Empty(t, snap.dataAges, "no tier has refreshed, no data_age entries")
 }
 
 func TestTieredRefresher_BuildCollectorSnapshot_OnlyHotPopulated(t *testing.T) {
@@ -112,7 +112,9 @@ func TestTieredRefresher_BuildCollectorSnapshot_OnlyHotPopulated(t *testing.T) {
 	assert.Equal(t, 2, snap.excludedCount)
 	assert.True(t, snap.scrapeOK)
 	assert.Equal(t, hotTime.Unix(), snap.lastSuccessTime.Unix())
-	assert.Greater(t, snap.dataAge, 0.0)
+	assert.Greater(t, snap.dataAges["hot"], 0.0)
+	assert.NotContains(t, snap.dataAges, "warm", "WARM not loaded, no series")
+	assert.NotContains(t, snap.dataAges, "cold", "COLD not loaded, no series")
 	assert.Equal(t, 50*time.Millisecond, snap.scrapeDur)
 	// WARM/COLD blank: no reports, no MCP metrics.
 	assert.Empty(t, snap.reports)
@@ -172,6 +174,16 @@ func TestTieredRefresher_BuildCollectorSnapshot_AllPopulated(t *testing.T) {
 	assert.Len(t, snap.reports["7d"], 1)
 	assert.Len(t, snap.reports["30d"], 1)
 	assert.Equal(t, 99.9, snap.reports["30d"][0].SLA)
+
+	// Per-tier data_age: every tier with a non-zero refreshedAt contributes
+	// one entry. The cold tier was set 10 min ago in this fixture, the warm
+	// 2 min, the hot 15s; values are not asserted exactly (clock drift) but
+	// the relative ordering is.
+	require.Contains(t, snap.dataAges, "hot")
+	require.Contains(t, snap.dataAges, "warm")
+	require.Contains(t, snap.dataAges, "cold")
+	assert.Greater(t, snap.dataAges["cold"], snap.dataAges["warm"], "cold tier is older than warm")
+	assert.Greater(t, snap.dataAges["warm"], snap.dataAges["hot"], "warm tier is older than hot")
 }
 
 // --- endpoint-isolation tests (chunk 2) ---

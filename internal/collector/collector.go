@@ -163,7 +163,7 @@ func newCollectorDescs(ns string) collectorDescs {
 		healthchecksTotal:         prometheus.NewDesc(fqn(ns, "", "healthchecks"), "Total number of healthchecks.", nil, nil),
 		scrapeDurationDesc:        prometheus.NewDesc(fqn(ns, "scrape", "duration_seconds"), "Duration of the last API scrape in seconds.", nil, nil),
 		scrapeSuccessDesc:         prometheus.NewDesc(fqn(ns, "scrape", "success"), "Whether the last API scrape succeeded (1) or failed (0).", nil, nil),
-		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh.", nil, nil),
+		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh, labelled by tier. In legacy mode only `tier=\"hot\"` is emitted (matches the pre-tiered single-ticker semantics). In tiered mode each of `hot`/`warm`/`cold` is emitted as a separate series.", []string{"tier"}, nil),
 		monitorOutageActive:       prometheus.NewDesc(fqn(ns, "monitor", "outage_active"), "Whether the monitor has an active (unresolved) outage (1) or not (0).", ml, nil),
 		monitorActiveOutageStatus: prometheus.NewDesc(fqn(ns, "monitor", "active_outage_status_code"), "HTTP status code of the current active outage; 0 when no active outage.", ml, nil),
 		monitorSLA:                prometheus.NewDesc(fqn(ns, "monitor", "sla_ratio"), "Monitor SLA as a ratio (0–1) over the labelled period.", mpl, nil),
@@ -246,7 +246,13 @@ type collectorSnapshot struct {
 	lastSuccessTime        time.Time
 	scrapeOK               bool
 	scrapeDur              time.Duration
-	dataAge                float64
+	// dataAges is the per-tier seconds-since-last-success, keyed by tier name
+	// ("hot"|"warm"|"cold"). Legacy mode populates only "hot" (the single
+	// refresh loop is treated as the HOT tier for label parity with tiered
+	// mode). Tiered mode populates all three when each tier has succeeded at
+	// least once; tiers that have not yet succeeded are omitted (no series
+	// emitted) so the metric semantics stay "elapsed since last success".
+	dataAges               map[string]float64
 	maintenanceIndex       map[string]bool              // monitor uuid -> covered by active window
 	regionDownIndex        map[string]map[string]bool   // uuid -> region -> is_down
 	openIncidentCount      int
@@ -866,9 +872,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RUnlock()
 
 	// STEP 2: Build all derived indices outside the lock.
-	var dataAge float64
+	// Legacy mode treats its single refresh ticker as the HOT tier for
+	// label parity with tiered mode. Only emit a data_age series once a
+	// successful refresh has been observed.
+	dataAges := map[string]float64{}
 	if !lastSuccess.IsZero() {
-		dataAge = time.Since(lastSuccess).Seconds()
+		dataAges["hot"] = time.Since(lastSuccess).Seconds()
 	}
 	outageIdx := buildActiveOutageIndex(outages)
 	monIdx := make(map[string]hyperping.Monitor, len(monitors))
@@ -886,7 +895,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		lastSuccessTime:        lastSuccess,
 		scrapeOK:               scrapeOK,
 		scrapeDur:              scrapeDur,
-		dataAge:                dataAge,
+		dataAges:               dataAges,
 		maintenanceIndex:       maintenanceIdx,
 		regionDownIndex:        buildRegionDownIndex(outageIdx),
 		openIncidentCount:      countOpenIncidents(incidents),
@@ -1049,9 +1058,13 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	ch <- prometheus.MustNewConstMetric(c.scrapeSuccessDesc, prometheus.GaugeValue,
 		boolToFloat64(snap.scrapeOK))
 
-	// OPS-31: data age — only after at least one successful scrape.
-	if snap.dataAge > 0 {
-		ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, snap.dataAge)
+	// OPS-31: data age, labelled by tier. Tier order is fixed for stable
+	// scrape ordering across ticks; tiers with no prior success are omitted
+	// so the metric continues to mean "elapsed since last success".
+	for _, tier := range []string{"hot", "warm", "cold"} {
+		if age, ok := snap.dataAges[tier]; ok && age > 0 {
+			ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier)
+		}
 	}
 
 	// OPS-34: tenant-wide health metrics.

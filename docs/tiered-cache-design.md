@@ -4,11 +4,11 @@ Refactor `hyperping-exporter`'s `Collector.Refresh()` from a single-TTL fetch lo
 
 ## Design parameters (decided)
 
-- **Q1 SDK dependency**: Use `go.mod replace github.com/develeap/hyperping-go => ../hyperping-go` against the local `feat/list-status-filter` branch during dev. Call `ListOutages(ctx, hyperping.WithStatus("ongoing"))` in the HOT tier. Swap to a tagged version once L1 PR merges.
+- **Q1 SDK dependency**: Pin `github.com/develeap/hyperping-go` via a Go pseudo-version (`v0.5.1-0.YYYYMMDDHHMMSS-{SHA}`) to the L1 branch commit. (An earlier draft of this plan used a local `replace` directive, but that broke CI because the runner has no sibling repo on disk; pseudo-versions resolve via the public GitHub remote and work in CI, fresh clones, etc.) Call `ListOutages(ctx, hyperping.WithStatus("ongoing"))` in the HOT tier. Swap to a tagged version once L1 PR merges.
 - **Q2 partial_refresh_total label**: Add a `tier="hot|warm|cold"` label. **Breaking change for any existing PromQL.** Document loudly in CHANGELOG. Consumer-side query updates (e.g. `/home/khaledsa/projects/hyp/hyperping-automation/grafana/` and `recording_rules.yaml`) are a follow-up — NOT in this PR. Add the TODO to the exporter repo's BACKLOG.md.
 - **Q3 health-score 30d dependency**: Accept the cold-start gap. For ~15 min after pod restart, `hyperping_tenant_health_score` will be absent in tiered mode. Document in CHANGELOG under "Behavior changes".
 - **Q4 MCP rate-limit headroom**: No staggering. The existing 10-worker pool smooths bursts. 5min WARM + 135 monitors = ~82 MCP calls/min, well under Hyperping's 300/min/key cap. Add a `hyperping_warm_refresh_duration_seconds` histogram so we can revisit if bursts cause problems.
-- **Q5 data_age_seconds semantics**: Add a `tier` label to `hyperping_data_age_seconds`. `tier="hot"` matches the old semantics most closely. Document in CHANGELOG.
+- **Q5 data_age_seconds semantics**: **Implemented.** `hyperping_data_age_seconds` now carries a `tier` label. Legacy mode emits one series (`tier="hot"` matches the old single-ticker semantics most closely). Tiered mode emits up to three series, one per populated tier (omitted for tiers that have not yet refreshed). Documented in CHANGELOG; PromQL consumers using the unlabelled series need to add an explicit selector or wrap with `max(...)`.
 - **Q6 TTL floor enforcement**: Yes. `validateTierTTLs` in `_helpers.tpl` must hard-fail render when `hot < 30s`, `warm < 60s`, or `cold < 300s`. Same error shape as `validateCacheTTL`.
 - **Q7 backlog tracking**: First commit of this work creates `docs/tiered-cache-design.md` (this file's content) and adds a BACKLOG.md entry linking to it.
 

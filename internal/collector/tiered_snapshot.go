@@ -84,6 +84,7 @@ func (t *tieredRefresher) buildCollectorSnapshot() collectorSnapshot {
 		mttaIndex:         make(map[string]float64),
 		anomalyCountIndex: make(map[string]int),
 		anomalyScoreIndex: make(map[string]float64),
+		dataAges:          make(map[string]float64),
 	}
 
 	if h := t.hot.Load(); h != nil {
@@ -104,7 +105,7 @@ func (t *tieredRefresher) buildCollectorSnapshot() collectorSnapshot {
 		snap.scrapeDur = h.scrapeDur
 		snap.lastSuccessTime = h.refreshedAt
 		if !h.refreshedAt.IsZero() {
-			snap.dataAge = time.Since(h.refreshedAt).Seconds()
+			snap.dataAges["hot"] = time.Since(h.refreshedAt).Seconds()
 		}
 	}
 
@@ -128,6 +129,9 @@ func (t *tieredRefresher) buildCollectorSnapshot() collectorSnapshot {
 		if len(w.report24h) > 0 {
 			snap.reports["24h"] = w.report24h
 		}
+		if !w.refreshedAt.IsZero() {
+			snap.dataAges["warm"] = time.Since(w.refreshedAt).Seconds()
+		}
 	}
 
 	if c := t.cold.Load(); c != nil {
@@ -136,6 +140,9 @@ func (t *tieredRefresher) buildCollectorSnapshot() collectorSnapshot {
 		}
 		if len(c.report30d) > 0 {
 			snap.reports["30d"] = c.report30d
+		}
+		if !c.refreshedAt.IsZero() {
+			snap.dataAges["cold"] = time.Since(c.refreshedAt).Seconds()
 		}
 	}
 
