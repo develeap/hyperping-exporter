@@ -5,9 +5,14 @@ package collector
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -266,4 +271,147 @@ func mustParseTime(t *testing.T, s string) time.Time {
 	parsed, err := time.Parse(time.RFC3339, s)
 	require.NoError(t, err, "parse %q", s)
 	return parsed
+}
+
+// --- failure-isolation and stale-fallback tests (chunk 3) ---
+
+func TestTieredRefresher_HotFailureLeavesWarmAndColdSnapshotsIntact(t *testing.T) {
+	api := &mockAPI{
+		monitorsErr: errors.New("monitors api unavailable"),
+	}
+	tr := newTieredRefresherForTest(api)
+
+	// Pre-populate WARM and COLD with sentinel snapshots that should be
+	// unaffected by the HOT failure.
+	prevWarm := &warmSnapshot{
+		responseTime: map[string]float64{"mon_1": 0.123},
+		totalAlerts:  77,
+		refreshedAt:  time.Now().Add(-2 * time.Minute),
+	}
+	prevCold := &coldSnapshot{
+		report30d:   []hyperping.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.9}},
+		refreshedAt: time.Now().Add(-10 * time.Minute),
+	}
+	tr.warm.Store(prevWarm)
+	tr.cold.Store(prevCold)
+
+	tr.refreshHot(context.Background())
+
+	// HOT failed -> no hot snapshot stored.
+	assert.Nil(t, tr.hot.Load(), "fatal HOT failure must not publish a snapshot")
+	// WARM and COLD pointers must be the SAME identity as before.
+	assert.Same(t, prevWarm, tr.warm.Load(), "WARM snapshot must survive HOT failure")
+	assert.Same(t, prevCold, tr.cold.Load(), "COLD snapshot must survive HOT failure")
+	assert.False(t, tr.hotReady.Load(), "hotReady must remain false after a failed HOT refresh")
+}
+
+func TestTieredRefresher_WarmPartialMcpFailureRetainsStaleValues(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+	}
+
+	// Seed the previous WARM snapshot with stale per-monitor MCP values.
+	transport := &mockMCPTransport{
+		results: map[string]any{
+			// Global alerts succeeds.
+			"list_recent_alerts": map[string]any{"total": 99},
+		},
+		errors: map[string]error{
+			// All per-monitor calls fail -> failures > 0 -> stale carry.
+			"get_monitor_response_time": errors.New("mcp unavailable"),
+			"get_monitor_mtta":          errors.New("mcp unavailable"),
+			"get_monitor_anomalies":     errors.New("mcp unavailable"),
+		},
+	}
+	mcp := hyperping.NewMCPClient(transport)
+	tr := newTieredRefresherForTest(api)
+	tr.mcp = mcp
+	mcpMetrics := NewMCPMetrics(prometheus.NewRegistry(), "hyperping")
+	tr.mcpMetrics = mcpMetrics
+
+	// Pre-populate HOT (refreshWarm needs the monitor list) and a stale
+	// WARM snapshot whose values must carry forward.
+	tr.hot.Store(&hotSnapshot{monitors: api.monitors, refreshedAt: time.Now()})
+	tr.warm.Store(&warmSnapshot{
+		responseTime: map[string]float64{"mon_1": 0.222},
+		mtta:         map[string]float64{"mon_1": 33.0},
+		anomalyCount: map[string]int{"mon_1": 5},
+		anomalyScore: map[string]float64{"mon_1": 0.42},
+		totalAlerts:  11,
+		refreshedAt:  time.Now().Add(-10 * time.Minute),
+	})
+
+	tr.refreshWarm(context.Background())
+
+	got := tr.warm.Load()
+	require.NotNil(t, got)
+	// Stale values must be retained for mon_1.
+	assert.Equal(t, 0.222, got.responseTime["mon_1"], "stale response time must carry forward")
+	assert.Equal(t, 33.0, got.mtta["mon_1"], "stale MTTA must carry forward")
+	assert.Equal(t, 5, got.anomalyCount["mon_1"], "stale anomaly count must carry forward")
+	assert.Equal(t, 0.42, got.anomalyScore["mon_1"], "stale anomaly score must carry forward")
+	// Global alerts succeeded, so totalAlerts must update.
+	assert.Equal(t, 99, got.totalAlerts, "successful global alerts must update")
+
+	// partial_refresh_total must be incremented (>=1).
+	got1 := testutil.ToFloat64(mcpMetrics.PartialRefreshTotal)
+	assert.GreaterOrEqual(t, got1, 1.0, "partial_refresh_total must be incremented on per-monitor failures")
+}
+
+// staleFallbackTestHandler captures structured log records so a test can
+// assert the tier label appears on failure log lines.
+type staleFallbackTestHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *staleFallbackTestHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *staleFallbackTestHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.records = append(h.records, r.Clone())
+	h.mu.Unlock()
+	return nil
+}
+func (h *staleFallbackTestHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *staleFallbackTestHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func TestTieredRefresher_StaleFallbackLogsTierLabel(t *testing.T) {
+	h := &staleFallbackTestHandler{}
+	logger := slog.New(h)
+
+	// Trigger HOT failure to exercise the failure log path.
+	apiHot := &mockAPI{monitorsErr: errors.New("hot boom")}
+	trHot := newTieredRefresherForTest(apiHot)
+	trHot.logger = logger
+	trHot.refreshHot(context.Background())
+
+	// Trigger COLD both-fail to exercise the "retaining stale" log path.
+	apiCold := &mockAPI{reportsErr: errors.New("cold boom")}
+	trCold := newTieredRefresherForTest(apiCold)
+	trCold.logger = logger
+	trCold.refreshCold(context.Background())
+
+	// Every captured record must include the "tier" attribute with one of
+	// the three known tier labels.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	require.NotEmpty(t, h.records, "expected at least one failure log record")
+
+	allowed := map[string]bool{"hot": true, "warm": true, "cold": true}
+	seenTiers := map[string]bool{}
+	for _, r := range h.records {
+		var tier string
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "tier" {
+				tier = a.Value.String()
+				return false
+			}
+			return true
+		})
+		require.NotEmpty(t, tier, "log record %q missing 'tier' attribute", r.Message)
+		require.True(t, allowed[tier], "log record %q has unexpected tier label %q", r.Message, tier)
+		seenTiers[tier] = true
+	}
+	assert.True(t, seenTiers["hot"], "expected at least one log with tier=hot")
+	assert.True(t, seenTiers["cold"], "expected at least one log with tier=cold")
 }
