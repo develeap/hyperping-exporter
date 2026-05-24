@@ -6,6 +6,27 @@ All notable changes to this project will be documented in this file.
 
 (Nothing yet. Next slot is the Phase 3 chart 1.6.0 work: flip default cache mode to tiered, add the `tier` label to `hyperping_mcp_partial_refresh_total`, migrate downstream PromQL.)
 
+## [1.5.4] - 2026-05-24 [Chart bump to ship binary 1.5.1 (security patch)]
+
+### Security
+
+- `Chart.yaml` `version` `1.5.3` -> `1.5.4`; `appVersion` `"1.5.0"` -> `"1.5.1"`. The new image (`khaledsalhabdeveleap/hyperping-exporter:1.5.1`) is built against `golang.org/x/crypto v0.52.0`, clearing 10 advisories that affected v0.51.0 (7 critical / 2 high / 1 medium across CVE-2026-46595, CVE-2026-46597, CVE-2026-42508, and the CVE-2026-3983x family).
+
+### Upgrade notes
+
+- **Pure security upgrade.** No behaviour or values.yaml changes vs chart 1.5.3. Operators on 1.5.3 should bump immediately. The Phase 2 (tiered cache opt-in) and Phase 3 (chart 1.6.0 default-flip) roadmap is unchanged.
+
+## [1.5.1] - 2026-05-24 [Binary release, security patch]
+
+### Security
+
+- Bump indirect dependency `golang.org/x/crypto` from `v0.51.0` to `v0.52.0`. Clears the following advisories that affected the released v1.5.0 image:
+  - CVE-2026-46595 (critical, CVSS 10.0)
+  - CVE-2026-39834, CVE-2026-39832, CVE-2026-39833, CVE-2026-39831, CVE-2026-42508, CVE-2026-39830 (all critical, CVSS 9.1)
+  - CVE-2026-46597, CVE-2026-39829 (high, CVSS 7.5)
+  - CVE-2026-39827 (medium, CVSS 6.5)
+- No code-level changes; only `go.mod` / `go.sum` were modified. All existing tests (172) continue to pass under `go test -race`.
+
 ## [1.5.3] - 2026-05-24 [Chart bump to ship binary 1.5.0 with tiered cache values]
 
 ### Changed
