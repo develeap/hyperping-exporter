@@ -18,8 +18,48 @@ import (
 	hyperping "github.com/develeap/hyperping-go"
 )
 
+// CacheMode selects how the Collector refreshes its cache.
+//
+//   - CacheModeLegacy (default) drives a single cacheTTL ticker that
+//     refreshes every endpoint together. Behaviour is unchanged from
+//     pre-1.6 binaries.
+//   - CacheModeTiered drives three independent HOT/WARM/COLD tickers,
+//     each owning its own subset of endpoints and atomic snapshot
+//     pointer. See docs/tiered-cache-design.md.
+//
+// The mode is selected via WithCacheMode and exposed to operators via
+// --cache-mode in main.go. Helm renders it through config.cacheMode.
+type CacheMode int
+
+const (
+	// CacheModeLegacy uses a single cacheTTL ticker (default).
+	CacheModeLegacy CacheMode = iota
+	// CacheModeTiered uses three independent per-tier tickers.
+	CacheModeTiered
+)
+
 // CollectorOption configures a Collector after construction.
 type CollectorOption func(*Collector)
+
+// WithCacheMode selects the cache refresh strategy.
+func WithCacheMode(m CacheMode) CollectorOption {
+	return func(c *Collector) {
+		c.cacheMode = m
+	}
+}
+
+// WithTierTTLs configures the HOT/WARM/COLD refresh intervals. Only honored
+// when CacheModeTiered is also set. Floors should already be enforced by
+// the Helm chart's validateTierTTLs (hot >= 30s, warm >= 60s, cold >= 300s);
+// the floors are intentionally NOT re-enforced here because legitimate test
+// callers need millisecond-scale TTLs.
+func WithTierTTLs(hot, warm, cold time.Duration) CollectorOption {
+	return func(c *Collector) {
+		c.hotTTL = hot
+		c.warmTTL = warm
+		c.coldTTL = cold
+	}
+}
 
 // WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
 // is dropped from the monitor list immediately after the API fetch, before any
@@ -232,6 +272,14 @@ type Collector struct {
 	logger         *slog.Logger
 	excludePattern *regexp.Regexp
 
+	// Tiered cache (CacheModeTiered only). When cacheMode == CacheModeLegacy
+	// the tiered field is nil and Start/Collect take the legacy path.
+	cacheMode CacheMode
+	hotTTL    time.Duration
+	warmTTL   time.Duration
+	coldTTL   time.Duration
+	tiered    *tieredRefresher
+
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
 	excludedCount      int
@@ -276,11 +324,26 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 	for _, opt := range opts {
 		opt(c)
 	}
+	// In tiered mode build the refresher up front so callers can drive
+	// per-tier refreshes directly (tests do this) and so Start has nothing
+	// to allocate on the hot path. Legacy mode leaves c.tiered nil.
+	if c.cacheMode == CacheModeTiered {
+		c.tiered = newTieredRefresher(c, c.hotTTL, c.warmTTL, c.coldTTL)
+	}
 	return c
 }
 
 // Start begins the background cache refresh loop. It blocks until ctx is cancelled.
+//
+// In CacheModeLegacy this is a single ticker driving Refresh at cacheTTL
+// intervals. In CacheModeTiered this delegates to tieredRefresher.start,
+// which runs three independent per-tier tickers.
 func (c *Collector) Start(ctx context.Context) {
+	if c.cacheMode == CacheModeTiered && c.tiered != nil {
+		c.tiered.start(ctx)
+		return
+	}
+
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c.Refresh(initCtx)
@@ -697,7 +760,14 @@ func (c *Collector) Refresh(ctx context.Context) {
 // IsReady returns true once at least one successful API scrape has completed.
 // It never reverts to false: transient failures after the first success do not
 // affect readiness — staleness is surfaced by hyperping_data_age_seconds instead.
+//
+// In tiered mode "successful" means the HOT tier has published at least once;
+// WARM and COLD lag is expected during the post-boot cold-start window and
+// must not gate /readyz.
 func (c *Collector) IsReady() bool {
+	if c.cacheMode == CacheModeTiered && c.tiered != nil {
+		return c.tiered.hotReady.Load()
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.everSucceeded
@@ -746,7 +816,19 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 // Collect implements prometheus.Collector.
 // Cached slices are copied under a minimal read lock; all index building and
 // metric emission happen outside the lock to avoid blocking concurrent Refresh calls.
+//
+// In tiered mode the snapshot comes from buildCollectorSnapshot (three atomic
+// Loads + stitch); the legacy snapshot path below is skipped entirely.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	if c.cacheMode == CacheModeTiered && c.tiered != nil {
+		snap := c.tiered.buildCollectorSnapshot()
+		c.emitMonitorMetrics(ch, snap)
+		c.emitHealthcheckMetrics(ch, snap)
+		c.emitReportMetrics(ch, snap)
+		c.emitTenantMetrics(ch, snap)
+		c.emitMcpMetrics(ch, snap)
+		return
+	}
 	// STEP 1: Copy raw cached state under read lock (no CPU-heavy work here).
 	c.mu.RLock()
 	monitors := c.monitors
