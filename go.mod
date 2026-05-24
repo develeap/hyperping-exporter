@@ -2,18 +2,13 @@ module github.com/develeap/hyperping-exporter
 
 go 1.26.2
 
-// Dev-only replace: pin hyperping-go to the local feat/list-status-filter
-// branch (commit 98b76c0) which adds the WithStatus(...) functional option to
-// ListOutages. The tiered cache HOT tier calls
-// `ListOutages(ctx, hyperping.WithStatus("ongoing"))` to keep latency low.
-// This directive MUST be removed before merging the feat/tiered-cache branch
-// to main, once an upstream tag of hyperping-go ships WithStatus. Tracked in
-// BACKLOG.md item T3.
-replace github.com/develeap/hyperping-go => ../hyperping-go
-
 require (
-	github.com/develeap/hyperping-go v0.5.0
+	// Pinned to feat/list-status-filter (hyperping-go PR #27) for the
+	// `hyperping.WithStatus("ongoing")` option used by the HOT tier. Swap
+	// to the next tagged release of hyperping-go once that PR lands.
+	github.com/develeap/hyperping-go v0.5.1-0.20260524091922-d500fc039324
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/exporter-toolkit v0.16.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -34,7 +29,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/sony/gobreaker v1.0.0 // indirect
