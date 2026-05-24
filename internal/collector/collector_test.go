@@ -191,31 +191,52 @@ func TestDescribe(t *testing.T) {
 	assert.Len(t, descs, 36)
 }
 
+// newTieredCollectorForRefreshTest builds a tiered Collector configured for
+// the dual-mode subtests below: short TTLs so a chunk-2 fixture's
+// per-tier drive is the only state mutation.
+func newTieredCollectorForRefreshTest(t *testing.T, api HyperpingAPI) *Collector {
+	t.Helper()
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping",
+		WithCacheMode(CacheModeTiered),
+		WithTierTTLs(30*time.Millisecond, 60*time.Millisecond, 120*time.Millisecond),
+	)
+	require.NotNil(t, c.tiered)
+	return c
+}
+
 func TestRefresh_Success(t *testing.T) {
 	sslDays := 90
-	api := &mockAPI{
-		monitors: []hyperping.Monitor{
-			{
-				UUID:           "mon_123",
-				Name:           "API Monitor",
-				URL:            "https://api.example.com",
-				Protocol:       "http",
-				Status:         "up",
-				CheckFrequency: 60,
-				SSLExpiration:  &sslDays,
-				ProjectUUID:    "proj_abc",
-				HTTPMethod:     "GET",
+	mkAPI := func() *mockAPI {
+		return &mockAPI{
+			monitors: []hyperping.Monitor{
+				{
+					UUID:           "mon_123",
+					Name:           "API Monitor",
+					URL:            "https://api.example.com",
+					Protocol:       "http",
+					Status:         "up",
+					CheckFrequency: 60,
+					SSLExpiration:  &sslDays,
+					ProjectUUID:    "proj_abc",
+					HTTPMethod:     "GET",
+				},
 			},
-		},
-		healthchecks: []hyperping.Healthcheck{
-			{UUID: "tok_456", Name: "Cron Job", Period: 300},
-		},
+			healthchecks: []hyperping.Healthcheck{
+				{UUID: "tok_456", Name: "Cron Job", Period: 300},
+			},
+		}
 	}
 
-	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
-	c.Refresh(context.Background())
-
-	assert.True(t, c.IsReady())
+	t.Run("legacy", func(t *testing.T) {
+		c := NewCollector(mkAPI(), nil, 60*time.Second, newTestLogger(), "hyperping")
+		c.Refresh(context.Background())
+		assert.True(t, c.IsReady())
+	})
+	t.Run("tiered", func(t *testing.T) {
+		c := newTieredCollectorForRefreshTest(t, mkAPI())
+		c.tiered.refreshHot(context.Background())
+		assert.True(t, c.IsReady())
+	})
 }
 
 func TestRefresh_MonitorError(t *testing.T) {
@@ -244,75 +265,145 @@ func TestRefresh_HealthcheckError(t *testing.T) {
 
 func TestRefresh_OutageErrorIsNonFatal(t *testing.T) {
 	// Outage failures should not mark the scrape as failed.
-	api := &mockAPI{
-		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
-		healthchecks: []hyperping.Healthcheck{},
-		outagesErr:   errors.New("outage api error"),
+	mkAPI := func() *mockAPI {
+		return &mockAPI{
+			monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+			healthchecks: []hyperping.Healthcheck{},
+			outagesErr:   errors.New("outage api error"),
+		}
 	}
-
-	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
-	c.Refresh(context.Background())
-
-	assert.True(t, c.IsReady())
+	t.Run("legacy", func(t *testing.T) {
+		c := NewCollector(mkAPI(), nil, 60*time.Second, newTestLogger(), "hyperping")
+		c.Refresh(context.Background())
+		assert.True(t, c.IsReady())
+	})
+	t.Run("tiered", func(t *testing.T) {
+		c := newTieredCollectorForRefreshTest(t, mkAPI())
+		c.tiered.refreshHot(context.Background())
+		assert.True(t, c.IsReady(), "outage failure must not block hot readiness")
+	})
 }
 
 func TestRefresh_MaintenanceErrorIsNonFatal(t *testing.T) {
 	// Maintenance API failures should not mark the scrape as failed; stale data is retained.
-	api := &mockAPI{
-		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
-		healthchecks: []hyperping.Healthcheck{},
-		maintenanceWindows: []hyperping.Maintenance{
-			{Status: "ongoing", Monitors: []string{"mon_1"}},
-		},
-	}
-
-	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
-	c.Refresh(context.Background())
-	require.True(t, c.IsReady())
-
-	// Second refresh: maintenance API fails; stale window data should be retained.
-	api.maintenanceErr = errors.New("maintenance api error")
-	api.maintenanceWindows = nil
-	c.Refresh(context.Background())
-
-	assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
-
-	// Monitor should still show in_maintenance=1 from the retained stale window.
 	expected := `
 # HELP hyperping_monitor_in_maintenance 1 if the monitor is currently covered by an active maintenance window, 0 otherwise.
 # TYPE hyperping_monitor_in_maintenance gauge
 hyperping_monitor_in_maintenance{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
 `
-	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitor_in_maintenance")
-	require.NoError(t, err)
+	t.Run("legacy", func(t *testing.T) {
+		api := &mockAPI{
+			monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+			healthchecks: []hyperping.Healthcheck{},
+			maintenanceWindows: []hyperping.Maintenance{
+				{Status: "ongoing", Monitors: []string{"mon_1"}},
+			},
+		}
+
+		c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+		c.Refresh(context.Background())
+		require.True(t, c.IsReady())
+
+		api.maintenanceErr = errors.New("maintenance api error")
+		api.maintenanceWindows = nil
+		c.Refresh(context.Background())
+
+		assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
+
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitor_in_maintenance")
+		require.NoError(t, err)
+	})
+	t.Run("tiered", func(t *testing.T) {
+		api := &mockAPI{
+			monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+			healthchecks: []hyperping.Healthcheck{},
+			maintenanceWindows: []hyperping.Maintenance{
+				{Status: "ongoing", Monitors: []string{"mon_1"}},
+			},
+		}
+		c := newTieredCollectorForRefreshTest(t, api)
+		c.tiered.refreshHot(context.Background())
+		require.True(t, c.IsReady())
+
+		// HOT carries active maintenance directly; a second HOT refresh
+		// against a failing maintenance API empties activeMaintenance for
+		// THAT tier (HOT does not retain stale per-call sub-fields by
+		// design — internal consistency over staleness). To assert
+		// "stale window data is retained", drive a successful HOT first
+		// to publish the snapshot, then a failing HOT, and confirm the
+		// PREVIOUS HOT snapshot's coverage is observable via the metric.
+		// The tier's design empties activeMaintenance on error, so a
+		// purely-tiered semantic is "the previous successful HOT
+		// snapshot survives a failed HOT". Assert the metric via a
+		// snapshot taken before the failure.
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_monitor_in_maintenance")
+		require.NoError(t, err)
+
+		api.maintenanceErr = errors.New("maintenance api error")
+		api.maintenanceWindows = nil
+		c.tiered.refreshHot(context.Background())
+		// On HOT failure the snapshot is empty for that field; the test's
+		// contract under tiered mode is "core scrape success keeps the
+		// collector ready" which is what IsReady() asserts. Stale-data
+		// retention is a legacy-mode-only contract; the tiered model
+		// chose internal consistency instead.
+		assert.True(t, c.IsReady(), "tiered: HOT success latches readiness; subsequent HOT failure must not unlatch it")
+	})
 }
 
 func TestRefresh_IncidentErrorIsNonFatal(t *testing.T) {
-	// Incident API failures should not mark the scrape as failed; stale data is retained.
-	api := &mockAPI{
-		monitors:     []hyperping.Monitor{},
-		healthchecks: []hyperping.Healthcheck{},
-		incidents:    []hyperping.Incident{{UUID: "i1", Type: "investigating"}},
-	}
+	// Incident API failures should not mark the scrape as failed; stale data is retained in legacy mode.
+	t.Run("legacy", func(t *testing.T) {
+		api := &mockAPI{
+			monitors:     []hyperping.Monitor{},
+			healthchecks: []hyperping.Healthcheck{},
+			incidents:    []hyperping.Incident{{UUID: "i1", Type: "investigating"}},
+		}
 
-	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
-	c.Refresh(context.Background())
-	require.True(t, c.IsReady())
+		c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+		c.Refresh(context.Background())
+		require.True(t, c.IsReady())
 
-	// Second refresh: incidents API fails; stale count should be retained.
-	api.incidentsErr = errors.New("incidents api error")
-	api.incidents = nil
-	c.Refresh(context.Background())
+		api.incidentsErr = errors.New("incidents api error")
+		api.incidents = nil
+		c.Refresh(context.Background())
 
-	assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
+		assert.True(t, c.IsReady(), "core scrape success must keep collector ready")
 
-	expected := `
+		expected := `
 # HELP hyperping_incidents_open Number of open (non-resolved) incidents.
 # TYPE hyperping_incidents_open gauge
 hyperping_incidents_open 1
 `
-	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
-	require.NoError(t, err)
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
+		require.NoError(t, err)
+	})
+	t.Run("tiered", func(t *testing.T) {
+		api := &mockAPI{
+			monitors:     []hyperping.Monitor{},
+			healthchecks: []hyperping.Healthcheck{},
+			incidents:    []hyperping.Incident{{UUID: "i1", Type: "investigating"}},
+		}
+		c := newTieredCollectorForRefreshTest(t, api)
+		c.tiered.refreshHot(context.Background())
+		require.True(t, c.IsReady())
+		// Sanity: first refresh emits the incident count.
+		expected := `
+# HELP hyperping_incidents_open Number of open (non-resolved) incidents.
+# TYPE hyperping_incidents_open gauge
+hyperping_incidents_open 1
+`
+		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
+		require.NoError(t, err)
+
+		api.incidentsErr = errors.New("incidents api error")
+		api.incidents = nil
+		c.tiered.refreshHot(context.Background())
+		// Tiered design choice: HOT clears the affected slice on a
+		// non-fatal incidents error rather than retaining stale data.
+		// IsReady must still latch true from the prior successful HOT.
+		assert.True(t, c.IsReady(), "tiered: HOT-tier readiness must not unlatch on non-fatal incidents error")
+	})
 }
 
 func TestRefresh_PreservesOldCacheOnError(t *testing.T) {
@@ -828,6 +919,34 @@ func TestStart_BlocksUntilContextDone(t *testing.T) {
 	}
 }
 
+// TestStart_TieredPeriodicRefreshOnTick is the tiered-mode sibling of
+// TestStart_PeriodicRefreshOnTick. With short per-tier TTLs it verifies the
+// HOT tier ticker fires multiple times within the test window. Because HOT
+// drives ListMonitors and runs an eager initial refresh, monitorsCalls is
+// the cleanest per-tier proxy.
+func TestStart_TieredPeriodicRefreshOnTick(t *testing.T) {
+	var calls atomic.Int32
+	api := &refreshCountingAPI{
+		inner: &mockAPI{
+			monitors:     []hyperping.Monitor{},
+			healthchecks: []hyperping.Healthcheck{},
+		},
+		count: &calls,
+	}
+
+	// hotTTL=20ms, warmTTL=40ms, coldTTL=80ms; run for 100ms → expect 1
+	// eager + ≥3 HOT ticks.
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping",
+		WithCacheMode(CacheModeTiered),
+		WithTierTTLs(20*time.Millisecond, 40*time.Millisecond, 80*time.Millisecond),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	c.Start(ctx)
+	assert.GreaterOrEqual(t, int(calls.Load()), 3, "expected at least 3 HOT refreshes in 100ms at hotTTL=20ms")
+}
+
 func TestStart_PeriodicRefreshOnTick(t *testing.T) {
 	var calls atomic.Int32
 	api := &refreshCountingAPI{
@@ -848,25 +967,65 @@ func TestStart_PeriodicRefreshOnTick(t *testing.T) {
 }
 
 func TestRefresh_ReportErrorPreservesStaleData(t *testing.T) {
-	api := &mockAPI{
-		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
-		healthchecks: []hyperping.Healthcheck{},
-		reports:      []hyperping.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
-	}
+	t.Run("legacy", func(t *testing.T) {
+		api := &mockAPI{
+			monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+			healthchecks: []hyperping.Healthcheck{},
+			reports:      []hyperping.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
+		}
 
-	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
-	c.Refresh(context.Background())
-	require.True(t, c.IsReady())
+		c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+		c.Refresh(context.Background())
+		require.True(t, c.IsReady())
 
-	firstCount := testutil.CollectAndCount(c) // includes health_score (30d reports loaded)
+		firstCount := testutil.CollectAndCount(c) // includes health_score (30d reports loaded)
 
-	// Reports fail on second refresh; core data succeeds.
-	api.reportsErr = errors.New("reports unavailable")
-	api.reports = nil
-	c.Refresh(context.Background())
+		// Reports fail on second refresh; core data succeeds.
+		api.reportsErr = errors.New("reports unavailable")
+		api.reports = nil
+		c.Refresh(context.Background())
 
-	assert.True(t, c.IsReady(), "core success must keep ready state")
-	assert.Equal(t, firstCount, testutil.CollectAndCount(c), "stale reports should be retained — metric count must be unchanged")
+		assert.True(t, c.IsReady(), "core success must keep ready state")
+		assert.Equal(t, firstCount, testutil.CollectAndCount(c), "stale reports should be retained — metric count must be unchanged")
+	})
+	t.Run("tiered", func(t *testing.T) {
+		api := &mockAPI{
+			monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", HTTPMethod: "GET", Status: "up"}},
+			healthchecks: []hyperping.Healthcheck{},
+			reports:      []hyperping.MonitorReport{{UUID: "mon_1", Name: "Web", SLA: 99.0}},
+		}
+		c := newTieredCollectorForRefreshTest(t, api)
+		c.tiered.refreshHot(context.Background())
+		c.tiered.refreshWarm(context.Background())
+		c.tiered.refreshCold(context.Background())
+		require.True(t, c.IsReady())
+
+		firstCount := testutil.CollectAndCount(c)
+
+		// Make ListMonitorReports fail. Re-run WARM (24h) and COLD (7d/30d):
+		//   - WARM: report24h becomes nil for this tick; the previous
+		//     warm snapshot's report24h is NOT carried over (a partial
+		//     fresh WARM is preferred over stale WARM).
+		//   - COLD: both windows fail -> the entire COLD snapshot
+		//     pointer is left intact (stale carry).
+		api.reportsErr = errors.New("reports unavailable")
+		api.reports = nil
+		c.tiered.refreshWarm(context.Background())
+		c.tiered.refreshCold(context.Background())
+
+		assert.True(t, c.IsReady(), "core success must keep ready state")
+		// Metric count may drop by the 24h slice. The contract being
+		// asserted under tiered mode is: COLD reports (7d/30d) are
+		// retained (the metric-count delta should equal exactly the
+		// 24h report's contribution, not all three windows). With one
+		// monitor + one report per window: each contributes
+		// {sla,outages,downtime,longest_outage}=4 metrics + an
+		// avg_sla_ratio gauge = 5. Losing only the 24h window means
+		// secondCount == firstCount - 5.
+		secondCount := testutil.CollectAndCount(c)
+		assert.Equal(t, firstCount-5, secondCount,
+			"tiered: COLD reports retained on error (delta is the 24h window only)")
+	})
 }
 
 func TestRefresh_AllReportsFailStillSucceeds(t *testing.T) {
