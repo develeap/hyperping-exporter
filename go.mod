@@ -2,6 +2,15 @@ module github.com/develeap/hyperping-exporter
 
 go 1.26.2
 
+// Dev-only replace: pin hyperping-go to the local feat/list-status-filter
+// branch (commit 98b76c0) which adds the WithStatus(...) functional option to
+// ListOutages. The tiered cache HOT tier calls
+// `ListOutages(ctx, hyperping.WithStatus("ongoing"))` to keep latency low.
+// This directive MUST be removed before merging the feat/tiered-cache branch
+// to main, once an upstream tag of hyperping-go ships WithStatus. Tracked in
+// BACKLOG.md item T3.
+replace github.com/develeap/hyperping-go => ../hyperping-go
+
 require (
 	github.com/develeap/hyperping-go v0.5.0
 	github.com/prometheus/client_golang v1.23.2

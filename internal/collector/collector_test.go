@@ -46,7 +46,7 @@ func (m *mockAPI) ListHealthchecks(_ context.Context) ([]hyperping.Healthcheck, 
 	return m.healthchecks, m.healthchecksErr
 }
 
-func (m *mockAPI) ListOutages(_ context.Context) ([]hyperping.Outage, error) {
+func (m *mockAPI) ListOutages(_ context.Context, _ ...hyperping.OutageListOption) ([]hyperping.Outage, error) {
 	return m.outages, m.outagesErr
 }
 
@@ -689,8 +689,8 @@ func (a *refreshCountingAPI) ListMonitors(ctx context.Context) ([]hyperping.Moni
 func (a *refreshCountingAPI) ListHealthchecks(ctx context.Context) ([]hyperping.Healthcheck, error) {
 	return a.inner.ListHealthchecks(ctx)
 }
-func (a *refreshCountingAPI) ListOutages(ctx context.Context) ([]hyperping.Outage, error) {
-	return a.inner.ListOutages(ctx)
+func (a *refreshCountingAPI) ListOutages(ctx context.Context, opts ...hyperping.OutageListOption) ([]hyperping.Outage, error) {
+	return a.inner.ListOutages(ctx, opts...)
 }
 func (a *refreshCountingAPI) ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error) {
 	return a.inner.ListMonitorReports(ctx, from, to)

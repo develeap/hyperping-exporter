@@ -97,7 +97,7 @@ func (d *dummyCollectorAPI) ListMonitors(_ context.Context) ([]hyperping.Monitor
 func (d *dummyCollectorAPI) ListHealthchecks(_ context.Context) ([]hyperping.Healthcheck, error) {
 	return nil, nil
 }
-func (d *dummyCollectorAPI) ListOutages(_ context.Context) ([]hyperping.Outage, error) {
+func (d *dummyCollectorAPI) ListOutages(_ context.Context, _ ...hyperping.OutageListOption) ([]hyperping.Outage, error) {
 	return nil, nil
 }
 func (d *dummyCollectorAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperping.MonitorReport, error) {

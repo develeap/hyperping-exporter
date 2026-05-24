@@ -51,10 +51,15 @@ var reportDurations = map[string]time.Duration{
 }
 
 // HyperpingAPI defines the Hyperping API methods used by the collector.
+//
+// ListOutages takes variadic OutageListOption values so the tiered cache
+// HOT tier can pass hyperping.WithStatus("ongoing") to keep the per-tick
+// payload small. The legacy Refresh() loop passes no options, preserving
+// the pre-tiered-cache semantics of fetching the full outage list.
 type HyperpingAPI interface {
 	ListMonitors(ctx context.Context) ([]hyperping.Monitor, error)
 	ListHealthchecks(ctx context.Context) ([]hyperping.Healthcheck, error)
-	ListOutages(ctx context.Context) ([]hyperping.Outage, error)
+	ListOutages(ctx context.Context, opts ...hyperping.OutageListOption) ([]hyperping.Outage, error)
 	ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error)
 	ListMaintenance(ctx context.Context) ([]hyperping.Maintenance, error)
 	ListIncidents(ctx context.Context) ([]hyperping.Incident, error)
