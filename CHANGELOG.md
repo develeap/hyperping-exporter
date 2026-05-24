@@ -4,27 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+(Nothing yet. Next slot is the Phase 3 chart 1.6.0 work: flip default cache mode to tiered, add the `tier` label to `hyperping_mcp_partial_refresh_total`, migrate downstream PromQL.)
+
+## [1.5.3] - 2026-05-24 [Chart bump to ship binary 1.5.0 with tiered cache values]
+
+### Changed
+
+- `Chart.yaml` `version` `1.5.2` -> `1.5.3`; `appVersion` `"1.4.2"` -> `"1.5.0"`. The new image (`khaledsalhabdeveleap/hyperping-exporter:1.5.0`) carries the tiered cache refactor and the `WithStatus("ongoing")` HOT-tier optimisation.
+
+### Added
+
+- **Chart values for the tiered cache**: `config.cacheMode` ("legacy" / "tiered"; default "legacy"), `config.hotTTL` ("60s"), `config.warmTTL` ("5m"), `config.coldTTL` ("15m"). New chart helpers `validateCacheMode` and `validateTierTTLs` fail() the render with a clear, named-value error on invalid mode or sub-floor TTLs (hot >= 30s, warm >= 60s, cold >= 300s), same shape as the existing `validateCacheTTL`. Deployment template renders the per-tier TTL flags only when `cacheMode != legacy`.
+
+### Upgrade notes
+
+- **Pure default-preserving upgrade.** Operators on chart 1.5.2 can bump to 1.5.3 with no values.yaml changes; the rendered Deployment is identical until `config.cacheMode: tiered` is explicitly set. Phase 2 (per-environment opt-in) and Phase 3 (default flip in chart 1.6.0) are tracked separately. See `docs/tiered-cache-design.md` for the full rollout plan.
+
+## [1.5.0] - 2026-05-24 [Binary release]
+
 ### Added
 
 - **Tiered cache mode** behind the new `--cache-mode=tiered` flag. The legacy single-`cacheTTL` ticker is replaced by three independent HOT / WARM / COLD goroutines each owning its own subset of endpoints and atomic snapshot pointer. HOT (60s default) carries monitors, healthchecks, incidents, ongoing outages (via `ListOutages(ctx, hyperping.WithStatus("ongoing"))`), and ongoing maintenance. WARM (5m default) carries the MCP per-monitor metric pool, the 24h SLA report, the full maintenance list, and the global alert count. COLD (15m default) carries the 7d / 30d SLA reports. Per-tier failure isolation: a tier whose refresh aborts before `Store(...)` leaves its previous snapshot pointer untouched; readers stitch three atomic `Load()` calls in `buildCollectorSnapshot`. See `docs/tiered-cache-design.md` for the full design (tier assignments, concurrency model, migration plan). Default remains `--cache-mode=legacy` so existing deployments see no behaviour change.
-- **Helm chart knobs** for tiered mode: `config.cacheMode` ("legacy" / "tiered"; default "legacy"), `config.hotTTL` ("60s"), `config.warmTTL` ("5m"), `config.coldTTL` ("15m"). New chart helpers `validateCacheMode` and `validateTierTTLs` fail() the render with a clear, named-value error on invalid mode or sub-floor TTLs (hot >= 30s, warm >= 60s, cold >= 300s) — same shape as the existing `validateCacheTTL`.
 - **CLI flags**: `--cache-mode`, `--hot-ttl`, `--warm-ttl`, `--cold-ttl`.
 
 ### Changed
 
-- **`HyperpingAPI` interface `ListOutages` signature** widened to accept variadic `hyperping.OutageListOption` values so the HOT tier can pass `hyperping.WithStatus("ongoing")` while the legacy `Refresh()` continues to call it with no options. `github.com/develeap/hyperping-go` is pinned via a Go pseudo-version (`v0.5.1-0.20260524091922-d500fc039324`) to the `feat/list-status-filter` branch commit; swap to the tagged release once that PR lands.
+- **`HyperpingAPI` interface `ListOutages` signature** widened to accept variadic `hyperping.OutageListOption` values so the HOT tier can pass `hyperping.WithStatus("ongoing")` while the legacy `Refresh()` continues to call it with no options. `github.com/develeap/hyperping-go` bumped to `v0.6.0` which ships that option.
 - **`hyperping_data_age_seconds` now carries a `tier` label.** Legacy mode emits a single series with `tier="hot"` (matches the prior single-ticker semantics most closely). Tiered mode emits up to three series, one per populated tier. PromQL like `hyperping_data_age_seconds > 300` continues to fire when any tier stalls; PromQL that previously matched the unlabelled series will need an explicit tier selector (e.g. `hyperping_data_age_seconds{tier="hot"}` or `max(hyperping_data_age_seconds)`).
 
 ### Note
 
 - **Cold-start gap in tiered mode**: `hyperping_tenant_health_score` requires the 30d SLA window which is owned by the COLD tier. Until COLD's first tick (default 15 min after pod boot), the metric is absent. Documented per design doc Q3.
-- **`hyperping_mcp_partial_refresh_total` will gain a `tier` label** in a follow-up release once the chart default flips to tiered (planned for 1.6.0). Until then, the counter is emitted without a `tier` label and existing dashboards / alerts keep working. Consumer-side migration of queries in `/home/khaledsa/projects/hyp/hyperping-automation/grafana/` and `recording_rules.yaml` is tracked as BACKLOG item **T2**. This is intentionally NOT done in this release.
+- **`hyperping_mcp_partial_refresh_total` will gain a `tier` label** in a follow-up release once the chart default flips to tiered (planned for 1.6.0). Until then, the counter is emitted without a `tier` label and existing dashboards / alerts keep working. Consumer-side migration of queries in the downstream `hyperping-automation` Grafana dashboards and recording rules is tracked as BACKLOG item **T2**. This is intentionally NOT done in this release.
 
 ### Migration
 
 - **Phase 1 (this release)**: ships behind a flag, default `legacy`. No existing deployment changes behaviour.
 - **Phase 2 (separate change)**: operators opt in per-environment via `--cache-mode=tiered` / `config.cacheMode: tiered`.
-- **Phase 3 (chart 1.6.0)**: flip default to tiered, drop the `go.mod` replace directive, add the `tier` label to `partial_refresh_total`, do the consumer-side query migration.
+- **Phase 3 (chart 1.6.0)**: flip default to tiered, add the `tier` label to `partial_refresh_total`, do the consumer-side query migration.
 - **Phase 4 (later)**: remove the legacy `Refresh()`. Out of scope.
 
 ## [1.5.2] - 2026-05-21 [Chart bump to ship binary 1.4.2]
