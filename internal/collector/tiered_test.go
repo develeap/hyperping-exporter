@@ -415,3 +415,68 @@ func TestTieredRefresher_StaleFallbackLogsTierLabel(t *testing.T) {
 	assert.True(t, seenTiers["hot"], "expected at least one log with tier=hot")
 	assert.True(t, seenTiers["cold"], "expected at least one log with tier=cold")
 }
+
+// --- lifecycle tests (chunk 4) ---
+
+func TestTieredRefresher_TickerFiresAtConfiguredCadence(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	tr := &tieredRefresher{
+		api:     api,
+		logger:  newTestLogger(),
+		hotTTL:  20 * time.Millisecond,
+		warmTTL: 30 * time.Millisecond,
+		coldTTL: 40 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	tr.start(ctx)
+
+	// Within 150ms with hotTTL=20ms expect 1 eager + at least 3 ticks.
+	assert.GreaterOrEqual(t, int(api.monitorsCalls.Load()), 3,
+		"HOT must fire at least 3 times within 150ms at hotTTL=20ms; got %d", api.monitorsCalls.Load())
+	// WARM uses ListMaintenance + reports; reports gives a clean per-tier
+	// counter. With warmTTL=30ms within 150ms expect >=2 ticks (ticker fires
+	// first at 30ms not at 0).
+	assert.GreaterOrEqual(t, int(api.reportsCalls.Load()), 2,
+		"WARM + COLD together must hit ListMonitorReports at least twice within 150ms; got %d", api.reportsCalls.Load())
+}
+
+func TestTieredRefresher_ContextCancellationStopsAllTiers(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	tr := &tieredRefresher{
+		api:     api,
+		logger:  newTestLogger(),
+		hotTTL:  10 * time.Millisecond,
+		warmTTL: 10 * time.Millisecond,
+		coldTTL: 10 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		tr.start(ctx)
+		close(done)
+	}()
+
+	// Let at least one tier run.
+	require.Eventually(t, func() bool {
+		return tr.hotReady.Load()
+	}, time.Second, 5*time.Millisecond, "hot must become ready")
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("tieredRefresher.start did not return after ctx cancellation")
+	}
+}
