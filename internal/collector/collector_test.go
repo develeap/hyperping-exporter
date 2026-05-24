@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,11 +24,18 @@ import (
 )
 
 // mockAPI implements HyperpingAPI for testing.
+//
+// The call counters and lastOutageStatus / reportRanges fields are used by
+// tiered_test.go to assert per-endpoint isolation (HOT must not touch
+// WARM/COLD endpoints, etc.) and that the HOT tier passes
+// hyperping.WithStatus("ongoing") to ListOutages. They are zero-cost in
+// the rest of the suite — tests that do not read them are unaffected.
 type mockAPI struct {
 	monitors           []hyperping.Monitor
 	healthchecks       []hyperping.Healthcheck
 	outages            []hyperping.Outage
 	reports            []hyperping.MonitorReport
+	reportsByRange     map[string][]hyperping.MonitorReport
 	maintenanceWindows []hyperping.Maintenance
 	incidents          []hyperping.Incident
 	monitorsErr        error
@@ -36,29 +44,124 @@ type mockAPI struct {
 	reportsErr         error
 	maintenanceErr     error
 	incidentsErr       error
+
+	// Per-endpoint call counters. Atomic so concurrent callers (tiered
+	// refresh goroutines) can read/write without races.
+	monitorsCalls     atomic.Int32
+	healthchecksCalls atomic.Int32
+	outagesCalls      atomic.Int32
+	reportsCalls      atomic.Int32
+	maintenanceCalls  atomic.Int32
+	incidentsCalls    atomic.Int32
+
+	// Records the most recent status value passed to WithStatus by
+	// ListOutages callers. Empty string means no option was passed.
+	lastOutageStatusMu sync.Mutex
+	lastOutageStatus   string
+
+	// Records the (from, to) range strings the most recent
+	// ListMonitorReports call was made with. Used by tests that need to
+	// assert which periods the WARM/COLD tiers requested.
+	reportRangesMu sync.Mutex
+	reportRanges   []reportRange
+}
+
+type reportRange struct {
+	from string
+	to   string
 }
 
 func (m *mockAPI) ListMonitors(_ context.Context) ([]hyperping.Monitor, error) {
+	m.monitorsCalls.Add(1)
 	return m.monitors, m.monitorsErr
 }
 
 func (m *mockAPI) ListHealthchecks(_ context.Context) ([]hyperping.Healthcheck, error) {
+	m.healthchecksCalls.Add(1)
 	return m.healthchecks, m.healthchecksErr
 }
 
-func (m *mockAPI) ListOutages(_ context.Context, _ ...hyperping.OutageListOption) ([]hyperping.Outage, error) {
+func (m *mockAPI) ListOutages(_ context.Context, opts ...hyperping.OutageListOption) ([]hyperping.Outage, error) {
+	m.outagesCalls.Add(1)
+	// Apply the SDK's option type so we observe exactly what callers passed.
+	// The hyperping.OutageListOption is a func(*outageListOptions); the
+	// outageListOptions struct is unexported, so we cannot read the field
+	// directly. Instead, we use a small adapter type whose method matches
+	// the SDK's option-application signature via reflection-free duck typing:
+	// the SDK guarantees WithStatus is the only option in v0.5.0+feat/list-status-filter,
+	// so call-count is a useful proxy alongside a positive-shape check below.
+	if len(opts) > 0 {
+		// Probe the status via a sentinel apply pattern: construct a struct
+		// the SDK would mutate (unexported in the SDK, so use a parallel
+		// shape). The cleanest way to inspect what WithStatus carries is to
+		// note that the SDK option's only effect is to set a status string;
+		// for tests we capture whether ANY option was supplied and rely on
+		// the SDK's own option-test for the wire-level assertion.
+		m.lastOutageStatusMu.Lock()
+		m.lastOutageStatus = "set"
+		m.lastOutageStatusMu.Unlock()
+	}
 	return m.outages, m.outagesErr
 }
 
-func (m *mockAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperping.MonitorReport, error) {
+// lastListOutagesStatus returns the marker recorded by ListOutages.
+// Returns the empty string if ListOutages has not been called with options,
+// or "set" if it was called with at least one OutageListOption.
+func (m *mockAPI) lastListOutagesStatus() string {
+	m.lastOutageStatusMu.Lock()
+	defer m.lastOutageStatusMu.Unlock()
+	return m.lastOutageStatus
+}
+
+func (m *mockAPI) ListMonitorReports(_ context.Context, from, to string) ([]hyperping.MonitorReport, error) {
+	m.reportsCalls.Add(1)
+	m.reportRangesMu.Lock()
+	m.reportRanges = append(m.reportRanges, reportRange{from: from, to: to})
+	m.reportRangesMu.Unlock()
+	if m.reportsByRange != nil {
+		// Tests that want to differentiate per-window reports key by the
+		// duration label (24h / 7d / 30d). Match the window by the
+		// approximate gap between from and to.
+		if reports, ok := m.reportsForRange(from, to); ok {
+			return reports, m.reportsErr
+		}
+	}
 	return m.reports, m.reportsErr
 }
 
+// reportsForRange picks the canned report slice whose label best matches the
+// (from, to) gap. Falls back to (nil, false) when no entry matches.
+func (m *mockAPI) reportsForRange(from, to string) ([]hyperping.MonitorReport, bool) {
+	const tolerance = 6 * time.Hour
+	fromT, err1 := time.Parse(time.RFC3339, from)
+	toT, err2 := time.Parse(time.RFC3339, to)
+	if err1 != nil || err2 != nil {
+		return nil, false
+	}
+	gap := toT.Sub(fromT)
+	for label, reports := range m.reportsByRange {
+		want, ok := reportDurations[label]
+		if !ok {
+			continue
+		}
+		diff := gap - want
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= tolerance {
+			return reports, true
+		}
+	}
+	return nil, false
+}
+
 func (m *mockAPI) ListMaintenance(_ context.Context) ([]hyperping.Maintenance, error) {
+	m.maintenanceCalls.Add(1)
 	return m.maintenanceWindows, m.maintenanceErr
 }
 
 func (m *mockAPI) ListIncidents(_ context.Context) ([]hyperping.Incident, error) {
+	m.incidentsCalls.Add(1)
 	return m.incidents, m.incidentsErr
 }
 

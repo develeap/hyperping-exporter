@@ -4,13 +4,29 @@
 package collector
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	hyperping "github.com/develeap/hyperping-go"
 )
+
+// newTieredRefresherForTest builds a tieredRefresher wired to the supplied
+// mockAPI with sensible test defaults. TTLs are non-zero so any code path
+// that branches on them (defensive validation, ticker construction) sees a
+// realistic value; tests that need ticker semantics override these.
+func newTieredRefresherForTest(api *mockAPI) *tieredRefresher {
+	return &tieredRefresher{
+		api:     api,
+		logger:  newTestLogger(),
+		hotTTL:  60 * time.Second,
+		warmTTL: 5 * time.Minute,
+		coldTTL: 15 * time.Minute,
+	}
+}
 
 // --- buildCollectorSnapshot tests (chunk 1) ---
 //
@@ -150,4 +166,104 @@ func TestTieredRefresher_BuildCollectorSnapshot_AllPopulated(t *testing.T) {
 	assert.Len(t, snap.reports["7d"], 1)
 	assert.Len(t, snap.reports["30d"], 1)
 	assert.Equal(t, 99.9, snap.reports["30d"][0].SLA)
+}
+
+// --- endpoint-isolation tests (chunk 2) ---
+//
+// These tests assert that each per-tier refresh function touches ONLY the
+// endpoints that belong to its tier. The contract is:
+//   - HOT: ListMonitors, ListHealthchecks, ListIncidents, ListOutages, ListMaintenance
+//   - WARM: ListMonitorReports (24h only), ListMaintenance (full), and MCP calls
+//   - COLD: ListMonitorReports (7d, 30d)
+// ListMaintenance is called by both HOT (filtered to active) and WARM (full
+// list), so per-tier counters are read in isolation per test.
+
+func TestTieredRefresher_HotOnlyTouchesHotEndpoints(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
+		healthchecks: []hyperping.Healthcheck{{UUID: "hc_1"}},
+	}
+	tr := newTieredRefresherForTest(api)
+
+	tr.refreshHot(context.Background())
+
+	assert.Equal(t, int32(1), api.monitorsCalls.Load(), "HOT must call ListMonitors")
+	assert.Equal(t, int32(1), api.healthchecksCalls.Load(), "HOT must call ListHealthchecks")
+	assert.Equal(t, int32(1), api.outagesCalls.Load(), "HOT must call ListOutages")
+	assert.Equal(t, int32(1), api.incidentsCalls.Load(), "HOT must call ListIncidents")
+	assert.Equal(t, int32(1), api.maintenanceCalls.Load(), "HOT must call ListMaintenance (filtered to active)")
+	assert.Equal(t, int32(0), api.reportsCalls.Load(), "HOT must NOT call ListMonitorReports")
+}
+
+func TestTieredRefresher_WarmOnlyTouchesWarmEndpoints(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
+	}
+	tr := newTieredRefresherForTest(api)
+	// WARM depends on the HOT monitor list to know which uuids to fetch
+	// per-monitor MCP metrics for. Pre-populate the HOT snapshot directly
+	// rather than triggering a HOT refresh (which would dirty the
+	// per-endpoint counters this test asserts).
+	tr.hot.Store(&hotSnapshot{
+		monitors:    api.monitors,
+		refreshedAt: time.Now(),
+	})
+
+	tr.refreshWarm(context.Background())
+
+	assert.Equal(t, int32(0), api.monitorsCalls.Load(), "WARM must NOT call ListMonitors")
+	assert.Equal(t, int32(0), api.healthchecksCalls.Load(), "WARM must NOT call ListHealthchecks")
+	assert.Equal(t, int32(0), api.outagesCalls.Load(), "WARM must NOT call ListOutages")
+	assert.Equal(t, int32(0), api.incidentsCalls.Load(), "WARM must NOT call ListIncidents")
+	assert.Equal(t, int32(1), api.maintenanceCalls.Load(), "WARM must call ListMaintenance (full list)")
+	// WARM fetches only the 24h report window (7d and 30d are COLD).
+	assert.Equal(t, int32(1), api.reportsCalls.Load(), "WARM must call ListMonitorReports exactly once for 24h")
+	require.Len(t, api.reportRanges, 1)
+	gap := mustParseTime(t, api.reportRanges[0].to).Sub(mustParseTime(t, api.reportRanges[0].from))
+	assert.InDelta(t, (24 * time.Hour).Seconds(), gap.Seconds(), float64((1*time.Minute).Seconds()),
+		"WARM must request the 24h window")
+}
+
+func TestTieredRefresher_ColdOnlyTouchesColdEndpoints(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
+	}
+	tr := newTieredRefresherForTest(api)
+
+	tr.refreshCold(context.Background())
+
+	assert.Equal(t, int32(0), api.monitorsCalls.Load(), "COLD must NOT call ListMonitors")
+	assert.Equal(t, int32(0), api.healthchecksCalls.Load(), "COLD must NOT call ListHealthchecks")
+	assert.Equal(t, int32(0), api.outagesCalls.Load(), "COLD must NOT call ListOutages")
+	assert.Equal(t, int32(0), api.incidentsCalls.Load(), "COLD must NOT call ListIncidents")
+	assert.Equal(t, int32(0), api.maintenanceCalls.Load(), "COLD must NOT call ListMaintenance")
+	assert.Equal(t, int32(2), api.reportsCalls.Load(), "COLD must call ListMonitorReports twice (7d, 30d)")
+	require.Len(t, api.reportRanges, 2)
+	gaps := []time.Duration{}
+	for _, r := range api.reportRanges {
+		gaps = append(gaps, mustParseTime(t, r.to).Sub(mustParseTime(t, r.from)))
+	}
+	// Order isn't guaranteed (the two requests run concurrently), so just
+	// assert both 7d and 30d gaps appear.
+	hasWindow := func(want time.Duration) bool {
+		for _, g := range gaps {
+			diff := g - want
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff < 6*time.Hour {
+				return true
+			}
+		}
+		return false
+	}
+	assert.True(t, hasWindow(7*24*time.Hour), "COLD must request a 7d window; got %v", gaps)
+	assert.True(t, hasWindow(30*24*time.Hour), "COLD must request a 30d window; got %v", gaps)
+}
+
+func mustParseTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, s)
+	require.NoError(t, err, "parse %q", s)
+	return parsed
 }
