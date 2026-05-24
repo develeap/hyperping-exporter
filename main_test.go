@@ -97,7 +97,7 @@ func (d *dummyCollectorAPI) ListMonitors(_ context.Context) ([]hyperping.Monitor
 func (d *dummyCollectorAPI) ListHealthchecks(_ context.Context) ([]hyperping.Healthcheck, error) {
 	return nil, nil
 }
-func (d *dummyCollectorAPI) ListOutages(_ context.Context) ([]hyperping.Outage, error) {
+func (d *dummyCollectorAPI) ListOutages(_ context.Context, _ ...hyperping.OutageListOption) ([]hyperping.Outage, error) {
 	return nil, nil
 }
 func (d *dummyCollectorAPI) ListMonitorReports(_ context.Context, _, _ string) ([]hyperping.MonitorReport, error) {
@@ -249,4 +249,49 @@ func TestParseConfig_ExcludeNamePattern_Empty(t *testing.T) {
 	cfg, ok := parseConfig()
 	require.True(t, ok)
 	assert.Nil(t, cfg.excludeNameRx, "empty pattern must leave excludeNameRx nil")
+}
+
+// --- cache-mode and tier-TTL flag-parsing tests (chunk 7) ---
+
+func TestParseConfig_CacheMode_DefaultLegacy(t *testing.T) {
+	resetFlags(t, []string{"test"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "legacy", cfg.cacheMode, "default cache mode must be \"legacy\" so existing deployments are unchanged")
+}
+
+func TestParseConfig_CacheMode_Tiered(t *testing.T) {
+	resetFlags(t, []string{"test", "--cache-mode", "tiered"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "tiered", cfg.cacheMode)
+}
+
+func TestParseConfig_CacheMode_Invalid(t *testing.T) {
+	resetFlags(t, []string{"test", "--cache-mode", "fast"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	_, ok := parseConfig()
+	assert.False(t, ok, "invalid cache mode must be rejected at parse time")
+}
+
+func TestParseConfig_TierTTLs_Override(t *testing.T) {
+	resetFlags(t, []string{
+		"test",
+		"--cache-mode", "tiered",
+		"--hot-ttl", "45s",
+		"--warm-ttl", "3m",
+		"--cold-ttl", "20m",
+	})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, 45*time.Second, cfg.hotTTL)
+	assert.Equal(t, 3*time.Minute, cfg.warmTTL)
+	assert.Equal(t, 20*time.Minute, cfg.coldTTL)
 }

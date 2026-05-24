@@ -80,6 +80,83 @@ Usage:
 {{- end -}}
 
 {{/*
+validateCacheMode. Accepts "legacy" or "tiered" (case-insensitive). Any
+other value abort()s the render. Default is "legacy" so omitted values
+are accepted unchanged; an unset cacheMode is taken as "legacy".
+*/}}
+{{- define "hyperping-exporter.validateCacheMode" -}}
+{{- $mode := .Values.config.cacheMode | default "legacy" -}}
+{{- if not (kindIs "string" $mode) -}}
+{{- fail (printf "config.cacheMode must be a string (\"legacy\" or \"tiered\"); got kind %s." (kindOf .Values.config.cacheMode)) -}}
+{{- end -}}
+{{- $lc := lower $mode -}}
+{{- if and (ne $lc "legacy") (ne $lc "tiered") -}}
+{{- fail (printf "config.cacheMode %q is not supported. Allowed values: \"legacy\", \"tiered\" (case-insensitive). See docs/tiered-cache-design.md for the tiered mode semantics." $mode) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+validateTierTTLs. Enforces per-tier floor durations when cacheMode is
+"tiered": hotTTL >= 30s, warmTTL >= 60s, coldTTL >= 300s. Same error
+shape as validateCacheTTL: fail() with a clear message naming the
+specific value the operator must change. Floors are conservative,
+chosen so the SDK rate-limit budget (300 req/min/key) is comfortably
+respected even with 100+ monitors.
+
+A bare integer for any of the three TTLs is rejected with the same
+shape as validateCacheTTL (Go duration parsing requires a unit).
+*/}}
+{{- define "hyperping-exporter.validateTierTTLs" -}}
+{{- $mode := .Values.config.cacheMode | default "legacy" -}}
+{{- if eq (lower $mode) "tiered" -}}
+{{- $hot := .Values.config.hotTTL -}}
+{{- $warm := .Values.config.warmTTL -}}
+{{- $cold := .Values.config.coldTTL -}}
+{{- if or (not (kindIs "string" $hot)) (eq $hot "") -}}
+{{- fail (printf "config.hotTTL must be a non-empty quoted Go duration string (e.g. \"60s\"); empty or non-string values would render `--hot-ttl=` which the binary's flag.Duration parser rejects at startup. Got kind %s (value %v). Quote the value in values.yaml." (kindOf .Values.config.hotTTL) .Values.config.hotTTL) -}}
+{{- end -}}
+{{- if or (not (kindIs "string" $warm)) (eq $warm "") -}}
+{{- fail (printf "config.warmTTL must be a non-empty quoted Go duration string (e.g. \"5m\"); got kind %s (value %v)." (kindOf .Values.config.warmTTL) .Values.config.warmTTL) -}}
+{{- end -}}
+{{- if or (not (kindIs "string" $cold)) (eq $cold "") -}}
+{{- fail (printf "config.coldTTL must be a non-empty quoted Go duration string (e.g. \"15m\"); got kind %s (value %v)." (kindOf .Values.config.coldTTL) .Values.config.coldTTL) -}}
+{{- end -}}
+{{- $hotS := int (regexReplaceAll "[^0-9]" $hot "") -}}
+{{- $hotIsSeconds := hasSuffix "s" $hot -}}
+{{- $hotIsMinutes := hasSuffix "m" $hot -}}
+{{- $hotIsHours   := hasSuffix "h" $hot -}}
+{{- $hotSeconds := 0 -}}
+{{- if $hotIsHours }}{{- $hotSeconds = mul $hotS 3600 -}}
+{{- else if $hotIsMinutes }}{{- $hotSeconds = mul $hotS 60 -}}
+{{- else if $hotIsSeconds }}{{- $hotSeconds = $hotS -}}
+{{- else }}{{- fail (printf "config.hotTTL %q must end in s/m/h (e.g. \"60s\"); the binary's flag.Duration parser rejects unit-less values." $hot) -}}{{- end -}}
+{{- if lt $hotSeconds 30 -}}
+{{- fail (printf "config.hotTTL %q is below the 30s floor. The HOT tier carries every per-monitor up/down/outage gauge in tiered mode; refreshing more often than 30s wastes the SDK's rate-limit budget without measurable observability gain. Same enforcement shape as validateCacheTTL." $hot) -}}
+{{- end -}}
+
+{{- $warmS := int (regexReplaceAll "[^0-9]" $warm "") -}}
+{{- $warmSeconds := 0 -}}
+{{- if hasSuffix "h" $warm }}{{- $warmSeconds = mul $warmS 3600 -}}
+{{- else if hasSuffix "m" $warm }}{{- $warmSeconds = mul $warmS 60 -}}
+{{- else if hasSuffix "s" $warm }}{{- $warmSeconds = $warmS -}}
+{{- else }}{{- fail (printf "config.warmTTL %q must end in s/m/h (e.g. \"5m\")." $warm) -}}{{- end -}}
+{{- if lt $warmSeconds 60 -}}
+{{- fail (printf "config.warmTTL %q is below the 60s floor. The WARM tier carries the MCP per-monitor metric pool; refreshing more often than 60s can saturate the SDK rate-limit budget." $warm) -}}
+{{- end -}}
+
+{{- $coldS := int (regexReplaceAll "[^0-9]" $cold "") -}}
+{{- $coldSeconds := 0 -}}
+{{- if hasSuffix "h" $cold }}{{- $coldSeconds = mul $coldS 3600 -}}
+{{- else if hasSuffix "m" $cold }}{{- $coldSeconds = mul $coldS 60 -}}
+{{- else if hasSuffix "s" $cold }}{{- $coldSeconds = $coldS -}}
+{{- else }}{{- fail (printf "config.coldTTL %q must end in s/m/h (e.g. \"15m\")." $cold) -}}{{- end -}}
+{{- if lt $coldSeconds 300 -}}
+{{- fail (printf "config.coldTTL %q is below the 300s floor. The COLD tier carries 7d/30d SLA reports which are heavy server-side; the 300s floor is conservative and matches the design doc." $cold) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 validateCacheTTL (Contract C2.3). `fail()`s if `config.cacheTTL` is not a
 non-empty string. Operators must quote bare integers (e.g. `"60s"` not
 `60`); the binary expects a Go duration and an empty value renders

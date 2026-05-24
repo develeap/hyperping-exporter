@@ -18,8 +18,48 @@ import (
 	hyperping "github.com/develeap/hyperping-go"
 )
 
+// CacheMode selects how the Collector refreshes its cache.
+//
+//   - CacheModeLegacy (default) drives a single cacheTTL ticker that
+//     refreshes every endpoint together. Behaviour is unchanged from
+//     pre-1.6 binaries.
+//   - CacheModeTiered drives three independent HOT/WARM/COLD tickers,
+//     each owning its own subset of endpoints and atomic snapshot
+//     pointer. See docs/tiered-cache-design.md.
+//
+// The mode is selected via WithCacheMode and exposed to operators via
+// --cache-mode in main.go. Helm renders it through config.cacheMode.
+type CacheMode int
+
+const (
+	// CacheModeLegacy uses a single cacheTTL ticker (default).
+	CacheModeLegacy CacheMode = iota
+	// CacheModeTiered uses three independent per-tier tickers.
+	CacheModeTiered
+)
+
 // CollectorOption configures a Collector after construction.
 type CollectorOption func(*Collector)
+
+// WithCacheMode selects the cache refresh strategy.
+func WithCacheMode(m CacheMode) CollectorOption {
+	return func(c *Collector) {
+		c.cacheMode = m
+	}
+}
+
+// WithTierTTLs configures the HOT/WARM/COLD refresh intervals. Only honored
+// when CacheModeTiered is also set. Floors should already be enforced by
+// the Helm chart's validateTierTTLs (hot >= 30s, warm >= 60s, cold >= 300s);
+// the floors are intentionally NOT re-enforced here because legitimate test
+// callers need millisecond-scale TTLs.
+func WithTierTTLs(hot, warm, cold time.Duration) CollectorOption {
+	return func(c *Collector) {
+		c.hotTTL = hot
+		c.warmTTL = warm
+		c.coldTTL = cold
+	}
+}
 
 // WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
 // is dropped from the monitor list immediately after the API fetch, before any
@@ -51,10 +91,15 @@ var reportDurations = map[string]time.Duration{
 }
 
 // HyperpingAPI defines the Hyperping API methods used by the collector.
+//
+// ListOutages takes variadic OutageListOption values so the tiered cache
+// HOT tier can pass hyperping.WithStatus("ongoing") to keep the per-tick
+// payload small. The legacy Refresh() loop passes no options, preserving
+// the pre-tiered-cache semantics of fetching the full outage list.
 type HyperpingAPI interface {
 	ListMonitors(ctx context.Context) ([]hyperping.Monitor, error)
 	ListHealthchecks(ctx context.Context) ([]hyperping.Healthcheck, error)
-	ListOutages(ctx context.Context) ([]hyperping.Outage, error)
+	ListOutages(ctx context.Context, opts ...hyperping.OutageListOption) ([]hyperping.Outage, error)
 	ListMonitorReports(ctx context.Context, from, to string) ([]hyperping.MonitorReport, error)
 	ListMaintenance(ctx context.Context) ([]hyperping.Maintenance, error)
 	ListIncidents(ctx context.Context) ([]hyperping.Incident, error)
@@ -118,7 +163,7 @@ func newCollectorDescs(ns string) collectorDescs {
 		healthchecksTotal:         prometheus.NewDesc(fqn(ns, "", "healthchecks"), "Total number of healthchecks.", nil, nil),
 		scrapeDurationDesc:        prometheus.NewDesc(fqn(ns, "scrape", "duration_seconds"), "Duration of the last API scrape in seconds.", nil, nil),
 		scrapeSuccessDesc:         prometheus.NewDesc(fqn(ns, "scrape", "success"), "Whether the last API scrape succeeded (1) or failed (0).", nil, nil),
-		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh.", nil, nil),
+		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh, labelled by tier. In legacy mode only `tier=\"hot\"` is emitted (matches the pre-tiered single-ticker semantics). In tiered mode each of `hot`/`warm`/`cold` is emitted as a separate series.", []string{"tier"}, nil),
 		monitorOutageActive:       prometheus.NewDesc(fqn(ns, "monitor", "outage_active"), "Whether the monitor has an active (unresolved) outage (1) or not (0).", ml, nil),
 		monitorActiveOutageStatus: prometheus.NewDesc(fqn(ns, "monitor", "active_outage_status_code"), "HTTP status code of the current active outage; 0 when no active outage.", ml, nil),
 		monitorSLA:                prometheus.NewDesc(fqn(ns, "monitor", "sla_ratio"), "Monitor SLA as a ratio (0–1) over the labelled period.", mpl, nil),
@@ -201,7 +246,13 @@ type collectorSnapshot struct {
 	lastSuccessTime        time.Time
 	scrapeOK               bool
 	scrapeDur              time.Duration
-	dataAge                float64
+	// dataAges is the per-tier seconds-since-last-success, keyed by tier name
+	// ("hot"|"warm"|"cold"). Legacy mode populates only "hot" (the single
+	// refresh loop is treated as the HOT tier for label parity with tiered
+	// mode). Tiered mode populates all three when each tier has succeeded at
+	// least once; tiers that have not yet succeeded are omitted (no series
+	// emitted) so the metric semantics stay "elapsed since last success".
+	dataAges               map[string]float64
 	maintenanceIndex       map[string]bool              // monitor uuid -> covered by active window
 	regionDownIndex        map[string]map[string]bool   // uuid -> region -> is_down
 	openIncidentCount      int
@@ -226,6 +277,14 @@ type Collector struct {
 	cacheTTL       time.Duration
 	logger         *slog.Logger
 	excludePattern *regexp.Regexp
+
+	// Tiered cache (CacheModeTiered only). When cacheMode == CacheModeLegacy
+	// the tiered field is nil and Start/Collect take the legacy path.
+	cacheMode CacheMode
+	hotTTL    time.Duration
+	warmTTL   time.Duration
+	coldTTL   time.Duration
+	tiered    *tieredRefresher
 
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
@@ -271,11 +330,26 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 	for _, opt := range opts {
 		opt(c)
 	}
+	// In tiered mode build the refresher up front so callers can drive
+	// per-tier refreshes directly (tests do this) and so Start has nothing
+	// to allocate on the hot path. Legacy mode leaves c.tiered nil.
+	if c.cacheMode == CacheModeTiered {
+		c.tiered = newTieredRefresher(c, c.hotTTL, c.warmTTL, c.coldTTL)
+	}
 	return c
 }
 
 // Start begins the background cache refresh loop. It blocks until ctx is cancelled.
+//
+// In CacheModeLegacy this is a single ticker driving Refresh at cacheTTL
+// intervals. In CacheModeTiered this delegates to tieredRefresher.start,
+// which runs three independent per-tier tickers.
 func (c *Collector) Start(ctx context.Context) {
+	if c.cacheMode == CacheModeTiered && c.tiered != nil {
+		c.tiered.start(ctx)
+		return
+	}
+
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c.Refresh(initCtx)
@@ -692,7 +766,14 @@ func (c *Collector) Refresh(ctx context.Context) {
 // IsReady returns true once at least one successful API scrape has completed.
 // It never reverts to false: transient failures after the first success do not
 // affect readiness — staleness is surfaced by hyperping_data_age_seconds instead.
+//
+// In tiered mode "successful" means the HOT tier has published at least once;
+// WARM and COLD lag is expected during the post-boot cold-start window and
+// must not gate /readyz.
 func (c *Collector) IsReady() bool {
+	if c.cacheMode == CacheModeTiered && c.tiered != nil {
+		return c.tiered.hotReady.Load()
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.everSucceeded
@@ -741,7 +822,19 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 // Collect implements prometheus.Collector.
 // Cached slices are copied under a minimal read lock; all index building and
 // metric emission happen outside the lock to avoid blocking concurrent Refresh calls.
+//
+// In tiered mode the snapshot comes from buildCollectorSnapshot (three atomic
+// Loads + stitch); the legacy snapshot path below is skipped entirely.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	if c.cacheMode == CacheModeTiered && c.tiered != nil {
+		snap := c.tiered.buildCollectorSnapshot()
+		c.emitMonitorMetrics(ch, snap)
+		c.emitHealthcheckMetrics(ch, snap)
+		c.emitReportMetrics(ch, snap)
+		c.emitTenantMetrics(ch, snap)
+		c.emitMcpMetrics(ch, snap)
+		return
+	}
 	// STEP 1: Copy raw cached state under read lock (no CPU-heavy work here).
 	c.mu.RLock()
 	monitors := c.monitors
@@ -779,9 +872,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RUnlock()
 
 	// STEP 2: Build all derived indices outside the lock.
-	var dataAge float64
+	// Legacy mode treats its single refresh ticker as the HOT tier for
+	// label parity with tiered mode. Only emit a data_age series once a
+	// successful refresh has been observed.
+	dataAges := map[string]float64{}
 	if !lastSuccess.IsZero() {
-		dataAge = time.Since(lastSuccess).Seconds()
+		dataAges["hot"] = time.Since(lastSuccess).Seconds()
 	}
 	outageIdx := buildActiveOutageIndex(outages)
 	monIdx := make(map[string]hyperping.Monitor, len(monitors))
@@ -799,7 +895,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		lastSuccessTime:        lastSuccess,
 		scrapeOK:               scrapeOK,
 		scrapeDur:              scrapeDur,
-		dataAge:                dataAge,
+		dataAges:               dataAges,
 		maintenanceIndex:       maintenanceIdx,
 		regionDownIndex:        buildRegionDownIndex(outageIdx),
 		openIncidentCount:      countOpenIncidents(incidents),
@@ -962,9 +1058,13 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	ch <- prometheus.MustNewConstMetric(c.scrapeSuccessDesc, prometheus.GaugeValue,
 		boolToFloat64(snap.scrapeOK))
 
-	// OPS-31: data age — only after at least one successful scrape.
-	if snap.dataAge > 0 {
-		ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, snap.dataAge)
+	// OPS-31: data age, labelled by tier. Tier order is fixed for stable
+	// scrape ordering across ticks; tiers with no prior success are omitted
+	// so the metric continues to mean "elapsed since last success".
+	for _, tier := range []string{"hot", "warm", "cold"} {
+		if age, ok := snap.dataAges[tier]; ok && age > 0 {
+			ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier)
+		}
 	}
 
 	// OPS-34: tenant-wide health metrics.

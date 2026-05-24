@@ -1,5 +1,7 @@
 {{- include "hyperping-exporter.validateNoTestKeys" . -}}
 {{- include "hyperping-exporter.validateCacheTTL" . -}}
+{{- include "hyperping-exporter.validateCacheMode" . -}}
+{{- include "hyperping-exporter.validateTierTTLs" . -}}
 {{- include "hyperping-exporter.validateReplicaCount" . -}}
 {{- include "hyperping-exporter.validateSecretSources" . -}}
 {{- include "hyperping-exporter.validateWebConfigFile" . -}}
@@ -65,6 +67,13 @@ spec:
             {{- end }}
             {{- if .Values.config.mcpUrl }}
             - {{ include "hyperping-exporter.arg" (list "--mcp-url" .Values.config.mcpUrl) }}
+            {{- end }}
+            {{- $cacheMode := .Values.config.cacheMode | default "legacy" }}
+            {{- if eq (lower $cacheMode) "tiered" }}
+            - {{ include "hyperping-exporter.arg" (list "--cache-mode" "tiered") }}
+            - {{ include "hyperping-exporter.arg" (list "--hot-ttl" .Values.config.hotTTL) }}
+            - {{ include "hyperping-exporter.arg" (list "--warm-ttl" .Values.config.warmTTL) }}
+            - {{ include "hyperping-exporter.arg" (list "--cold-ttl" .Values.config.coldTTL) }}
             {{- end }}
           {{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}
           env:
