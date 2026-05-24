@@ -45,6 +45,29 @@ config:
   # Must be a quoted Go duration string (e.g. "60s"). Bare integers (60)
   # abort the render with a clear error pointing to validateCacheTTL.
   cacheTTL: "60s"
+  # Cache refresh strategy. "legacy" (default) drives a single ticker at
+  # config.cacheTTL; "tiered" drives three independent HOT/WARM/COLD
+  # tickers governed by config.hotTTL / warmTTL / coldTTL. See
+  # docs/tiered-cache-design.md for the breakdown. Operators opt in
+  # explicitly; the default is unchanged so chart 1.5.x users see no
+  # behaviour change.
+  cacheMode: "legacy"
+  # Tiered-mode HOT-tier refresh interval. Carries everything Collect
+  # needs to render high-cardinality per-monitor up/down/outage gauges
+  # (monitors, healthchecks, ongoing outages, ongoing maintenance,
+  # incidents). Floor: 30s. Floor enforcement happens in
+  # validateTierTTLs at render time, same shape as validateCacheTTL.
+  hotTTL: "60s"
+  # Tiered-mode WARM-tier refresh interval. Carries MCP per-monitor
+  # metrics (response time, MTTA, anomalies), the 24h SLA report, the
+  # full maintenance list, and the global alert count. Floor: 60s.
+  warmTTL: "5m"
+  # Tiered-mode COLD-tier refresh interval. Carries the 7d and 30d SLA
+  # reports used for the long-window per-monitor SLA gauges and for
+  # hyperping_tenant_health_score (which requires 30d). Floor: 300s.
+  # Cold-start gap: tenant health score is absent for ~15 min after
+  # pod boot in tiered mode; documented in CHANGELOG.
+  coldTTL: "15m"
   metricsPath: "/metrics"
   logLevel: "info"
   logFormat: "text"
