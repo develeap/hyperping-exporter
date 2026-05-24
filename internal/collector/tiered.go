@@ -58,6 +58,71 @@ type tieredRefresher struct {
 	coldMu sync.Mutex
 }
 
+// start launches one goroutine per tier and blocks until ctx is cancelled.
+// HOT runs an eager initial refresh in-band (so /readyz can flip on as soon
+// as start returns the boot path to the caller) before its ticker is
+// installed; WARM and COLD do not block startup — they fire on first tick.
+//
+// On ctx cancellation start returns after every tier goroutine exits its
+// select loop. Each tier's refresh function holds a per-tier mutex, so an
+// in-progress refresh completes before the goroutine returns.
+func (t *tieredRefresher) start(ctx context.Context) {
+	// Eager initial HOT refresh: blocks until either HOT publishes a
+	// snapshot or ctx is cancelled. This mirrors the legacy Collector.Start
+	// behaviour (Refresh runs once before the ticker) so /readyz semantics
+	// stay the same: ready latches as soon as the first HOT succeeds.
+	initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
+	t.refreshHot(initCtx)
+	cancelInit()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(t.hotTTL)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				t.refreshHot(ctx)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(t.warmTTL)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				t.refreshWarm(ctx)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(t.coldTTL)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				t.refreshCold(ctx)
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
 // newTieredRefresher constructs a tieredRefresher from a Collector's wired
 // dependencies. The collector parameter is the source of truth for shared
 // state (logger, exclude pattern, MCP metrics counter); per-tier TTLs and
