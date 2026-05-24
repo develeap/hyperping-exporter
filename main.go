@@ -38,6 +38,10 @@ type config struct {
 	metricsPath        string
 	apiKey             string
 	cacheTTL           time.Duration
+	cacheMode          string
+	hotTTL             time.Duration
+	warmTTL            time.Duration
+	coldTTL            time.Duration
 	logLevel           string
 	logFormat          string
 	webConfigFile      string
@@ -52,7 +56,11 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.listenAddr, "listen-address", ":9312", "Address to listen on for metrics")
 	flag.StringVar(&cfg.metricsPath, "metrics-path", "/metrics", "Path under which to expose metrics")
 	flag.StringVar(&cfg.apiKey, "api-key", "", "Hyperping API key (env: HYPERPING_API_KEY)")
-	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 60*time.Second, "How often to refresh data from the API")
+	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 60*time.Second, "How often to refresh data from the API (legacy mode only)")
+	flag.StringVar(&cfg.cacheMode, "cache-mode", "legacy", `Cache refresh strategy: "legacy" (single ticker, default) or "tiered" (three independent HOT/WARM/COLD tickers; see docs/tiered-cache-design.md)`)
+	flag.DurationVar(&cfg.hotTTL, "hot-ttl", 60*time.Second, "Tiered mode HOT-tier refresh interval (only honored when --cache-mode=tiered)")
+	flag.DurationVar(&cfg.warmTTL, "warm-ttl", 5*time.Minute, "Tiered mode WARM-tier refresh interval (only honored when --cache-mode=tiered)")
+	flag.DurationVar(&cfg.coldTTL, "cold-ttl", 15*time.Minute, "Tiered mode COLD-tier refresh interval (only honored when --cache-mode=tiered)")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&cfg.webConfigFile, "web.config.file", "", "Path to web config (TLS/basic-auth). See https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md")
@@ -83,6 +91,16 @@ func parseConfig() (config, bool) {
 			fmt.Fprintf(os.Stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
 			return cfg, false
 		}
+	}
+	// Validate --cache-mode (case-insensitive) so an unrecognised value
+	// fails fast at boot rather than silently falling back to one of the
+	// two valid modes. Same shape as validateNamespace's negative path.
+	switch strings.ToLower(cfg.cacheMode) {
+	case "legacy", "tiered":
+		cfg.cacheMode = strings.ToLower(cfg.cacheMode)
+	default:
+		fmt.Fprintf(os.Stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
+		return cfg, false
 	}
 	if cfg.excludeNamePattern != "" {
 		rx, err := regexp.Compile(cfg.excludeNamePattern)
@@ -206,10 +224,24 @@ func run() int {
 	if cfg.excludeNameRx != nil {
 		logger.Info("monitor exclusion filter active", "pattern", cfg.excludeNamePattern)
 	}
-	c := collector.NewCollector(
-		apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
+	collectorOpts := []collector.CollectorOption{
 		collector.WithExcludePattern(cfg.excludeNameRx),
 		collector.WithMCPMetrics(mcpMetrics),
+	}
+	if cfg.cacheMode == "tiered" {
+		collectorOpts = append(collectorOpts,
+			collector.WithCacheMode(collector.CacheModeTiered),
+			collector.WithTierTTLs(cfg.hotTTL, cfg.warmTTL, cfg.coldTTL),
+		)
+		logger.Info("cache mode: tiered",
+			"hot_ttl", cfg.hotTTL,
+			"warm_ttl", cfg.warmTTL,
+			"cold_ttl", cfg.coldTTL,
+		)
+	}
+	c := collector.NewCollector(
+		apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
+		collectorOpts...,
 	)
 	registry.MustRegister(c)
 	mux, err := newMux(cfg.metricsPath, registry, c)
