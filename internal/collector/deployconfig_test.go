@@ -156,7 +156,11 @@ func helmTemplate(t *testing.T, setFlags ...string) (string, error) {
 	for _, s := range setFlags {
 		args = append(args, "--set", s)
 	}
-	cmd := exec.Command("helm", args...)
+	// args originate from test code (a fixed prefix + caller-supplied --set
+	// flags from the same package), never from external input. The helm
+	// binary path is resolved from PATH on the CI runner. Safe by
+	// construction; gosec G204 false positive.
+	cmd := exec.Command("helm", args...) // #nosec G204
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
