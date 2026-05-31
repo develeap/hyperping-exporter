@@ -390,3 +390,25 @@ func TestParseConfig_APIKeyFile_Missing(t *testing.T) {
 	_, ok := parseConfigOut(&buf)
 	assert.False(t, ok, "missing api-key-file must cause parseConfig to fail")
 }
+
+// --- HTTP server hardening (MEDIUM-3) ---
+
+// TestNewHTTPServer_Hardening pins the server timeouts and header-bytes cap
+// against regression. ReadHeaderTimeout and ReadTimeout were already set;
+// IdleTimeout and MaxHeaderBytes are the new guards against keep-alive
+// idle-connection DoS and header-bomb DoS respectively.
+func TestNewHTTPServer_Hardening(t *testing.T) {
+	srv := newHTTPServer(":9312", http.NewServeMux())
+	require.NotNil(t, srv)
+
+	assert.NotZero(t, srv.ReadHeaderTimeout, "ReadHeaderTimeout must be set")
+	assert.NotZero(t, srv.ReadTimeout, "ReadTimeout must be set")
+	assert.NotZero(t, srv.WriteTimeout, "WriteTimeout must be set")
+	assert.NotZero(t, srv.IdleTimeout, "IdleTimeout must be set (keep-alive DoS guard)")
+	assert.NotZero(t, srv.MaxHeaderBytes, "MaxHeaderBytes must be set (header-bomb DoS guard)")
+
+	// Concrete sanity bounds; if someone sets these to 1ns the next person to
+	// debug it deserves a hint.
+	assert.GreaterOrEqual(t, srv.IdleTimeout, 30*time.Second)
+	assert.GreaterOrEqual(t, srv.MaxHeaderBytes, 1<<16)
+}
