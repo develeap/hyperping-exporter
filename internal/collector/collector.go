@@ -1031,7 +1031,12 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 			}
 			tenant := extractTenant(mon.Name)
 			tier := escalationTier(mon)
-			name := capLabel(r.Name)
+			// Use the live monitor's name, not the report's Name field. The
+			// API records the monitor's name at report-generation time, so
+			// a rename mid-window leaves the report carrying the stale
+			// label. Using mon.Name keeps all per-uuid series (base + SLA)
+			// on a single, consistent `name` label.
+			name := capLabel(mon.Name)
 			sla := r.SLA / 100.0 // API returns 0–100; expose as 0–1
 			ch <- prometheus.MustNewConstMetric(c.monitorSLA, prometheus.GaugeValue,
 				sla, r.UUID, name, tenant, tier, period)
