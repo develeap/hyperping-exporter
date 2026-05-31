@@ -222,6 +222,48 @@ func newBaseRegistry(namespace string) *prometheus.Registry {
 	return registry
 }
 
+// maybeWarnUnauthenticatedBind emits a single warning at startup when the
+// exporter binds to any-interface (":port", "0.0.0.0:port", "[::]:port")
+// without a web-config file. The default bind is intentionally any-interface
+// (operators rely on network policy / k8s NetworkPolicies / firewalls to
+// restrict access), but a startup hint catches the case where someone
+// forgot the reverse-proxy / basic-auth step on a host that is reachable
+// from the public internet.
+//
+// The check is conservative: any specific IP, loopback, or the presence of
+// --web.config.file keeps the warning silent. The word "unauthenticated"
+// appears in the log line so operators can grep for it during incident
+// response.
+func maybeWarnUnauthenticatedBind(logger *slog.Logger, listenAddr, webConfigFile string) {
+	if webConfigFile != "" {
+		return
+	}
+	if !isAnyInterfaceBind(listenAddr) {
+		return
+	}
+	logger.Warn("metrics endpoint is unauthenticated and bound to any interface; "+
+		"restrict via network policy or set --web.config.file for basic-auth/TLS "+
+		"(see https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md)",
+		"listen_address", listenAddr,
+	)
+}
+
+// isAnyInterfaceBind returns true when addr resolves to "all interfaces":
+// the bare ":port" form, "0.0.0.0:port", and "[::]:port". A specific IP
+// (loopback or otherwise) is treated as an intentional choice.
+func isAnyInterfaceBind(addr string) bool {
+	if strings.HasPrefix(addr, ":") {
+		return true
+	}
+	if strings.HasPrefix(addr, "0.0.0.0:") {
+		return true
+	}
+	if strings.HasPrefix(addr, "[::]:") {
+		return true
+	}
+	return false
+}
+
 // newHTTPServer builds the exporter's http.Server with conservative timeouts
 // and a header-size cap. The values are chosen for an unauthenticated metrics
 // endpoint that may be exposed to opportunistic scanners:
@@ -374,6 +416,7 @@ func run() int {
 		"cache_ttl", cfg.cacheTTL,
 		"namespace", cfg.namespace,
 	)
+	maybeWarnUnauthenticatedBind(logger, cfg.listenAddr, cfg.webConfigFile)
 	if err := web.ListenAndServe(srv, webFlags, logger); err != nil && err != http.ErrServerClosed {
 		logger.Error("server error", "error", err)
 		return 1

@@ -79,6 +79,39 @@ scrape_configs:
 
 ---
 
+## Securing /metrics
+
+`/metrics` is unauthenticated by default. The exposed payload includes
+monitor names, full URLs (query parameters stripped), tenant tags, and
+project UUIDs. **Do not expose the listen port to the public internet
+without protection.** Either restrict the port to a trusted network
+(reverse proxy, k8s NetworkPolicy, host firewall) or enable basic-auth
+via the exporter-toolkit web config.
+
+Minimal `web-config.yml` for basic-auth (bcrypt hash created with
+`htpasswd -nBC 10 ""` or similar):
+
+```yaml
+basic_auth_users:
+  prometheus: $2y$10$bcrypt-hash-of-the-prometheus-scrape-password
+```
+
+Mount and pass it on the command line:
+
+```bash
+docker run -p 9312:9312 \
+  -e HYPERPING_API_KEY=your_key \
+  -v $(pwd)/web-config.yml:/etc/exporter/web-config.yml:ro \
+  khaledsalhabdeveleap/hyperping-exporter:latest \
+  --web.config.file=/etc/exporter/web-config.yml
+```
+
+The exporter logs a startup warning when it binds any-interface with
+no `--web.config.file`; the warning includes a pointer to this
+configuration.
+
+---
+
 ## Endpoints
 
 | Endpoint | Description |
