@@ -318,12 +318,15 @@ func TestParseConfig_APIKeyFlag_DeprecationWarning(t *testing.T) {
 		"expected deprecation notice for --api-key on stderr")
 }
 
-// TestParseConfig_APIKeyFlag_SanitizesOsArgs asserts that after parsing,
-// os.Args entries that carried the API key are overwritten so a snapshot
-// of /proc/<pid>/cmdline no longer leaks the secret. Defense-in-depth:
-// process accounting or kernel logs that captured argv before this point
-// are still a leak, which the deprecation warning calls out.
-func TestParseConfig_APIKeyFlag_SanitizesOsArgs(t *testing.T) {
+// TestParseConfig_APIKeyFlag_OverwritesOsArgsSliceBestEffort asserts that
+// after parsing, the in-process os.Args slice no longer carries the raw API
+// key. This is best-effort defense in depth, NOT a guarantee that
+// /proc/<pid>/cmdline is updated: Go's os.Args is a slice over a copy of
+// argv, so mutating it does not propagate to the kernel's record. Process
+// accounting, audit logs, or kernel rings that snapshotted argv before
+// this point still carry the original secret; the deprecation warning
+// explicitly documents that limitation.
+func TestParseConfig_APIKeyFlag_OverwritesOsArgsSliceBestEffort(t *testing.T) {
 	resetFlags(t, []string{"test", "--api-key", "supersecret"})
 	t.Setenv("HYPERPING_API_KEY", "")
 	os.Unsetenv("HYPERPING_API_KEY")
@@ -331,6 +334,8 @@ func TestParseConfig_APIKeyFlag_SanitizesOsArgs(t *testing.T) {
 	var buf bytes.Buffer
 	_, ok := parseConfigOut(&buf)
 	require.True(t, ok)
+	// Note: this verifies only the in-process os.Args slice. /proc/<pid>/cmdline
+	// is sourced from the kernel's copy of argv[] which Go does not touch.
 	for i, a := range os.Args {
 		assert.NotContains(t, a, "supersecret",
 			"os.Args[%d]=%q must not contain the raw API key after parse", i, a)
@@ -537,8 +542,12 @@ func TestNewHTTPServer_Hardening(t *testing.T) {
 	assert.NotZero(t, srv.IdleTimeout, "IdleTimeout must be set (keep-alive DoS guard)")
 	assert.NotZero(t, srv.MaxHeaderBytes, "MaxHeaderBytes must be set (header-bomb DoS guard)")
 
-	// Concrete sanity bounds; if someone sets these to 1ns the next person to
-	// debug it deserves a hint.
-	assert.GreaterOrEqual(t, srv.IdleTimeout, 30*time.Second)
-	assert.GreaterOrEqual(t, srv.MaxHeaderBytes, 1<<16)
+	// Pin the documented values. A future refactor that silently shrinks
+	// MaxHeaderBytes to 64 KiB or drops IdleTimeout to single-digit seconds
+	// must trip a test, not slip through as "still non-zero".
+	assert.Equal(t, 10*time.Second, srv.ReadHeaderTimeout)
+	assert.Equal(t, 30*time.Second, srv.ReadTimeout)
+	assert.Equal(t, 30*time.Second, srv.WriteTimeout)
+	assert.Equal(t, 120*time.Second, srv.IdleTimeout)
+	assert.Equal(t, 1<<20, srv.MaxHeaderBytes)
 }
