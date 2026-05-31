@@ -100,7 +100,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	if cfg.apiKeyFile != "" {
 		data, err := os.ReadFile(cfg.apiKeyFile)
 		if err != nil {
-			fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
+			_, _ = fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
 			return cfg, false
 		}
 		// Strip any trailing CR/LF combo so Unix LF, Windows CRLF, and
@@ -112,11 +112,11 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
 	if cfg.apiKey == "" {
-		fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, or --api-key)")
+		_, _ = fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, or --api-key)")
 		return cfg, false
 	}
 	if apiKeyFromFlag != "" {
-		fmt.Fprintln(stderr, "warning: --api-key is DEPRECATED and exposes the secret via /proc/<pid>/cmdline; "+
+		_, _ = fmt.Fprintln(stderr, "warning: --api-key is DEPRECATED and exposes the secret via /proc/<pid>/cmdline; "+
 			"use HYPERPING_API_KEY or --api-key-file instead. Scrubbing os.Args is best-effort; "+
 			"process accounting or kernel logs may still have captured the original argv.")
 		os.Args = sanitizeArgs(os.Args, apiKeyFromFlag)
@@ -128,12 +128,12 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 		cfg.namespace = "hyperping"
 	}
 	if err := validateNamespace(cfg.namespace); err != nil {
-		fmt.Fprintf(stderr, "error: invalid namespace: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: invalid namespace: %v\n", err)
 		return cfg, false
 	}
 	if cfg.mcpURL != "" {
 		if !strings.HasPrefix(cfg.mcpURL, "https://") && !strings.HasPrefix(cfg.mcpURL, "http://localhost") {
-			fmt.Fprintf(stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
+			_, _ = fmt.Fprintf(stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
 			return cfg, false
 		}
 	}
@@ -144,13 +144,13 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	case "legacy", "tiered":
 		cfg.cacheMode = strings.ToLower(cfg.cacheMode)
 	default:
-		fmt.Fprintf(stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
+		_, _ = fmt.Fprintf(stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
 		return cfg, false
 	}
 	if cfg.excludeNamePattern != "" {
 		rx, err := regexp.Compile(cfg.excludeNamePattern)
 		if err != nil {
-			fmt.Fprintf(stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
+			_, _ = fmt.Fprintf(stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
 			return cfg, false
 		}
 		cfg.excludeNameRx = rx
