@@ -1,6 +1,6 @@
 module github.com/develeap/hyperping-exporter
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/develeap/hyperping-go v0.6.0
