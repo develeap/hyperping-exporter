@@ -123,7 +123,7 @@ func TestNewMux(t *testing.T) {
 	)
 	reg := prometheus.NewRegistry()
 
-	mux, err := newMux("/metrics", reg, c)
+	mux, err := newMux("/metrics", reg, []*collector.Collector{c})
 	require.NoError(t, err)
 	require.NotNil(t, mux)
 

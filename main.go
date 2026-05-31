@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/exporter-toolkit/web"
+	"gopkg.in/yaml.v3"
 
 	hyperping "github.com/develeap/hyperping-go"
 	"github.com/develeap/hyperping-exporter/internal/collector"
@@ -39,6 +40,7 @@ type config struct {
 	metricsPath        string
 	apiKey             string
 	apiKeyFile         string
+	projectsFile       string
 	cacheTTL           time.Duration
 	cacheMode          string
 	hotTTL             time.Duration
@@ -51,7 +53,32 @@ type config struct {
 	mcpURL             string
 	excludeNamePattern string
 	excludeNameRx      *regexp.Regexp
+
+	// projects is the resolved list of per-project configurations. The
+	// legacy single-key path (--api-key / --api-key-file / HYPERPING_API_KEY
+	// without --projects-file) synthesises a single entry with ID="default"
+	// so downstream code can iterate a non-empty list unconditionally.
+	projects []projectConfig
 }
+
+// projectConfig is one entry in cfg.projects. ID is the Prometheus
+// `project` constLabel value emitted on every series sourced from this
+// project's Collector. MCPURL and ExcludeNamePattern are per-project
+// overrides; when empty, the globals (--mcp-url / --exclude-name-pattern)
+// apply.
+type projectConfig struct {
+	ID                 string `yaml:"id"`
+	APIKey             string `yaml:"apiKey"`
+	APIKeyFile         string `yaml:"apiKeyFile"`
+	MCPURL             string `yaml:"mcpUrl"`
+	ExcludeNamePattern string `yaml:"excludeNamePattern"`
+}
+
+// reProjectID is the alphabet for project ids. It matches the tenant
+// regex used in the collector so the `project` constLabel cannot inject
+// characters that downstream label matchers (recording-rules, alert
+// selectors) cannot escape.
+var reProjectID = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
 
 // parseConfig is the production entry point; it writes diagnostics to os.Stderr.
 // Tests call parseConfigOut directly so they can capture the deprecation
@@ -88,7 +115,23 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	flag.StringVar(&cfg.namespace, "namespace", "", `Metric name prefix (env: HYPERPING_EXPORTER_NAMESPACE, default: "hyperping")`)
 	flag.StringVar(&cfg.mcpURL, "mcp-url", "", "Custom Hyperping MCP server URL (default: https://api.hyperping.io/v1/mcp)")
 	flag.StringVar(&cfg.excludeNamePattern, "exclude-name-pattern", "", "RE2 regex; monitors whose name matches are excluded from all metrics and tenant aggregates")
+	flag.StringVar(&cfg.projectsFile, "projects-file", "", "Path to a YAML list of {id, apiKey|apiKeyFile, mcpUrl?, excludeNamePattern?} entries. Mutually exclusive with --api-key/--api-key-file/HYPERPING_API_KEY. Env: HYPERPING_PROJECTS_FILE.")
 	flag.Parse()
+
+	// HYPERPING_PROJECTS_FILE env fallback (mirrors --api-key/HYPERPING_API_KEY pattern).
+	if cfg.projectsFile == "" {
+		cfg.projectsFile = os.Getenv("HYPERPING_PROJECTS_FILE")
+	}
+
+	// Mutual exclusion: --api-key / --api-key-file / HYPERPING_API_KEY
+	// cannot combine with --projects-file. Letting both through would
+	// silently shadow one source; explicit refusal forces operators to
+	// pick one mode.
+	envAPIKey := os.Getenv("HYPERPING_API_KEY")
+	if cfg.projectsFile != "" && (cfg.apiKey != "" || cfg.apiKeyFile != "" || envAPIKey != "") {
+		_, _ = fmt.Fprintln(stderr, "error: --projects-file is mutually exclusive with --api-key / --api-key-file / HYPERPING_API_KEY; pick one configuration source")
+		return cfg, false
+	}
 
 	// Resolve the API key. Precedence: --api-key-file > HYPERPING_API_KEY > --api-key.
 	// --api-key remains supported for one deprecation cycle to avoid breaking
@@ -97,7 +140,9 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	// carries the secret. Process accounting or kernel logs that captured argv
 	// before this scrub are still a leak, hence "best-effort".
 	apiKeyFromFlag := cfg.apiKey
-	if cfg.apiKeyFile != "" {
+	if cfg.projectsFile != "" {
+		// Skip the single-key resolution path entirely.
+	} else if cfg.apiKeyFile != "" {
 		data, err := os.ReadFile(cfg.apiKeyFile)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
@@ -111,8 +156,8 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	} else if cfg.apiKey == "" {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
-	if cfg.apiKey == "" {
-		_, _ = fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, or --api-key)")
+	if cfg.projectsFile == "" && cfg.apiKey == "" {
+		_, _ = fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, --api-key, or --projects-file)")
 		return cfg, false
 	}
 	if apiKeyFromFlag != "" {
@@ -155,7 +200,84 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 		}
 		cfg.excludeNameRx = rx
 	}
+
+	// Resolve cfg.projects. Two shapes:
+	//   1. --projects-file=<path>: parse the YAML list, validate each entry,
+	//      apply global fallbacks for empty MCPURL / ExcludeNamePattern.
+	//   2. Legacy single-key path: synthesise one project with ID="default"
+	//      so downstream code always iterates a non-empty list.
+	if cfg.projectsFile != "" {
+		projects, err := loadProjectsFile(cfg.projectsFile, cfg.mcpURL, cfg.excludeNamePattern)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return cfg, false
+		}
+		cfg.projects = projects
+	} else {
+		cfg.projects = []projectConfig{{
+			ID:                 "default",
+			APIKey:             cfg.apiKey,
+			MCPURL:             cfg.mcpURL,
+			ExcludeNamePattern: cfg.excludeNamePattern,
+		}}
+	}
 	return cfg, true
+}
+
+// loadProjectsFile reads, parses, and validates the YAML projects file
+// at path. globalMCPURL and globalExcludeNamePattern are applied as
+// fallbacks for any project entry whose own value is empty. The returned
+// slice is guaranteed to have unique, regex-clean IDs and exactly one
+// API key source (inline APIKey OR APIKeyFile) per project.
+func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string) ([]projectConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read --projects-file %q: %w", path, err)
+	}
+	var projects []projectConfig
+	if err := yaml.Unmarshal(data, &projects); err != nil {
+		return nil, fmt.Errorf("parse --projects-file %q: %w", path, err)
+	}
+	if len(projects) == 0 {
+		return nil, fmt.Errorf("--projects-file %q: must contain at least one project entry", path)
+	}
+	seen := make(map[string]struct{}, len(projects))
+	for i := range projects {
+		p := &projects[i]
+		p.ID = strings.TrimSpace(p.ID)
+		if !reProjectID.MatchString(p.ID) {
+			return nil, fmt.Errorf("--projects-file: invalid project id %q at index %d (must match [a-zA-Z0-9._-]{1,64})", p.ID, i)
+		}
+		if _, dup := seen[p.ID]; dup {
+			return nil, fmt.Errorf("--projects-file: duplicate project id %q at index %d", p.ID, i)
+		}
+		seen[p.ID] = struct{}{}
+
+		if p.APIKey != "" && p.APIKeyFile != "" {
+			return nil, fmt.Errorf("--projects-file: project %q has both apiKey and apiKeyFile; pick one", p.ID)
+		}
+		if p.APIKey == "" && p.APIKeyFile == "" {
+			return nil, fmt.Errorf("--projects-file: project %q must set apiKey or apiKeyFile", p.ID)
+		}
+		if p.APIKeyFile != "" {
+			body, err := os.ReadFile(p.APIKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("--projects-file: project %q apiKeyFile %q: %w", p.ID, p.APIKeyFile, err)
+			}
+			p.APIKey = strings.TrimRight(string(body), "\r\n")
+			if p.APIKey == "" {
+				return nil, fmt.Errorf("--projects-file: project %q apiKeyFile %q is empty", p.ID, p.APIKeyFile)
+			}
+		}
+		// Fall back to globals when the per-project override is empty.
+		if p.MCPURL == "" {
+			p.MCPURL = globalMCPURL
+		}
+		if p.ExcludeNamePattern == "" {
+			p.ExcludeNamePattern = globalExcludeNamePattern
+		}
+	}
+	return projects, nil
 }
 
 // sanitizeArgs overwrites the API-key value carried in args with an equal
@@ -306,15 +428,27 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
-func newMux(metricsPath string, registry *prometheus.Registry, c *collector.Collector) (http.Handler, error) {
+func newMux(metricsPath string, registry *prometheus.Registry, collectors []*collector.Collector) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
+	// Readiness is the AND over every Collector. A single project that has
+	// not yet completed its first successful refresh keeps /readyz red so
+	// orchestrators do not flip the pod to Ready until every project has
+	// fresh data. With a single project (legacy path) this is identical to
+	// the pre-multi-project behaviour.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if c.IsReady() {
+		ready := true
+		for _, c := range collectors {
+			if !c.IsReady() {
+				ready = false
+				break
+			}
+		}
+		if ready {
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintln(w, "ready")
 		} else {
@@ -347,59 +481,27 @@ func run() int {
 
 	logger := setupLogger(cfg.logLevel, cfg.logFormat)
 	registry := newBaseRegistry(cfg.namespace)
-	clientMetrics := collector.NewClientMetrics(registry, cfg.namespace)
-	mcpMetrics := collector.NewMCPMetrics(registry, cfg.namespace)
-	apiClient := hyperping.NewClient(cfg.apiKey, hyperping.WithMaxRetries(2), hyperping.WithMetrics(clientMetrics))
-
-	// Initialize MCP client for advanced metrics. The raw SDK transport is
-	// wrapped in an ObservedTransport so handshake/recovery/rate-limit events
-	// flow into hyperping_mcp_* counters; see issue #60 for context.
-	mcpTransport, err := hyperping.NewMcpTransport(cfg.apiKey, cfg.mcpURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: initialize MCP transport: %v\n", err)
-		return 1
-	}
-	observedTransport := collector.NewObservedTransport(mcpTransport, mcpMetrics)
-	// Eagerly initialize the MCP session at startup so:
-	//   1) MCP connectivity issues surface at boot (not mid-first-scrape).
-	//   2) The handshake goes through ObservedTransport.Initialize so
-	//      hyperping_mcp_initialize_total counts it. The SDK's lazy init
-	//      inside CallTool calls its own *McpTransport.Initialize directly,
-	//      bypassing the decorator — pre-initializing here is the only way
-	//      to observe the handshake from outside the SDK. Transparent
-	//      session-loss recoveries remain invisible (SDK-private).
-	// On error, log and continue; the SDK will lazy-retry on first tool call.
-	initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if _, initErr := observedTransport.Initialize(initCtx); initErr != nil {
-		logger.Warn("eager MCP initialize failed; SDK will lazy-retry on first tool call", "error", initErr)
-	}
-	initCancel()
-	mcpClient := hyperping.NewMCPClient(observedTransport)
 
 	if cfg.excludeNameRx != nil {
 		logger.Info("monitor exclusion filter active", "pattern", cfg.excludeNamePattern)
 	}
-	collectorOpts := []collector.CollectorOption{
-		collector.WithExcludePattern(cfg.excludeNameRx),
-		collector.WithMCPMetrics(mcpMetrics),
-	}
 	if cfg.cacheMode == "tiered" {
-		collectorOpts = append(collectorOpts,
-			collector.WithCacheMode(collector.CacheModeTiered),
-			collector.WithTierTTLs(cfg.hotTTL, cfg.warmTTL, cfg.coldTTL),
-		)
 		logger.Info("cache mode: tiered",
 			"hot_ttl", cfg.hotTTL,
 			"warm_ttl", cfg.warmTTL,
 			"cold_ttl", cfg.coldTTL,
 		)
 	}
-	c := collector.NewCollector(
-		apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
-		collectorOpts...,
-	)
-	registry.MustRegister(c)
-	mux, err := newMux(cfg.metricsPath, registry, c)
+
+	collectors, err := buildCollectors(cfg, registry, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: build collectors: %v\n", err)
+		return 1
+	}
+	for _, c := range collectors {
+		registry.MustRegister(c)
+	}
+	mux, err := newMux(cfg.metricsPath, registry, collectors)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
 		return 1
@@ -407,7 +509,12 @@ func run() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go c.Start(ctx)
+	// One Start per Collector so each project's tieredRefresher (or
+	// legacy ticker) runs independently. A rate-limit pause on one
+	// project does not stall the others.
+	for _, c := range collectors {
+		go c.Start(ctx)
+	}
 	noSocket := false
 	srv := newHTTPServer(cfg.listenAddr, mux)
 	webFlags := &web.FlagConfig{
@@ -439,6 +546,82 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// buildCollectors constructs one *collector.Collector per cfg.projects
+// entry, registering per-project client/MCP metrics into the supplied
+// registry. Each Collector carries its project ID as a constLabel so
+// series from different projects coexist without Desc collision.
+//
+// Per-project state:
+//   - hyperping.NewClient with the project's APIKey, wired to its own
+//     NewClientMetrics(reg, ns, project) so hyperping_client_* histograms
+//     are project-scoped.
+//   - NewMCPMetrics(reg, ns, project) so hyperping_mcp_* counters are
+//     project-scoped.
+//   - hyperping.NewMcpTransport with the project's APIKey and resolved
+//     MCPURL (per-project override, falling back to the global flag).
+//   - collector.NewCollector with WithProject(project), the project's
+//     compiled excludePattern, and shared cache-mode / tier-TTL options.
+//
+// Errors short-circuit (no partial registration); the caller wraps the
+// returned error for stderr output. The MCP eager-initialize step is
+// best-effort per project: a failure is logged but does not block the
+// other projects.
+func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Logger) ([]*collector.Collector, error) {
+	if len(cfg.projects) == 0 {
+		return nil, fmt.Errorf("buildCollectors called with empty cfg.projects (parseConfig should have synthesised a default project)")
+	}
+	out := make([]*collector.Collector, 0, len(cfg.projects))
+	for _, p := range cfg.projects {
+		clientMetrics := collector.NewClientMetrics(registry, cfg.namespace, p.ID)
+		mcpMetrics := collector.NewMCPMetrics(registry, cfg.namespace, p.ID)
+		apiClient := hyperping.NewClient(p.APIKey, hyperping.WithMaxRetries(2), hyperping.WithMetrics(clientMetrics))
+
+		mcpTransport, err := hyperping.NewMcpTransport(p.APIKey, p.MCPURL)
+		if err != nil {
+			return nil, fmt.Errorf("project %q: initialize MCP transport: %w", p.ID, err)
+		}
+		observedTransport := collector.NewObservedTransport(mcpTransport, mcpMetrics)
+		// Best-effort eager init (matches the legacy single-project run()
+		// behaviour). Each project gets its own 10s budget; a slow project
+		// does not delay the others past that.
+		initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if _, initErr := observedTransport.Initialize(initCtx); initErr != nil {
+			logger.Warn("eager MCP initialize failed; SDK will lazy-retry on first tool call",
+				"project", p.ID, "error", initErr)
+		}
+		initCancel()
+		mcpClient := hyperping.NewMCPClient(observedTransport)
+
+		// Per-project exclude pattern. Empty pattern means "no filter".
+		var excludeRx *regexp.Regexp
+		if p.ExcludeNamePattern != "" {
+			rx, err := regexp.Compile(p.ExcludeNamePattern)
+			if err != nil {
+				return nil, fmt.Errorf("project %q: invalid excludeNamePattern %q: %w", p.ID, p.ExcludeNamePattern, err)
+			}
+			excludeRx = rx
+		}
+
+		opts := []collector.CollectorOption{
+			collector.WithProject(p.ID),
+			collector.WithExcludePattern(excludeRx),
+			collector.WithMCPMetrics(mcpMetrics),
+		}
+		if cfg.cacheMode == "tiered" {
+			opts = append(opts,
+				collector.WithCacheMode(collector.CacheModeTiered),
+				collector.WithTierTTLs(cfg.hotTTL, cfg.warmTTL, cfg.coldTTL),
+			)
+		}
+		c := collector.NewCollector(
+			apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
+			opts...,
+		)
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 func setupLogger(level, format string) *slog.Logger {
