@@ -1267,6 +1267,40 @@ func TestExtractTenant(t *testing.T) {
 	assert.Equal(t, "", extractTenant(""))
 }
 
+// TestExtractTenant_StrictValidation pins the MEDIUM-5 contract: the
+// substring between '[' and ']' must match ^[a-zA-Z0-9._-]{1,64}$ to be
+// returned. Anything else collapses to "" so a weird Unicode, control byte,
+// or HTML-looking string cannot appear verbatim in the `tenant` label.
+func TestExtractTenant_StrictValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"normal alnum hyphen", "[acme]-foo", "acme"},
+		{"single char accepted", "[a]-foo", "a"},
+		{"underscore allowed", "[my_team]-foo", "my_team"},
+		{"dot allowed", "[team.a]-foo", "team.a"},
+		{"hyphen allowed (existing convention)", "[ACME-CO]-PaymentAPI", "ACME-CO"},
+		{"empty bracket rejected", "[]-foo", ""},
+		{"html-looking content rejected", "[<script>]", ""},
+		{"space rejected", "[a b]-foo", ""},
+		{"non-ascii unicode rejected", "[café]-foo", ""},
+		{"control byte rejected", "[a\x00b]-foo", ""},
+		{"newline rejected", "[a\nb]-foo", ""},
+		{"colon rejected", "[a:b]-foo", ""},
+		{"path traversal chars rejected", "[../etc]-foo", ""},
+		{">64 chars rejected", "[" + strings.Repeat("a", 65) + "]-foo", ""},
+		{"exactly 64 chars accepted", "[" + strings.Repeat("a", 64) + "]-foo", strings.Repeat("a", 64)},
+		{"customer prefix non-bracket rejected", "Customer [acme]", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractTenant(tt.in))
+		})
+	}
+}
+
 func TestEscalationTier_NonCoreDash(t *testing.T) {
 	assert.Equal(t, "noncore",
 		escalationTier(hyperping.Monitor{
