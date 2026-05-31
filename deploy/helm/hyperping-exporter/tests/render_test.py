@@ -222,9 +222,9 @@ BASELINE_ARGS = [
 # bumps hyperping-go to v0.6.0 for WithStatus support, and adds the
 # tier label to hyperping_data_age_seconds; chart 1.5.3 ships this
 # image as its default).
-EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.5.1"
-EXPECTED_VERSION = "1.5.1"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.5.4"
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.7.0"
+EXPECTED_VERSION = "1.7.0"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.6.0"
 
 
 def main() -> int:

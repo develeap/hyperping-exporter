@@ -4,6 +4,7 @@
 {{- include "hyperping-exporter.validateTierTTLs" . -}}
 {{- include "hyperping-exporter.validateReplicaCount" . -}}
 {{- include "hyperping-exporter.validateSecretSources" . -}}
+{{- include "hyperping-exporter.validateProjects" . -}}
 {{- include "hyperping-exporter.validateWebConfigFile" . -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -75,7 +76,10 @@ spec:
             - {{ include "hyperping-exporter.arg" (list "--warm-ttl" .Values.config.warmTTL) }}
             - {{ include "hyperping-exporter.arg" (list "--cold-ttl" .Values.config.coldTTL) }}
             {{- end }}
-          {{- if gt (int (include "hyperping-exporter.secretSourceCount" .)) 0 }}
+            {{- if .Values.config.projects }}
+            - {{ include "hyperping-exporter.arg" (list "--projects-file" "/etc/hyperping/projects.yaml") }}
+            {{- end }}
+          {{- if and (not .Values.config.projects) (gt (int (include "hyperping-exporter.secretSourceCount" .)) 0) }}
           env:
             - name: HYPERPING_API_KEY
               valueFrom:
@@ -95,13 +99,21 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          {{- if (.Values.tmpfs | default dict).enabled }}
+          {{- if or (.Values.tmpfs | default dict).enabled .Values.config.projects }}
           volumeMounts:
+            {{- if (.Values.tmpfs | default dict).enabled }}
             - name: tmp
               mountPath: /tmp
+            {{- end }}
+            {{- if .Values.config.projects }}
+            - name: projects-file
+              mountPath: /etc/hyperping
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if (.Values.tmpfs | default dict).enabled }}
+      {{- if or (.Values.tmpfs | default dict).enabled .Values.config.projects }}
       volumes:
+        {{- if (.Values.tmpfs | default dict).enabled }}
         - name: tmp
           emptyDir:
             {{- with .Values.tmpfs.medium }}
@@ -110,6 +122,63 @@ spec:
             {{- with .Values.tmpfs.sizeLimit }}
             sizeLimit: {{ . | quote }}
             {{- end }}
+        {{- end }}
+        {{- if .Values.config.projects }}
+        # Projected volume composes the chart-managed Secret holding
+        # projects.yaml with each per-project Secret (inline-mode entries
+        # in the chart Secret; existingSecret or ESO target Secrets
+        # referenced by name) so /etc/hyperping/projects.yaml and
+        # /etc/hyperping/api-key-<id> are all available off one mount.
+        - name: projects-file
+          projected:
+            sources:
+              - secret:
+                  name: {{ include "hyperping-exporter.fullname" . }}
+                  items:
+                    - key: projects.yaml
+                      path: projects.yaml
+                  {{- $hasInline := false }}
+                  {{- range $p := .Values.config.projects }}
+                  {{- if $p.apiKey }}
+                  {{- $hasInline = true }}
+                  {{- end }}
+                  {{- end }}
+                  {{- $es := .Values.externalSecret | default dict }}
+                  {{- if and (not $hasInline) $es.enabled }}
+                  {{- /* ESO mode: the chart-managed Secret only carries projects.yaml; the per-project api keys live on the ESO target Secret below. */}}
+                  {{- end }}
+                  {{- range $p := .Values.config.projects }}
+                  {{- if $p.apiKey }}
+                    - key: api-key-{{ $p.id }}
+                      path: api-key-{{ $p.id }}
+                  {{- end }}
+                  {{- end }}
+              {{- $es := .Values.externalSecret | default dict }}
+              {{- if $es.enabled }}
+              # ESO mode: the per-project api keys live on the target Secret
+              # populated by the ExternalSecret. The target Secret name matches
+              # the chart's fullname (see externalsecret.yaml target.name).
+              - secret:
+                  name: {{ include "hyperping-exporter.fullname" . }}-projects
+                  items:
+                  {{- range $p := .Values.config.projects }}
+                    - key: api-key-{{ $p.id }}
+                      path: api-key-{{ $p.id }}
+                  {{- end }}
+              {{- else }}
+              {{- range $p := .Values.config.projects }}
+              {{- if $p.existingSecret }}
+              # Per-project existing Secret: re-key its `api-key` entry
+              # so the projects.yaml apiKeyFile path resolves.
+              - secret:
+                  name: {{ $p.existingSecret }}
+                  items:
+                    - key: api-key
+                      path: api-key-{{ $p.id }}
+              {{- end }}
+              {{- end }}
+              {{- end }}
+        {{- end }}
       {{- end }}
       terminationGracePeriodSeconds: 15
       {{- with .Values.nodeSelector }}
