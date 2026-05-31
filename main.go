@@ -156,11 +156,17 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	return cfg, true
 }
 
-// sanitizeArgs overwrites every occurrence of secret in args with an equal
-// number of 'x' bytes. Both "--flag value" and "--flag=value" forms are
-// handled; '=' is preserved. Returns the same slice (mutated in place) for
-// caller convenience. An empty secret is a no-op so callers can unconditionally
-// invoke this without guarding.
+// sanitizeArgs overwrites the API-key value carried in args with an equal
+// number of 'x' bytes. Both forms are handled:
+//   - "--api-key=value"   → suffix after '=' is replaced
+//   - "--api-key" "value" → the next arg is replaced
+//
+// Only args literally tied to --api-key are touched. An unrelated arg whose
+// value happens to contain the secret bytes as a substring is left alone, so
+// a listen address, log path, or similar value that incidentally shares
+// bytes with the key is not mangled. Returns the same slice (mutated in
+// place) for caller convenience. An empty secret is a no-op so callers can
+// unconditionally invoke this without guarding.
 //
 // Limitation: this only scrubs the in-process copy of argv that Go exposes via
 // os.Args. The kernel's copy in /proc/<pid>/cmdline is updated only when the
@@ -172,13 +178,22 @@ func sanitizeArgs(args []string, secret string) []string {
 		return args
 	}
 	mask := strings.Repeat("x", len(secret))
-	for i, a := range args {
-		if a == secret {
-			args[i] = mask
-			continue
-		}
-		if strings.Contains(a, secret) {
-			args[i] = strings.ReplaceAll(a, secret, mask)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--api-key":
+			// The value lives in the next arg, if present.
+			if i+1 < len(args) {
+				if args[i+1] == secret {
+					args[i+1] = mask
+				}
+				i++ // skip the value arg; it has been handled
+			}
+		case strings.HasPrefix(a, "--api-key="):
+			suffix := a[len("--api-key="):]
+			if suffix == secret {
+				args[i] = "--api-key=" + mask
+			}
 		}
 	}
 	return args
