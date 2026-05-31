@@ -65,6 +65,16 @@ See `deploy/helm/hyperping-exporter/values.yaml` for the full value reference an
 
 Metrics are served at `http://localhost:9312/metrics`.
 
+> [!WARNING]
+> `/metrics` is unauthenticated by default and binds any-interface
+> (`:9312`). The exposed payload includes monitor names, full URLs
+> (query parameters stripped), tenant tags, and project UUIDs. Do
+> not expose the listen port to the public internet without
+> protection. Restrict the port to a trusted network (reverse proxy,
+> k8s NetworkPolicy, host firewall) or enable basic-auth/TLS via
+> `--web.config.file`. See `README.docker.md` for a one-line example
+> and the [exporter-toolkit web-configuration docs](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md).
+
 ---
 
 ## Configuration
@@ -73,7 +83,8 @@ All flags can also be set via environment variables.
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
-| `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key |
+| `--api-key-file` | `(flag only)` | *(none)* | Path to a file containing the Hyperping API key (one trailing newline is stripped). Recommended for shared hosts. |
+| `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key. **`--api-key` is DEPRECATED**: the value is visible to any local user via `ps`, `/proc/<pid>/cmdline`, process accounting, and container introspection. Prefer the env var or `--api-key-file`. |
 | `--listen-address` | `(flag only)` | `:9312` | Address to listen on |
 | `--metrics-path` | `(flag only)` | `/metrics` | Path to expose metrics on |
 | `--cache-ttl` | `(flag only)` | `60s` | How often to refresh data from the API |

@@ -1267,6 +1267,40 @@ func TestExtractTenant(t *testing.T) {
 	assert.Equal(t, "", extractTenant(""))
 }
 
+// TestExtractTenant_StrictValidation pins the MEDIUM-5 contract: the
+// substring between '[' and ']' must match ^[a-zA-Z0-9._-]{1,64}$ to be
+// returned. Anything else collapses to "" so a weird Unicode, control byte,
+// or HTML-looking string cannot appear verbatim in the `tenant` label.
+func TestExtractTenant_StrictValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"normal alnum hyphen", "[acme]-foo", "acme"},
+		{"single char accepted", "[a]-foo", "a"},
+		{"underscore allowed", "[my_team]-foo", "my_team"},
+		{"dot allowed", "[team.a]-foo", "team.a"},
+		{"hyphen allowed (existing convention)", "[ACME-CO]-PaymentAPI", "ACME-CO"},
+		{"empty bracket rejected", "[]-foo", ""},
+		{"html-looking content rejected", "[<script>]", ""},
+		{"space rejected", "[a b]-foo", ""},
+		{"non-ascii unicode rejected", "[café]-foo", ""},
+		{"control byte rejected", "[a\x00b]-foo", ""},
+		{"newline rejected", "[a\nb]-foo", ""},
+		{"colon rejected", "[a:b]-foo", ""},
+		{"path traversal chars rejected", "[../etc]-foo", ""},
+		{">64 chars rejected", "[" + strings.Repeat("a", 65) + "]-foo", ""},
+		{"exactly 64 chars accepted", "[" + strings.Repeat("a", 64) + "]-foo", strings.Repeat("a", 64)},
+		{"customer prefix non-bracket rejected", "Customer [acme]", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractTenant(tt.in))
+		})
+	}
+}
+
 func TestEscalationTier_NonCoreDash(t *testing.T) {
 	assert.Equal(t, "noncore",
 		escalationTier(hyperping.Monitor{
@@ -2120,4 +2154,137 @@ func TestCollector_TieredMode_ConcurrentScrapeAndRefresh(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+// --- Label-length cap (MEDIUM-4) ---
+
+// TestCollect_MonitorName_TruncatedAt256 asserts that a multi-kilobyte monitor
+// name does not flow verbatim into the `name` label across the ~13 per-monitor
+// series. A compromised Hyperping account or operator with rename rights could
+// otherwise force the Prometheus side to ingest large label values per
+// monitor, multiplied across every series, causing memory pressure.
+// The cap is fixed at 256 bytes, enforced uniformly by capLabel.
+func TestCollect_MonitorName_TruncatedAt256(t *testing.T) {
+	longName := strings.Repeat("A", 10000)
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "mon_1", Name: longName, Status: "up", CheckFrequency: 60},
+		},
+	}
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	const cap = maxLabelValueBytes
+
+	checked := 0
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() != "name" {
+					continue
+				}
+				v := lp.GetValue()
+				assert.LessOrEqual(t, len(v), cap,
+					"metric %q name label is %d bytes; cap is %d", mf.GetName(), len(v), cap)
+				assert.True(t, strings.HasPrefix(longName, strings.TrimRight(v, "…")),
+					"truncated name must be a prefix of the original")
+				checked++
+			}
+		}
+	}
+	assert.Greater(t, checked, 0, "expected at least one name-label series to verify")
+}
+
+// TestCapLabel covers the helper in isolation: short strings are unchanged,
+// strings at the cap are returned verbatim, strings over the cap are
+// truncated to exactly cap bytes. The truncated form must remain valid UTF-8
+// so Prometheus does not reject the scrape.
+func TestCapLabel(t *testing.T) {
+	t.Run("short string unchanged", func(t *testing.T) {
+		assert.Equal(t, "hello", capLabel("hello"))
+	})
+	t.Run("exactly at cap", func(t *testing.T) {
+		s := strings.Repeat("a", maxLabelValueBytes)
+		assert.Equal(t, s, capLabel(s))
+		assert.Len(t, capLabel(s), maxLabelValueBytes)
+	})
+	t.Run("over cap truncates to cap bytes", func(t *testing.T) {
+		s := strings.Repeat("a", maxLabelValueBytes+50)
+		got := capLabel(s)
+		assert.Len(t, got, maxLabelValueBytes)
+	})
+	t.Run("multibyte UTF-8 not split mid-rune", func(t *testing.T) {
+		// "é" is 2 bytes. Build a string whose byte length crosses the cap
+		// inside a rune; the cap helper must back off to a rune boundary.
+		s := strings.Repeat("é", maxLabelValueBytes) // 2 * cap bytes
+		got := capLabel(s)
+		assert.LessOrEqual(t, len(got), maxLabelValueBytes)
+		assert.True(t, utf8ValidWrap(got), "truncated string must remain valid UTF-8")
+	})
+}
+
+// utf8ValidWrap wraps utf8.ValidString to avoid importing unicode/utf8 in the
+// main test file for one assertion. Keeps the import block tight.
+func utf8ValidWrap(s string) bool {
+	for _, r := range s {
+		if r == 0xFFFD {
+			return false
+		}
+	}
+	return true
+}
+
+// TestCollect_SLAReport_UsesMonitorNameNotReportName guards against silent
+// label fragmentation when a monitor is renamed mid-window. The Hyperping
+// API ships the monitor's name at the time the report was generated, which
+// may lag behind the current monitor name. Emitting the report's `Name`
+// would produce SLA series whose `name` label differs from the base
+// `hyperping_monitor_up` series for the same `uuid`, splitting time series
+// in Prometheus and breaking dashboards keyed on `name`.
+//
+// The collector must resolve the name from `mon.Name` (the live monitor
+// record) so all series for a given `uuid` share a consistent `name`.
+func TestCollect_SLAReport_UsesMonitorNameNotReportName(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			// Live monitor record carries the current ("renamed") name.
+			{UUID: "m1", Name: "renamed", Protocol: "http", HTTPMethod: "GET", Status: "up"},
+		},
+		reports: []hyperping.MonitorReport{
+			// Report record was generated before the rename; the SDK still
+			// returns the stale name.
+			{UUID: "m1", Name: "oldname", SLA: 99.0},
+		},
+	}
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	checked := 0
+	for _, mf := range mfs {
+		if mf.GetName() != "hyperping_monitor_sla_ratio" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() != "name" {
+					continue
+				}
+				assert.Equal(t, "renamed", lp.GetValue(),
+					"SLA series name label must come from the live monitor record, "+
+						"not the report's stale Name field")
+				checked++
+			}
+		}
+	}
+	assert.Greater(t, checked, 0, "expected at least one SLA series with a name label")
 }

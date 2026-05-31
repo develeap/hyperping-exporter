@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,6 +38,7 @@ type config struct {
 	listenAddr         string
 	metricsPath        string
 	apiKey             string
+	apiKeyFile         string
 	cacheTTL           time.Duration
 	cacheMode          string
 	hotTTL             time.Duration
@@ -51,11 +53,30 @@ type config struct {
 	excludeNameRx      *regexp.Regexp
 }
 
+// parseConfig is the production entry point; it writes diagnostics to os.Stderr.
+// Tests call parseConfigOut directly so they can capture the deprecation
+// warning without racing on the real stderr.
 func parseConfig() (config, bool) {
+	return parseConfigOut(os.Stderr)
+}
+
+// parseConfigOut parses CLI flags + env vars and resolves the API key from one
+// of three sources, in this priority order:
+//  1. --api-key-file <path> (recommended: file is readable only by the
+//     exporter user, never appears in /proc/<pid>/cmdline).
+//  2. HYPERPING_API_KEY env var (recommended for container runtimes).
+//  3. --api-key <key> (DEPRECATED: leaks via ps/proc; emits a stderr warning
+//     and best-effort scrubs os.Args after parse).
+//
+// stderr is an io.Writer so tests can capture warnings deterministically.
+func parseConfigOut(stderr io.Writer) (config, bool) {
 	var cfg config
 	flag.StringVar(&cfg.listenAddr, "listen-address", ":9312", "Address to listen on for metrics")
 	flag.StringVar(&cfg.metricsPath, "metrics-path", "/metrics", "Path under which to expose metrics")
-	flag.StringVar(&cfg.apiKey, "api-key", "", "Hyperping API key (env: HYPERPING_API_KEY)")
+	flag.StringVar(&cfg.apiKey, "api-key", "",
+		"DEPRECATED: Hyperping API key (visible via /proc/<pid>/cmdline). Prefer HYPERPING_API_KEY or --api-key-file.")
+	flag.StringVar(&cfg.apiKeyFile, "api-key-file", "",
+		"Path to a file containing the Hyperping API key (one trailing newline is stripped).")
 	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 60*time.Second, "How often to refresh data from the API (legacy mode only)")
 	flag.StringVar(&cfg.cacheMode, "cache-mode", "legacy", `Cache refresh strategy: "legacy" (single ticker, default) or "tiered" (three independent HOT/WARM/COLD tickers; see docs/tiered-cache-design.md)`)
 	flag.DurationVar(&cfg.hotTTL, "hot-ttl", 60*time.Second, "Tiered mode HOT-tier refresh interval (only honored when --cache-mode=tiered)")
@@ -69,12 +90,36 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.excludeNamePattern, "exclude-name-pattern", "", "RE2 regex; monitors whose name matches are excluded from all metrics and tenant aggregates")
 	flag.Parse()
 
-	if cfg.apiKey == "" {
+	// Resolve the API key. Precedence: --api-key-file > HYPERPING_API_KEY > --api-key.
+	// --api-key remains supported for one deprecation cycle to avoid breaking
+	// existing deployments mid-upgrade; using it emits a stderr warning and
+	// triggers best-effort os.Args scrubbing so /proc/<pid>/cmdline no longer
+	// carries the secret. Process accounting or kernel logs that captured argv
+	// before this scrub are still a leak, hence "best-effort".
+	apiKeyFromFlag := cfg.apiKey
+	if cfg.apiKeyFile != "" {
+		data, err := os.ReadFile(cfg.apiKeyFile)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
+			return cfg, false
+		}
+		// Strip any trailing CR/LF combo so Unix LF, Windows CRLF, and
+		// classic-Mac CR endings all yield the same key. Multiple trailing
+		// newlines (e.g. "key\n\n" from a here-doc) are also tolerated.
+		// Internal and leading whitespace is preserved verbatim.
+		cfg.apiKey = strings.TrimRight(string(data), "\r\n")
+	} else if cfg.apiKey == "" {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
 	if cfg.apiKey == "" {
-		fmt.Fprintln(os.Stderr, "error: API key required (use --api-key or HYPERPING_API_KEY)")
+		_, _ = fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, or --api-key)")
 		return cfg, false
+	}
+	if apiKeyFromFlag != "" {
+		_, _ = fmt.Fprintln(stderr, "warning: --api-key is DEPRECATED and exposes the secret via /proc/<pid>/cmdline; "+
+			"use HYPERPING_API_KEY or --api-key-file instead. Scrubbing os.Args is best-effort; "+
+			"process accounting or kernel logs may still have captured the original argv.")
+		os.Args = sanitizeArgs(os.Args, apiKeyFromFlag)
 	}
 	if cfg.namespace == "" {
 		cfg.namespace = os.Getenv("HYPERPING_EXPORTER_NAMESPACE")
@@ -83,12 +128,12 @@ func parseConfig() (config, bool) {
 		cfg.namespace = "hyperping"
 	}
 	if err := validateNamespace(cfg.namespace); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid namespace: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: invalid namespace: %v\n", err)
 		return cfg, false
 	}
 	if cfg.mcpURL != "" {
 		if !strings.HasPrefix(cfg.mcpURL, "https://") && !strings.HasPrefix(cfg.mcpURL, "http://localhost") {
-			fmt.Fprintf(os.Stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
+			_, _ = fmt.Fprintf(stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
 			return cfg, false
 		}
 	}
@@ -99,18 +144,61 @@ func parseConfig() (config, bool) {
 	case "legacy", "tiered":
 		cfg.cacheMode = strings.ToLower(cfg.cacheMode)
 	default:
-		fmt.Fprintf(os.Stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
+		_, _ = fmt.Fprintf(stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
 		return cfg, false
 	}
 	if cfg.excludeNamePattern != "" {
 		rx, err := regexp.Compile(cfg.excludeNamePattern)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
+			_, _ = fmt.Fprintf(stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
 			return cfg, false
 		}
 		cfg.excludeNameRx = rx
 	}
 	return cfg, true
+}
+
+// sanitizeArgs overwrites the API-key value carried in args with an equal
+// number of 'x' bytes. Both forms are handled:
+//   - "--api-key=value"   → suffix after '=' is replaced
+//   - "--api-key" "value" → the next arg is replaced
+//
+// Only args literally tied to --api-key are touched. An unrelated arg whose
+// value happens to contain the secret bytes as a substring is left alone, so
+// a listen address, log path, or similar value that incidentally shares
+// bytes with the key is not mangled. Returns the same slice (mutated in
+// place) for caller convenience. An empty secret is a no-op so callers can
+// unconditionally invoke this without guarding.
+//
+// Limitation: this only scrubs the in-process copy of argv that Go exposes via
+// os.Args. The kernel's copy in /proc/<pid>/cmdline is updated only when the
+// process modifies its argv[] memory directly, which Go does not do. Callers
+// should treat this as defense-in-depth, not a substitute for using
+// --api-key-file or the env var.
+func sanitizeArgs(args []string, secret string) []string {
+	if secret == "" {
+		return args
+	}
+	mask := strings.Repeat("x", len(secret))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--api-key":
+			// The value lives in the next arg, if present.
+			if i+1 < len(args) {
+				if args[i+1] == secret {
+					args[i+1] = mask
+				}
+				i++ // skip the value arg; it has been handled
+			}
+		case strings.HasPrefix(a, "--api-key="):
+			suffix := a[len("--api-key="):]
+			if suffix == secret {
+				args[i] = "--api-key=" + mask
+			}
+		}
+	}
+	return args
 }
 
 var reNamespace = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -149,6 +237,73 @@ func newBaseRegistry(namespace string) *prometheus.Registry {
 	buildInfo.WithLabelValues(version, revision, runtime.Version()).Set(1)
 	registry.MustRegister(buildInfo)
 	return registry
+}
+
+// maybeWarnUnauthenticatedBind emits a single warning at startup when the
+// exporter binds to any-interface (":port", "0.0.0.0:port", "[::]:port")
+// without a web-config file. The default bind is intentionally any-interface
+// (operators rely on network policy / k8s NetworkPolicies / firewalls to
+// restrict access), but a startup hint catches the case where someone
+// forgot the reverse-proxy / basic-auth step on a host that is reachable
+// from the public internet.
+//
+// The check is conservative: any specific IP, loopback, or the presence of
+// --web.config.file keeps the warning silent. The word "unauthenticated"
+// appears in the log line so operators can grep for it during incident
+// response.
+func maybeWarnUnauthenticatedBind(logger *slog.Logger, listenAddr, webConfigFile string) {
+	if webConfigFile != "" {
+		return
+	}
+	if !isAnyInterfaceBind(listenAddr) {
+		return
+	}
+	logger.Warn("metrics endpoint is unauthenticated and bound to any interface; "+
+		"restrict via network policy or set --web.config.file for basic-auth/TLS "+
+		"(see https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md)",
+		"listen_address", listenAddr,
+	)
+}
+
+// isAnyInterfaceBind returns true when addr resolves to "all interfaces":
+// the bare ":port" form, "0.0.0.0:port", and "[::]:port". A specific IP
+// (loopback or otherwise) is treated as an intentional choice.
+func isAnyInterfaceBind(addr string) bool {
+	if strings.HasPrefix(addr, ":") {
+		return true
+	}
+	if strings.HasPrefix(addr, "0.0.0.0:") {
+		return true
+	}
+	if strings.HasPrefix(addr, "[::]:") {
+		return true
+	}
+	return false
+}
+
+// newHTTPServer builds the exporter's http.Server with conservative timeouts
+// and a header-size cap. The values are chosen for an unauthenticated metrics
+// endpoint that may be exposed to opportunistic scanners:
+//
+//	ReadHeaderTimeout 10s   slow-loris guard during request line + headers
+//	ReadTimeout       30s   request body bound (we do not read bodies, but the
+//	                        promhttp handler may briefly read on POST attempts)
+//	WriteTimeout      30s   response body bound for slow clients
+//	IdleTimeout      120s   keep-alive idle-connection DoS guard; without this
+//	                        a peer can pin file descriptors indefinitely
+//	MaxHeaderBytes   1 MiB  header-bomb guard; default is 1 MiB in stdlib but
+//	                        explicit so a future refactor cannot accidentally
+//	                        bump it
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 func newMux(metricsPath string, registry *prometheus.Registry, c *collector.Collector) (http.Handler, error) {
@@ -254,13 +409,7 @@ func run() int {
 	defer stop()
 	go c.Start(ctx)
 	noSocket := false
-	srv := &http.Server{
-		Addr:              cfg.listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-	}
+	srv := newHTTPServer(cfg.listenAddr, mux)
 	webFlags := &web.FlagConfig{
 		WebListenAddresses: &[]string{cfg.listenAddr},
 		WebSystemdSocket:   &noSocket,
@@ -284,6 +433,7 @@ func run() int {
 		"cache_ttl", cfg.cacheTTL,
 		"namespace", cfg.namespace,
 	)
+	maybeWarnUnauthenticatedBind(logger, cfg.listenAddr, cfg.webConfigFile)
 	if err := web.ListenAndServe(srv, webFlags, logger); err != nil && err != http.ErrServerClosed {
 		logger.Error("server error", "error", err)
 		return 1

@@ -4,7 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-(Nothing yet. Next slot is the Phase 3 chart 1.6.0 work: flip default cache mode to tiered, add the `tier` label to `hyperping_mcp_partial_refresh_total`, migrate downstream PromQL.)
+### Security
+
+- **Go toolchain bumped to `1.26.3`** (from `1.26.2`); release workflow now hard-gates on `govulncheck v1.3.0` so a vulnerable transitive dependency cannot ship to operators.
+- **Label-bomb mitigation**: all metric-label values (monitor names, healthcheck names) are truncated to 256 bytes at emit time via a shared `capLabel` helper. A compromised tenant or operator with rename rights can no longer force the Prometheus side to ingest multi-kilobyte label values multiplied across every per-monitor series. Truncation is UTF-8 safe (never splits mid-rune).
+- **Tenant label validation**: `extractTenant` now rejects any character outside `[a-zA-Z0-9._-]` and bounds the resulting tag at 64 bytes. Tenant tags with colons, slashes, unicode, or any non-token character previously flowed verbatim into the `tenant` label; they now collapse to the empty string. See "Changed" for the operator-visible side-effect.
+- **`/metrics` startup warning** when binding any-interface (`:port`, `0.0.0.0:port`, `[::]:port`) without `--web.config.file`. The default bind is unchanged; this is a hint, not a hard fail, and the word "unauthenticated" appears in the log line so it is grep-able during incident response.
+- **SLA series name label**: the per-period SLA metrics now derive their `name` label from the live monitor record (`mon.Name`) instead of the report's stale `Name` field. A mid-window rename previously fragmented the `hyperping_monitor_sla_ratio` series for the same `uuid` against the base monitor series, silently splitting dashboards keyed on `name`.
+- **`--api-key` argv scrub** tightened so only the value directly attached to `--api-key` (either the next positional arg or the `=value` suffix) is overwritten. Unrelated args whose value happens to contain the secret bytes as a substring (listen address, log path) are no longer mangled. Scrub is still best-effort: it touches only the in-process `os.Args` slice, not `/proc/<pid>/cmdline`.
+
+### Added
+
+- **`--api-key-file <path>`** flag: read the Hyperping API key from a file rather than from argv or the environment. Recommended source for container deployments; the file can be owned by a dedicated user and is not visible via `ps` / `/proc/<pid>/cmdline`. Any trailing combination of CR/LF is stripped (Unix LF, Windows CRLF, classic-Mac CR, and multi-newline tails all yield the same key).
+- **HTTP server hardening**: `IdleTimeout` (120s) and `MaxHeaderBytes` (1 MiB) are now set explicitly on the metrics `http.Server` to guard against keep-alive idle-connection DoS and header-bomb DoS respectively. `ReadHeaderTimeout` (10s), `ReadTimeout` (30s), and `WriteTimeout` (30s) were already present and are now pinned to exact equality in tests so a silent regression trips CI.
+
+### Changed
+
+- **Tenant label rejects non-token characters** (see Security). Operators whose existing monitor naming convention used tags with colons, slashes, or unicode characters will see those monitors fall out of the `tenant` aggregate (collapsing to `tenant=""`). Migrate naming to `[a-zA-Z0-9._-]` to recover the previous tag.
+- **Metric-label values truncated at 256 bytes** (see Security). Dashboards and alert routes that previously matched on very long monitor names will see the truncated form. Operators with sub-256-byte monitor names are unaffected.
+- **`/metrics` emits a startup warning** when binding any-interface without `--web.config.file` (see Security). Loopback (`127.0.0.1:9312`, `[::1]:9312`) and any specific IP bind keep the warning silent.
+
+### Deprecated
+
+- **`--api-key` CLI flag**. The flag still works for one deprecation cycle to avoid breaking existing deployments mid-upgrade, but it now emits a stderr warning at startup. Prefer `HYPERPING_API_KEY` (env var) or `--api-key-file` instead; the CLI form leaks the secret into `/proc/<pid>/cmdline` and any process listing.
+
+(Next slot is the Phase 3 chart 1.6.0 work: flip default cache mode to tiered, add the `tier` label to `hyperping_mcp_partial_refresh_total`, migrate downstream PromQL.)
 
 ## [1.5.4] - 2026-05-24 [Chart bump to ship binary 1.5.1 (security patch)]
 
