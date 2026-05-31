@@ -1233,8 +1233,22 @@ func capLabel(s string) string {
 	return s[:out]
 }
 
-// extractTenant derives the tenant ID from monitor name convention "[TENANT-ID]-SuffixName".
-// Returns empty string for monitors whose name does not start with "[".
+// reTenantID restricts the tenant label to ASCII alphanumerics plus a small
+// set of punctuation that is safe in dashboards, alerting queries, and log
+// pipelines. The 1-64 length range mirrors validateNamespace and gives
+// cardinality predictability: a tenant label can never exceed 64 bytes.
+var reTenantID = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
+
+// extractTenant derives the tenant ID from the monitor name convention
+// "[TENANT-ID]-SuffixName". The substring between the leading '[' and the
+// first ']' is returned only if it matches reTenantID; anything else
+// collapses to "" so a weird Unicode character, control byte, HTML payload,
+// or path-traversal sequence cannot appear verbatim in the `tenant` label.
+//
+// The strict-input contract also prevents cardinality collisions: legitimate
+// tenants whose names contain stray whitespace or punctuation are no longer
+// silently aggregated under a slightly-different string than their peers.
+// Operators see the empty-tenant bucket instead and can fix the rename.
 func extractTenant(monitorName string) string {
 	if !strings.HasPrefix(monitorName, "[") {
 		return ""
@@ -1243,7 +1257,11 @@ func extractTenant(monitorName string) string {
 	if end < 0 {
 		return ""
 	}
-	return monitorName[1:end]
+	candidate := monitorName[1:end]
+	if !reTenantID.MatchString(candidate) {
+		return ""
+	}
+	return candidate
 }
 
 // escalationTier classifies the monitor as "core", "noncore", or "unknown".
