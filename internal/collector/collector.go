@@ -919,39 +919,44 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 }
 
 // emitMonitorMetrics sends per-monitor metrics derived from the snapshot.
+//
+// Every label value derived from m.Name is passed through capLabel so a
+// multi-kilobyte monitor name (rename-rights abuse, compromised account)
+// cannot fan out across the ~13 series per monitor; see maxLabelValueBytes.
 func (c *Collector) emitMonitorMetrics(ch chan<- prometheus.Metric, snap collectorSnapshot) {
 	for _, m := range snap.monitors {
 		tenant := extractTenant(m.Name)
 		tier := escalationTier(m)
+		name := capLabel(m.Name)
 		ch <- prometheus.MustNewConstMetric(c.monitorUp, prometheus.GaugeValue,
-			boolToFloat64(m.Status == "up"), m.UUID, m.Name, tenant, tier)
+			boolToFloat64(m.Status == "up"), m.UUID, name, tenant, tier)
 		ch <- prometheus.MustNewConstMetric(c.monitorPaused, prometheus.GaugeValue,
-			boolToFloat64(m.Paused), m.UUID, m.Name, tenant, tier)
+			boolToFloat64(m.Paused), m.UUID, name, tenant, tier)
 		ch <- prometheus.MustNewConstMetric(c.monitorCheckInterval, prometheus.GaugeValue,
-			float64(m.CheckFrequency), m.UUID, m.Name, tenant, tier)
+			float64(m.CheckFrequency), m.UUID, name, tenant, tier)
 		// M2: strip query params to prevent label cardinality explosion.
 		ch <- prometheus.MustNewConstMetric(c.monitorInfo, prometheus.GaugeValue, 1,
-			m.UUID, m.Name, m.Protocol, sanitizeURL(m.URL), m.ProjectUUID, m.HTTPMethod)
+			m.UUID, name, m.Protocol, sanitizeURL(m.URL), m.ProjectUUID, m.HTTPMethod)
 
 		if m.SSLExpiration != nil {
 			ch <- prometheus.MustNewConstMetric(c.monitorSSLExpDays, prometheus.GaugeValue,
-				float64(*m.SSLExpiration), m.UUID, m.Name, tenant, tier)
+				float64(*m.SSLExpiration), m.UUID, name, tenant, tier)
 		}
 
 		// OPS-32: active outage state and HTTP status code.
 		activeOutage, hasActive := snap.outageIndex[m.UUID]
 		ch <- prometheus.MustNewConstMetric(c.monitorOutageActive, prometheus.GaugeValue,
-			boolToFloat64(hasActive), m.UUID, m.Name, tenant, tier)
+			boolToFloat64(hasActive), m.UUID, name, tenant, tier)
 		statusCode := 0
 		if hasActive {
 			statusCode = activeOutage.StatusCode
 		}
 		ch <- prometheus.MustNewConstMetric(c.monitorActiveOutageStatus, prometheus.GaugeValue,
-			float64(statusCode), m.UUID, m.Name, tenant, tier)
+			float64(statusCode), m.UUID, name, tenant, tier)
 
 		// OPS-39: escalation tier info.
 		ch <- prometheus.MustNewConstMetric(c.monitorTier, prometheus.GaugeValue, 1,
-			m.UUID, m.Name, tier)
+			m.UUID, name, tier)
 
 		// EXP-02: maintenance window coverage.
 		inMaint := 0.0
@@ -959,7 +964,7 @@ func (c *Collector) emitMonitorMetrics(ch chan<- prometheus.Metric, snap collect
 			inMaint = 1.0
 		}
 		ch <- prometheus.MustNewConstMetric(c.monitorInMaintenance, prometheus.GaugeValue,
-			inMaint, m.UUID, m.Name, tenant, tier)
+			inMaint, m.UUID, name, tenant, tier)
 
 		// EXP-03: per-region up/down status.
 		if len(m.Regions) > 0 {
@@ -970,39 +975,42 @@ func (c *Collector) emitMonitorMetrics(ch chan<- prometheus.Metric, snap collect
 					val = 0.0
 				}
 				ch <- prometheus.MustNewConstMetric(c.monitorUpByRegion, prometheus.GaugeValue,
-					val, m.UUID, m.Name, tenant, tier, region)
+					val, m.UUID, name, tenant, tier, region)
 			}
 		}
 
 		// MCP Metrics
 		if val, ok := snap.responseTimeIndex[m.UUID]; ok {
 			ch <- prometheus.MustNewConstMetric(c.monitorResponseTimeAvg, prometheus.GaugeValue,
-				val, m.UUID, m.Name, tenant, tier)
+				val, m.UUID, name, tenant, tier)
 		}
 		if val, ok := snap.mttaIndex[m.UUID]; ok {
 			ch <- prometheus.MustNewConstMetric(c.monitorMtta, prometheus.GaugeValue,
-				val, m.UUID, m.Name, tenant, tier)
+				val, m.UUID, name, tenant, tier)
 		}
 		if val, ok := snap.anomalyCountIndex[m.UUID]; ok {
 			ch <- prometheus.MustNewConstMetric(c.monitorAnomalyCount, prometheus.GaugeValue,
-				float64(val), m.UUID, m.Name, tenant, tier)
+				float64(val), m.UUID, name, tenant, tier)
 		}
 		if val, ok := snap.anomalyScoreIndex[m.UUID]; ok {
 			ch <- prometheus.MustNewConstMetric(c.monitorAnomalyScore, prometheus.GaugeValue,
-				val, m.UUID, m.Name, tenant, tier)
+				val, m.UUID, name, tenant, tier)
 		}
 	}
 }
 
 // emitHealthcheckMetrics sends per-healthcheck metrics derived from the snapshot.
+// Healthcheck names are capped through capLabel for the same rename-rights /
+// label-bytes blowup reason as monitor names.
 func (c *Collector) emitHealthcheckMetrics(ch chan<- prometheus.Metric, snap collectorSnapshot) {
 	for _, hc := range snap.healthchecks {
+		name := capLabel(hc.Name)
 		ch <- prometheus.MustNewConstMetric(c.healthcheckUp, prometheus.GaugeValue,
-			boolToFloat64(!hc.IsDown), hc.UUID, hc.Name)
+			boolToFloat64(!hc.IsDown), hc.UUID, name)
 		ch <- prometheus.MustNewConstMetric(c.healthcheckPaused, prometheus.GaugeValue,
-			boolToFloat64(hc.IsPaused), hc.UUID, hc.Name)
+			boolToFloat64(hc.IsPaused), hc.UUID, name)
 		ch <- prometheus.MustNewConstMetric(c.healthcheckPeriod, prometheus.GaugeValue,
-			float64(hc.Period), hc.UUID, hc.Name)
+			float64(hc.Period), hc.UUID, name)
 	}
 }
 
@@ -1023,18 +1031,19 @@ func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collecto
 			}
 			tenant := extractTenant(mon.Name)
 			tier := escalationTier(mon)
+			name := capLabel(r.Name)
 			sla := r.SLA / 100.0 // API returns 0–100; expose as 0–1
 			ch <- prometheus.MustNewConstMetric(c.monitorSLA, prometheus.GaugeValue,
-				sla, r.UUID, r.Name, tenant, tier, period)
+				sla, r.UUID, name, tenant, tier, period)
 			ch <- prometheus.MustNewConstMetric(c.monitorOutages, prometheus.GaugeValue,
-				float64(r.Outages.Count), r.UUID, r.Name, tenant, tier, period)
+				float64(r.Outages.Count), r.UUID, name, tenant, tier, period)
 			ch <- prometheus.MustNewConstMetric(c.monitorDowntime, prometheus.GaugeValue,
-				float64(r.Outages.TotalDowntime), r.UUID, r.Name, tenant, tier, period)
+				float64(r.Outages.TotalDowntime), r.UUID, name, tenant, tier, period)
 			ch <- prometheus.MustNewConstMetric(c.monitorLongestOutage, prometheus.GaugeValue,
-				float64(r.Outages.LongestOutage), r.UUID, r.Name, tenant, tier, period)
+				float64(r.Outages.LongestOutage), r.UUID, name, tenant, tier, period)
 			if r.MTTR > 0 {
 				ch <- prometheus.MustNewConstMetric(c.monitorMTTR, prometheus.GaugeValue,
-					float64(r.MTTR), r.UUID, r.Name, tenant, tier, period)
+					float64(r.MTTR), r.UUID, name, tenant, tier, period)
 			}
 			slaSum += sla
 			slaCount++
@@ -1195,6 +1204,33 @@ func sanitizeURL(raw string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String()
+}
+
+// maxLabelValueBytes caps every monitor-name-derived label value so a
+// compromised Hyperping account, or an operator with rename rights, cannot
+// mint multi-kilobyte names that fan out across ~13 series per monitor and
+// inflate Prometheus memory on the ingest side. 256 bytes is well above
+// realistic human-readable monitor names and below the 1 KiB threshold at
+// which most Prometheus deployments start to feel label pressure.
+const maxLabelValueBytes = 256
+
+// capLabel returns s if it is at most maxLabelValueBytes long, otherwise it
+// returns the longest valid-UTF-8 prefix of s that fits within the cap. The
+// truncation never splits a multibyte rune, which would emit U+FFFD on the
+// scrape and be rejected by stricter ingesters.
+func capLabel(s string) string {
+	if len(s) <= maxLabelValueBytes {
+		return s
+	}
+	// Walk forward in rune steps, stopping just before we would exceed cap.
+	out := 0
+	for i := range s {
+		if i > maxLabelValueBytes {
+			break
+		}
+		out = i
+	}
+	return s[:out]
 }
 
 // extractTenant derives the tenant ID from monitor name convention "[TENANT-ID]-SuffixName".
