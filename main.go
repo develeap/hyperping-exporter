@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,6 +38,7 @@ type config struct {
 	listenAddr         string
 	metricsPath        string
 	apiKey             string
+	apiKeyFile         string
 	cacheTTL           time.Duration
 	cacheMode          string
 	hotTTL             time.Duration
@@ -51,11 +53,30 @@ type config struct {
 	excludeNameRx      *regexp.Regexp
 }
 
+// parseConfig is the production entry point; it writes diagnostics to os.Stderr.
+// Tests call parseConfigOut directly so they can capture the deprecation
+// warning without racing on the real stderr.
 func parseConfig() (config, bool) {
+	return parseConfigOut(os.Stderr)
+}
+
+// parseConfigOut parses CLI flags + env vars and resolves the API key from one
+// of three sources, in this priority order:
+//  1. --api-key-file <path> (recommended: file is readable only by the
+//     exporter user, never appears in /proc/<pid>/cmdline).
+//  2. HYPERPING_API_KEY env var (recommended for container runtimes).
+//  3. --api-key <key> (DEPRECATED: leaks via ps/proc; emits a stderr warning
+//     and best-effort scrubs os.Args after parse).
+//
+// stderr is an io.Writer so tests can capture warnings deterministically.
+func parseConfigOut(stderr io.Writer) (config, bool) {
 	var cfg config
 	flag.StringVar(&cfg.listenAddr, "listen-address", ":9312", "Address to listen on for metrics")
 	flag.StringVar(&cfg.metricsPath, "metrics-path", "/metrics", "Path under which to expose metrics")
-	flag.StringVar(&cfg.apiKey, "api-key", "", "Hyperping API key (env: HYPERPING_API_KEY)")
+	flag.StringVar(&cfg.apiKey, "api-key", "",
+		"DEPRECATED: Hyperping API key (visible via /proc/<pid>/cmdline). Prefer HYPERPING_API_KEY or --api-key-file.")
+	flag.StringVar(&cfg.apiKeyFile, "api-key-file", "",
+		"Path to a file containing the Hyperping API key (one trailing newline is stripped).")
 	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 60*time.Second, "How often to refresh data from the API (legacy mode only)")
 	flag.StringVar(&cfg.cacheMode, "cache-mode", "legacy", `Cache refresh strategy: "legacy" (single ticker, default) or "tiered" (three independent HOT/WARM/COLD tickers; see docs/tiered-cache-design.md)`)
 	flag.DurationVar(&cfg.hotTTL, "hot-ttl", 60*time.Second, "Tiered mode HOT-tier refresh interval (only honored when --cache-mode=tiered)")
@@ -69,12 +90,34 @@ func parseConfig() (config, bool) {
 	flag.StringVar(&cfg.excludeNamePattern, "exclude-name-pattern", "", "RE2 regex; monitors whose name matches are excluded from all metrics and tenant aggregates")
 	flag.Parse()
 
-	if cfg.apiKey == "" {
+	// Resolve the API key. Precedence: --api-key-file > HYPERPING_API_KEY > --api-key.
+	// --api-key remains supported for one deprecation cycle to avoid breaking
+	// existing deployments mid-upgrade; using it emits a stderr warning and
+	// triggers best-effort os.Args scrubbing so /proc/<pid>/cmdline no longer
+	// carries the secret. Process accounting or kernel logs that captured argv
+	// before this scrub are still a leak, hence "best-effort".
+	apiKeyFromFlag := cfg.apiKey
+	if cfg.apiKeyFile != "" {
+		data, err := os.ReadFile(cfg.apiKeyFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
+			return cfg, false
+		}
+		// Strip a single trailing newline (Unix-style key files); preserve
+		// any other whitespace verbatim.
+		cfg.apiKey = strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+	} else if cfg.apiKey == "" {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
 	if cfg.apiKey == "" {
-		fmt.Fprintln(os.Stderr, "error: API key required (use --api-key or HYPERPING_API_KEY)")
+		fmt.Fprintln(stderr, "error: API key required (use HYPERPING_API_KEY, --api-key-file, or --api-key)")
 		return cfg, false
+	}
+	if apiKeyFromFlag != "" {
+		fmt.Fprintln(stderr, "warning: --api-key is DEPRECATED and exposes the secret via /proc/<pid>/cmdline; "+
+			"use HYPERPING_API_KEY or --api-key-file instead. Scrubbing os.Args is best-effort; "+
+			"process accounting or kernel logs may still have captured the original argv.")
+		os.Args = sanitizeArgs(os.Args, apiKeyFromFlag)
 	}
 	if cfg.namespace == "" {
 		cfg.namespace = os.Getenv("HYPERPING_EXPORTER_NAMESPACE")
@@ -83,12 +126,12 @@ func parseConfig() (config, bool) {
 		cfg.namespace = "hyperping"
 	}
 	if err := validateNamespace(cfg.namespace); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid namespace: %v\n", err)
+		fmt.Fprintf(stderr, "error: invalid namespace: %v\n", err)
 		return cfg, false
 	}
 	if cfg.mcpURL != "" {
 		if !strings.HasPrefix(cfg.mcpURL, "https://") && !strings.HasPrefix(cfg.mcpURL, "http://localhost") {
-			fmt.Fprintf(os.Stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
+			fmt.Fprintf(stderr, "error: invalid mcp-url %q: must start with \"https://\" (or \"http://localhost\" for dev)\n", cfg.mcpURL)
 			return cfg, false
 		}
 	}
@@ -99,18 +142,46 @@ func parseConfig() (config, bool) {
 	case "legacy", "tiered":
 		cfg.cacheMode = strings.ToLower(cfg.cacheMode)
 	default:
-		fmt.Fprintf(os.Stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
+		fmt.Fprintf(stderr, "error: invalid --cache-mode %q: must be \"legacy\" or \"tiered\"\n", cfg.cacheMode)
 		return cfg, false
 	}
 	if cfg.excludeNamePattern != "" {
 		rx, err := regexp.Compile(cfg.excludeNamePattern)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
+			fmt.Fprintf(stderr, "error: invalid --exclude-name-pattern %q: %v\n", cfg.excludeNamePattern, err)
 			return cfg, false
 		}
 		cfg.excludeNameRx = rx
 	}
 	return cfg, true
+}
+
+// sanitizeArgs overwrites every occurrence of secret in args with an equal
+// number of 'x' bytes. Both "--flag value" and "--flag=value" forms are
+// handled; '=' is preserved. Returns the same slice (mutated in place) for
+// caller convenience. An empty secret is a no-op so callers can unconditionally
+// invoke this without guarding.
+//
+// Limitation: this only scrubs the in-process copy of argv that Go exposes via
+// os.Args. The kernel's copy in /proc/<pid>/cmdline is updated only when the
+// process modifies its argv[] memory directly, which Go does not do. Callers
+// should treat this as defense-in-depth, not a substitute for using
+// --api-key-file or the env var.
+func sanitizeArgs(args []string, secret string) []string {
+	if secret == "" {
+		return args
+	}
+	mask := strings.Repeat("x", len(secret))
+	for i, a := range args {
+		if a == secret {
+			args[i] = mask
+			continue
+		}
+		if strings.Contains(a, secret) {
+			args[i] = strings.ReplaceAll(a, secret, mask)
+		}
+	}
+	return args
 }
 
 var reNamespace = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)

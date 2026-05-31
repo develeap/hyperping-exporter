@@ -73,7 +73,8 @@ All flags can also be set via environment variables.
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
-| `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key |
+| `--api-key-file` | `(flag only)` | *(none)* | Path to a file containing the Hyperping API key (one trailing newline is stripped). Recommended for shared hosts. |
+| `--api-key` | `HYPERPING_API_KEY` | *(required)* | Hyperping API key. **`--api-key` is DEPRECATED**: the value is visible to any local user via `ps`, `/proc/<pid>/cmdline`, process accounting, and container introspection. Prefer the env var or `--api-key-file`. |
 | `--listen-address` | `(flag only)` | `:9312` | Address to listen on |
 | `--metrics-path` | `(flag only)` | `/metrics` | Path to expose metrics on |
 | `--cache-ttl` | `(flag only)` | `60s` | How often to refresh data from the API |
