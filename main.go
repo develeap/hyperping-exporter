@@ -103,9 +103,11 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 			fmt.Fprintf(stderr, "error: read --api-key-file %q: %v\n", cfg.apiKeyFile, err)
 			return cfg, false
 		}
-		// Strip a single trailing newline (Unix-style key files); preserve
-		// any other whitespace verbatim.
-		cfg.apiKey = strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+		// Strip any trailing CR/LF combo so Unix LF, Windows CRLF, and
+		// classic-Mac CR endings all yield the same key. Multiple trailing
+		// newlines (e.g. "key\n\n" from a here-doc) are also tolerated.
+		// Internal and leading whitespace is preserved verbatim.
+		cfg.apiKey = strings.TrimRight(string(data), "\r\n")
 	} else if cfg.apiKey == "" {
 		cfg.apiKey = os.Getenv("HYPERPING_API_KEY")
 	}
