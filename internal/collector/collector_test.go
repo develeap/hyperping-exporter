@@ -2238,3 +2238,53 @@ func utf8ValidWrap(s string) bool {
 	}
 	return true
 }
+
+// TestCollect_SLAReport_UsesMonitorNameNotReportName guards against silent
+// label fragmentation when a monitor is renamed mid-window. The Hyperping
+// API ships the monitor's name at the time the report was generated, which
+// may lag behind the current monitor name. Emitting the report's `Name`
+// would produce SLA series whose `name` label differs from the base
+// `hyperping_monitor_up` series for the same `uuid`, splitting time series
+// in Prometheus and breaking dashboards keyed on `name`.
+//
+// The collector must resolve the name from `mon.Name` (the live monitor
+// record) so all series for a given `uuid` share a consistent `name`.
+func TestCollect_SLAReport_UsesMonitorNameNotReportName(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			// Live monitor record carries the current ("renamed") name.
+			{UUID: "m1", Name: "renamed", Protocol: "http", HTTPMethod: "GET", Status: "up"},
+		},
+		reports: []hyperping.MonitorReport{
+			// Report record was generated before the rename; the SDK still
+			// returns the stale name.
+			{UUID: "m1", Name: "oldname", SLA: 99.0},
+		},
+	}
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	checked := 0
+	for _, mf := range mfs {
+		if mf.GetName() != "hyperping_monitor_sla_ratio" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() != "name" {
+					continue
+				}
+				assert.Equal(t, "renamed", lp.GetValue(),
+					"SLA series name label must come from the live monitor record, "+
+						"not the report's stale Name field")
+				checked++
+			}
+		}
+	}
+	assert.Greater(t, checked, 0, "expected at least one SLA series with a name label")
+}
