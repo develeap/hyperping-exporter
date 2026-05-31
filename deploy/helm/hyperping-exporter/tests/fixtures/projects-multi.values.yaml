@@ -1,0 +1,10 @@
+# Multi-project fixture (work item: exporter-chart-projects-values).
+# Two projects, each backed by a separately-managed Secret. The chart
+# must render --projects-file=/etc/hyperping/projects.yaml plus a
+# projected/Secret volume mount carrying both api keys.
+config:
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core
+    - id: hyp_infra
+      existingSecret: hp-infra

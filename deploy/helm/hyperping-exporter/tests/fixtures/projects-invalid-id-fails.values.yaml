@@ -1,0 +1,7 @@
+# Multi-project fixture: project ID with a disallowed character (space)
+# MUST be rejected. Allowed alphabet is [a-zA-Z0-9._-]{1,64} matching
+# the tenant regex used elsewhere in the codebase.
+config:
+  projects:
+    - id: "hyp core"
+      existingSecret: hp-core

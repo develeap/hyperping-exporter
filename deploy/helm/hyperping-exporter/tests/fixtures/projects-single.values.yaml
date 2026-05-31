@@ -1,0 +1,7 @@
+# Multi-project fixture (work item: exporter-chart-projects-values).
+# One project entry only; must render identically to a legacy
+# single-project deployment except for the --projects-file arg.
+config:
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core

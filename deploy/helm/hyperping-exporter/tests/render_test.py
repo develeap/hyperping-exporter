@@ -782,6 +782,128 @@ def main() -> int:
               "servicemonitor-enabled: interval passes through")
     assert_scalars_clean(rendered, "servicemonitor-enabled")
 
+    # ---- Multi-project rendering (work item: exporter-chart-projects-values) ----
+    # These cases pin down the chart contract for the new config.projects list.
+    # They fail today because the templates / values.yaml have not yet been
+    # extended; that failure IS the TDD red signal for the chart work item.
+
+    # Legacy single-project rendering must be unchanged when config.projects
+    # is empty/absent. The deployment must still emit the legacy --api-key env
+    # path, not --projects-file.
+    rendered = helm_template("default.values.yaml")
+    args = deployment_args(rendered)
+    assert not any(a.startswith("--projects-file") for a in args), (
+        f"FAIL multiproject-legacy-unchanged: legacy default render must NOT emit "
+        f"--projects-file; got args={args!r}"
+    )
+    print("PASS multiproject-legacy-unchanged: defaults still use the legacy single-key path")
+
+    # Case M1 — projects-single (one project, externally-managed secret).
+    # The deployment must switch to --projects-file=/etc/hyperping/projects.yaml
+    # and mount a Secret carrying the project tuples. Even with a single
+    # project, the projects path is taken so operators get one consistent
+    # mode of operation.
+    rendered = helm_template("projects-single.values.yaml")
+    args = deployment_args(rendered)
+    assert any(a == "--projects-file=/etc/hyperping/projects.yaml" for a in args), (
+        f"FAIL projects-single: expected --projects-file=/etc/hyperping/projects.yaml in args; got {args!r}"
+    )
+    print("PASS projects-single: container args include --projects-file")
+    dep = find_deployment(rendered)
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    mounts = container.get("volumeMounts", [])
+    assert any(m.get("mountPath") == "/etc/hyperping" for m in mounts), (
+        f"FAIL projects-single: container must mount /etc/hyperping; got {mounts!r}"
+    )
+    print("PASS projects-single: /etc/hyperping volume mounted")
+
+    # Case M2 — projects-multi (two projects). The mount must carry one
+    # entry per project; the volume can be a projected Secret OR a
+    # ConfigMap referencing per-project Secrets — implementation chooses,
+    # but the rendered Deployment must visibly thread both project IDs.
+    rendered = helm_template("projects-multi.values.yaml")
+    args = deployment_args(rendered)
+    assert any(a == "--projects-file=/etc/hyperping/projects.yaml" for a in args), (
+        f"FAIL projects-multi: expected --projects-file flag; got {args!r}"
+    )
+    # The rendered Deployment must reference both per-project Secrets
+    # (hp-core, hp-infra) by name somewhere in its pod spec. The exact
+    # shape (projected sources vs. envFrom) is up to the implementation;
+    # we assert the names appear at least once.
+    pod_spec_yaml = yaml.safe_dump(dep["spec"]["template"]["spec"])
+    rendered_pod_spec = yaml.safe_dump(
+        find_deployment(rendered)["spec"]["template"]["spec"]
+    )
+    assert "hp-core" in rendered_pod_spec, (
+        f"FAIL projects-multi: hp-core secret reference missing from pod spec"
+    )
+    assert "hp-infra" in rendered_pod_spec, (
+        f"FAIL projects-multi: hp-infra secret reference missing from pod spec"
+    )
+    print("PASS projects-multi: both per-project secrets referenced from pod spec")
+
+    # Case M3 — duplicate project IDs must fail validateProjects.
+    assert_fail("projects-duplicate-id-fails",
+                "projects-duplicate-id-fails.values.yaml",
+                "duplicate project id")
+
+    # Case M4 — empty project ID must fail validateProjects.
+    assert_fail("projects-empty-id-fails",
+                "projects-empty-id-fails.values.yaml",
+                "project id must match")
+
+    # Case M5 — invalid project ID character (space) must fail.
+    assert_fail("projects-invalid-id-fails",
+                "projects-invalid-id-fails.values.yaml",
+                "project id must match")
+
+    # Case M6 — conflicting per-project secret sources must fail.
+    assert_fail("projects-conflict-secret-source-fails",
+                "projects-conflict-secret-source-fails.values.yaml",
+                "exactly one of")
+
+    # Case M7 — dev-mode inline keys: the chart-managed Secret must
+    # carry one data entry per project, keyed `api-key-<id>`.
+    rendered = helm_template("projects-dev-inline.values.yaml")
+    sec = find_secret(rendered)
+    assert sec is not None, "FAIL projects-dev-inline: chart-managed Secret must be rendered"
+    keys = set((sec.get("data") or {}).keys())
+    assert "api-key-hyp_core" in keys, (
+        f"FAIL projects-dev-inline: missing data key api-key-hyp_core; got {sorted(keys)!r}"
+    )
+    assert "api-key-hyp_infra" in keys, (
+        f"FAIL projects-dev-inline: missing data key api-key-hyp_infra; got {sorted(keys)!r}"
+    )
+    print("PASS projects-dev-inline: Secret carries one data entry per project")
+
+    # Case M8 — ESO multi-project: one ExternalSecret with one `data`
+    # entry per project (single target Secret carries every project's key).
+    rendered = helm_template("projects-externalsecret.values.yaml")
+    es = find_external_secret(rendered)
+    assert es is not None, "FAIL projects-externalsecret: ExternalSecret must be rendered"
+    es_keys = {entry.get("secretKey") for entry in (es.get("spec", {}).get("data") or [])}
+    assert "api-key-hyp_core" in es_keys, (
+        f"FAIL projects-externalsecret: missing secretKey api-key-hyp_core; got {sorted(es_keys)!r}"
+    )
+    assert "api-key-hyp_infra" in es_keys, (
+        f"FAIL projects-externalsecret: missing secretKey api-key-hyp_infra; got {sorted(es_keys)!r}"
+    )
+    print("PASS projects-externalsecret: ExternalSecret data fans out per project")
+
+    # Case M9 — Chart version bump: with multi-project values support we
+    # expect chart 1.6.0 / appVersion 1.7.0 to ship from this branch.
+    # Read the rendered Chart label to confirm.
+    chart_label_versions = labels_with_version(rendered)
+    # The chart label `app.kubernetes.io/version` is the appVersion of
+    # Chart.yaml; the chart name+version label appears on every resource's
+    # helm.sh/chart label. Walk the rendered ExternalSecret's labels.
+    helm_chart_label = (es.get("metadata") or {}).get("labels", {}).get("helm.sh/chart")
+    assert helm_chart_label is not None, "FAIL chart-version-bump: helm.sh/chart label missing"
+    assert helm_chart_label == "hyperping-exporter-1.6.0", (
+        f"FAIL chart-version-bump: chart label expected 'hyperping-exporter-1.6.0', got {helm_chart_label!r}"
+    )
+    print("PASS chart-version-bump: chart version 1.6.0 rendered")
+
     print("\nALL RENDER TESTS PASSED")
     return 0
 
