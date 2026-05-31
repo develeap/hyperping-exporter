@@ -627,3 +627,101 @@ func TestTieredRefresher_ExclusionFilterAppliedToWarmAndCold(t *testing.T) {
 	require.Len(t, cold.report30d, 1, "COLD 30d report must drop excluded uuids")
 	assert.Equal(t, "prod-1", cold.report30d[0].UUID)
 }
+
+// TestTieredRefresher_PerProjectIsolation_OneProjectRateLimitedDoesNotBlockOther
+// pins the per-Collector isolation guarantee: when one project's API client
+// returns errors (modelling a 429 / Retry-After response) and another is
+// healthy, the healthy project's tieredRefresher must complete its refresh
+// and publish a fresh HOT snapshot while the throttled project retains its
+// prior snapshot via the abort-before-Store path.
+//
+// This is structurally true today (one tieredRefresher per Collector, one
+// mockAPI per refresher, no shared mutex / rate-limit gate), but a future
+// regression that introduces shared state across collectors (a global
+// rate-limit gate, shared HTTP client with a process-wide token bucket,
+// etc.) would silently compile and pass the existing fan-out tests. This
+// test is the regression guard for the multi-project run-fanout work item.
+func TestTieredRefresher_PerProjectIsolation_OneProjectRateLimitedDoesNotBlockOther(t *testing.T) {
+	// Project A: healthy. Project B: returns errors on every endpoint to
+	// model a sustained 429-burst.
+	apiA := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "a_mon_1", Name: "api-a", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	throttle := errors.New("429 too many requests")
+	apiB := &mockAPI{
+		monitorsErr:     throttle,
+		healthchecksErr: throttle,
+		outagesErr:      throttle,
+		incidentsErr:    throttle,
+		maintenanceErr:  throttle,
+		reportsErr:      throttle,
+	}
+
+	trA := newTieredRefresherForTest(apiA)
+	trB := newTieredRefresherForTest(apiB)
+
+	// Pre-populate project B's HOT snapshot to simulate "we had healthy
+	// data before the 429 burst hit". The abort-before-Store contract is
+	// supposed to preserve this snapshot when refresh fails.
+	stalePriorB := &hotSnapshot{
+		monitors:    []hyperping.Monitor{{UUID: "b_mon_stale", Name: "api-b-stale", Status: "up"}},
+		refreshedAt: time.Now().Add(-5 * time.Minute),
+	}
+	trB.hot.Store(stalePriorB)
+
+	// Drive both refreshes concurrently. Project B's failures must NOT
+	// delay project A.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	doneA := make(chan struct{})
+	doneB := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		trA.refreshHot(context.Background())
+		close(doneA)
+	}()
+	go func() {
+		defer wg.Done()
+		trB.refreshHot(context.Background())
+		close(doneB)
+	}()
+	// Generous budget; each refresh should complete within milliseconds.
+	select {
+	case <-doneA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("project A's HOT refresh did not complete within 2s: per-project isolation broken")
+	}
+	select {
+	case <-doneB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("project B's HOT refresh did not complete within 2s: a failed refresh must still return promptly")
+	}
+	wg.Wait()
+
+	// Project A: HOT snapshot is fresh and reflects apiA.monitors.
+	snapA := trA.hot.Load()
+	require.NotNil(t, snapA, "project A HOT snapshot must be published after a successful refresh")
+	require.Len(t, snapA.monitors, 1)
+	assert.Equal(t, "a_mon_1", snapA.monitors[0].UUID,
+		"project A HOT snapshot must reflect project A's mockAPI, not project B's")
+	assert.True(t, trA.hotReady.Load(), "project A hotReady latch must be set")
+
+	// Project B: prior snapshot is preserved (abort-before-Store), and
+	// hotReady latch stays false since no successful refresh has run.
+	snapB := trB.hot.Load()
+	require.NotNil(t, snapB, "project B HOT snapshot pointer must not be cleared by a failed refresh")
+	assert.Same(t, stalePriorB, snapB,
+		"project B's prior snapshot must be preserved verbatim (no cross-project contamination, no clear)")
+	assert.False(t, trB.hotReady.Load(),
+		"project B hotReady latch must NOT flip true on a failed refresh")
+
+	// Project A's API was called exactly the HOT-tier set; project B's
+	// API also recorded calls (the errors come from the API stub, not
+	// from refusing to call). Counters confirm the refreshers do not
+	// share state.
+	assert.Equal(t, int32(1), apiA.monitorsCalls.Load(),
+		"project A's ListMonitors counter must be exactly 1 (its own refresh)")
+	assert.Equal(t, int32(1), apiB.monitorsCalls.Load(),
+		"project B's ListMonitors counter must be exactly 1 (no cross-project blocking)")
+}
