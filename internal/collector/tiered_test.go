@@ -339,7 +339,7 @@ func TestTieredRefresher_WarmPartialMcpFailureRetainsStaleValues(t *testing.T) {
 	mcp := hyperping.NewMCPClient(transport)
 	tr := newTieredRefresherForTest(api)
 	tr.mcp = mcp
-	mcpMetrics := NewMCPMetrics(prometheus.NewRegistry(), "hyperping")
+	mcpMetrics := NewMCPMetrics(prometheus.NewRegistry(), "hyperping", "")
 	tr.mcpMetrics = mcpMetrics
 
 	// Pre-populate HOT (refreshWarm needs the monitor list) and a stale
