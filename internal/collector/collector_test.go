@@ -2121,3 +2121,86 @@ func TestCollector_TieredMode_ConcurrentScrapeAndRefresh(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// --- Label-length cap (MEDIUM-4) ---
+
+// TestCollect_MonitorName_TruncatedAt256 asserts that a multi-kilobyte monitor
+// name does not flow verbatim into the `name` label across the ~13 per-monitor
+// series. A compromised Hyperping account or operator with rename rights could
+// otherwise force the Prometheus side to ingest large label values per
+// monitor, multiplied across every series, causing memory pressure.
+// The cap is fixed at 256 bytes, enforced uniformly by capLabel.
+func TestCollect_MonitorName_TruncatedAt256(t *testing.T) {
+	longName := strings.Repeat("A", 10000)
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "mon_1", Name: longName, Status: "up", CheckFrequency: 60},
+		},
+	}
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping")
+	c.Refresh(context.Background())
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	const cap = maxLabelValueBytes
+
+	checked := 0
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() != "name" {
+					continue
+				}
+				v := lp.GetValue()
+				assert.LessOrEqual(t, len(v), cap,
+					"metric %q name label is %d bytes; cap is %d", mf.GetName(), len(v), cap)
+				assert.True(t, strings.HasPrefix(longName, strings.TrimRight(v, "…")),
+					"truncated name must be a prefix of the original")
+				checked++
+			}
+		}
+	}
+	assert.Greater(t, checked, 0, "expected at least one name-label series to verify")
+}
+
+// TestCapLabel covers the helper in isolation: short strings are unchanged,
+// strings at the cap are returned verbatim, strings over the cap are
+// truncated to exactly cap bytes. The truncated form must remain valid UTF-8
+// so Prometheus does not reject the scrape.
+func TestCapLabel(t *testing.T) {
+	t.Run("short string unchanged", func(t *testing.T) {
+		assert.Equal(t, "hello", capLabel("hello"))
+	})
+	t.Run("exactly at cap", func(t *testing.T) {
+		s := strings.Repeat("a", maxLabelValueBytes)
+		assert.Equal(t, s, capLabel(s))
+		assert.Len(t, capLabel(s), maxLabelValueBytes)
+	})
+	t.Run("over cap truncates to cap bytes", func(t *testing.T) {
+		s := strings.Repeat("a", maxLabelValueBytes+50)
+		got := capLabel(s)
+		assert.Len(t, got, maxLabelValueBytes)
+	})
+	t.Run("multibyte UTF-8 not split mid-rune", func(t *testing.T) {
+		// "é" is 2 bytes. Build a string whose byte length crosses the cap
+		// inside a rune; the cap helper must back off to a rune boundary.
+		s := strings.Repeat("é", maxLabelValueBytes) // 2 * cap bytes
+		got := capLabel(s)
+		assert.LessOrEqual(t, len(got), maxLabelValueBytes)
+		assert.True(t, utf8ValidWrap(got), "truncated string must remain valid UTF-8")
+	})
+}
+
+// utf8ValidWrap wraps utf8.ValidString to avoid importing unicode/utf8 in the
+// main test file for one assertion. Keeps the import block tight.
+func utf8ValidWrap(s string) bool {
+	for _, r := range s {
+		if r == 0xFFFD {
+			return false
+		}
+	}
+	return true
+}
