@@ -222,6 +222,31 @@ func newBaseRegistry(namespace string) *prometheus.Registry {
 	return registry
 }
 
+// newHTTPServer builds the exporter's http.Server with conservative timeouts
+// and a header-size cap. The values are chosen for an unauthenticated metrics
+// endpoint that may be exposed to opportunistic scanners:
+//
+//	ReadHeaderTimeout 10s   slow-loris guard during request line + headers
+//	ReadTimeout       30s   request body bound (we do not read bodies, but the
+//	                        promhttp handler may briefly read on POST attempts)
+//	WriteTimeout      30s   response body bound for slow clients
+//	IdleTimeout      120s   keep-alive idle-connection DoS guard; without this
+//	                        a peer can pin file descriptors indefinitely
+//	MaxHeaderBytes   1 MiB  header-bomb guard; default is 1 MiB in stdlib but
+//	                        explicit so a future refactor cannot accidentally
+//	                        bump it
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+}
+
 func newMux(metricsPath string, registry *prometheus.Registry, c *collector.Collector) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
@@ -325,13 +350,7 @@ func run() int {
 	defer stop()
 	go c.Start(ctx)
 	noSocket := false
-	srv := &http.Server{
-		Addr:              cfg.listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-	}
+	srv := newHTTPServer(cfg.listenAddr, mux)
 	webFlags := &web.FlagConfig{
 		WebListenAddresses: &[]string{cfg.listenAddr},
 		WebSystemdSocket:   &noSocket,
