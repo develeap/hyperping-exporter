@@ -357,6 +357,40 @@ func TestSanitizeArgs(t *testing.T) {
 		got := sanitizeArgs(args, "")
 		assert.Equal(t, args, got)
 	})
+	// Tightened contract: scrub only the values attached to --api-key. An
+	// unrelated arg whose value happens to contain the secret bytes as a
+	// substring must NOT be mangled. Realistic risk is low, but the looser
+	// contract violated least-surprise for any operator whose listen address,
+	// log file path, or similar contained the same bytes.
+	t.Run("does not mangle unrelated arg that contains secret as substring", func(t *testing.T) {
+		// secret bytes ":9312" happen to appear inside the --listen-address value.
+		// The scrubber must leave --listen-address alone and only touch --api-key.
+		args := []string{
+			"prog",
+			"--listen-address=:9312",
+			"--api-key=:9312",
+			"--debug",
+		}
+		got := sanitizeArgs(args, ":9312")
+		assert.Equal(t, "--listen-address=:9312", got[1],
+			"unrelated --listen-address must be untouched")
+		assert.Equal(t, "--api-key=xxxxx", got[2],
+			"--api-key=value must be scrubbed (suffix only, '=' preserved)")
+		assert.Equal(t, "--debug", got[3], "unrelated --debug must be untouched")
+	})
+	t.Run("separate --api-key followed by value scrubs only the next arg", func(t *testing.T) {
+		args := []string{
+			"prog",
+			"--listen-address", "secretvalue", // secret as substring elsewhere; must be left alone
+			"--api-key", "secretvalue",
+			"--other", "secretvalue",
+		}
+		got := sanitizeArgs(args, "secretvalue")
+		// Only the value immediately after --api-key is replaced.
+		assert.Equal(t, "secretvalue", got[2], "--listen-address value must be untouched")
+		assert.Equal(t, "xxxxxxxxxxx", got[4], "value after --api-key must be scrubbed")
+		assert.Equal(t, "secretvalue", got[6], "--other value must be untouched")
+	})
 }
 
 // TestParseConfig_APIKeyFile reads the key from the file given to
