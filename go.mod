@@ -3,7 +3,7 @@ module github.com/develeap/hyperping-exporter
 go 1.26.3
 
 require (
-	github.com/develeap/hyperping-go v0.6.0
+	github.com/develeap/hyperping-go v0.6.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/exporter-toolkit v0.16.0

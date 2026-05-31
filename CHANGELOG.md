@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-31
+
 ### Security
 
 - **Go toolchain bumped to `1.26.3`** (from `1.26.2`); release workflow now hard-gates on `govulncheck v1.3.0` so a vulnerable transitive dependency cannot ship to operators.
@@ -23,12 +25,18 @@ All notable changes to this project will be documented in this file.
 - **Tenant label rejects non-token characters** (see Security). Operators whose existing monitor naming convention used tags with colons, slashes, or unicode characters will see those monitors fall out of the `tenant` aggregate (collapsing to `tenant=""`). Migrate naming to `[a-zA-Z0-9._-]` to recover the previous tag.
 - **Metric-label values truncated at 256 bytes** (see Security). Dashboards and alert routes that previously matched on very long monitor names will see the truncated form. Operators with sub-256-byte monitor names are unaffected.
 - **`/metrics` emits a startup warning** when binding any-interface without `--web.config.file` (see Security). Loopback (`127.0.0.1:9312`, `[::1]:9312`) and any specific IP bind keep the warning silent.
+- **`hyperping-go` bumped from `v0.6.0` to `v0.6.2`**. v0.6.1 / v0.6.2 reject userinfo (`user:pass@host`) embedded in URLs passed to `WithBaseURL` and `NewMcpTransport`, and rewrap caller-supplied transports in `WithMCPHTTPClient` so the redaction policy cannot be bypassed by injecting a custom `http.Client`. The exporter never accepted userinfo on `--mcp-url` (the scheme check rejects anything that is not bare `https://` or `http://localhost`), so this is a defence-in-depth bump rather than a user-visible behaviour change for supported configurations.
 
 ### Deprecated
 
 - **`--api-key` CLI flag**. The flag still works for one deprecation cycle to avoid breaking existing deployments mid-upgrade, but it now emits a stderr warning at startup. Prefer `HYPERPING_API_KEY` (env var) or `--api-key-file` instead; the CLI form leaks the secret into `/proc/<pid>/cmdline` and any process listing.
 
-(Next slot is the Phase 3 chart 1.6.0 work: flip default cache mode to tiered, add the `tier` label to `hyperping_mcp_partial_refresh_total`, migrate downstream PromQL.)
+### Upgrade notes
+
+- **Prometheus alert / dashboard migration (label-bomb mitigation).** Metric-label values are now capped at 256 bytes. Operators whose monitor names or healthcheck names exceeded 256 bytes will see the truncated form on every series carrying the `name` label (`hyperping_monitor_up`, `hyperping_monitor_response_time_seconds`, `hyperping_monitor_sla_ratio`, `hyperping_healthcheck_*`). Audit alert routes and dashboard variables that match on `name=~"..."` or `name="..."`: any exact-match selector for a name longer than 256 bytes will silently stop firing because the emitted series no longer carries the full value. Either shorten the upstream monitor name to fit, or migrate the selector to a prefix regex against the truncated form. Truncation is UTF-8 safe so the cap never lands mid-rune.
+- **Prometheus tenant aggregate migration (tenant validation).** The `tenant` label now rejects any character outside `[a-zA-Z0-9._-]` and is bounded at 64 bytes. Monitors whose tag previously carried colons, slashes, spaces, or unicode characters now emit `tenant=""` rather than the previous verbatim tag. PromQL like `sum by (tenant) (hyperping_monitor_up)` will bucket those monitors under the empty-tenant series, and `hyperping_tenant_health_score{tenant="ops:edge"}` no longer matches. Rename the upstream tag to use only `[a-zA-Z0-9._-]` to recover the previous behaviour.
+- **SLA name-label stabilisation.** `hyperping_monitor_sla_ratio` now derives its `name` label from the live monitor record rather than the per-report snapshot. Dashboards that joined the SLA series against the base monitor series on `(uuid, name)` no longer fragment across a mid-window rename. Operators who relied on the prior stale `name` (e.g. to keep an alert pinned to a historical label) should switch the join to `uuid` only.
+- **API key sourcing.** `--api-key` still works for this release. New deployments should source the key from `HYPERPING_API_KEY` or `--api-key-file`; the CLI form is logged by the kernel into `/proc/<pid>/cmdline` and surfaces in any `ps` listing.
 
 ## [1.5.4] - 2026-05-24 [Chart bump to ship binary 1.5.1 (security patch)]
 
