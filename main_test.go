@@ -413,6 +413,51 @@ func TestParseConfig_APIKeyFile(t *testing.T) {
 	assert.Equal(t, "filekey-abc", cfg.apiKey)
 }
 
+// TestParseConfig_APIKeyFile_TrimsTrailingCRLF covers the line-ending
+// normalisation applied to --api-key-file contents. Operators may produce
+// the file with `echo`, here-docs, Windows tooling, or scripts that append
+// multiple newlines; the exporter must accept all of these and yield the
+// same clean key string. Any leading/internal whitespace is preserved on
+// purpose (the file contract is "bytes minus trailing CR/LF").
+func TestParseConfig_APIKeyFile_TrimsTrailingCRLF(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"single LF", "key\n", "key"},
+		{"CRLF", "key\r\n", "key"},
+		{"double LF", "key\n\n", "key"},
+		{"no trailing newline", "key", "key"},
+		{"empty file", "", ""},
+		{"lone trailing CR", "key\r", "key"},
+		{"mixed CR LF trailing", "key\r\n\r\n", "key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "key")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o600))
+
+			resetFlags(t, []string{"test", "--api-key-file", path})
+			t.Setenv("HYPERPING_API_KEY", "")
+			os.Unsetenv("HYPERPING_API_KEY")
+
+			var buf bytes.Buffer
+			cfg, ok := parseConfigOut(&buf)
+			if tc.want == "" {
+				// Empty key cannot pass the "API key required" gate, so
+				// parseConfig returns ok=false. The trim helper still has
+				// to yield "" to reach that gate cleanly.
+				assert.False(t, ok, "empty key file must fail the required-key check")
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tc.want, cfg.apiKey)
+		})
+	}
+}
+
 // TestParseConfig_APIKeyFile_Missing rejects a path that cannot be read so
 // boot fails fast rather than degrading to "no API key configured".
 func TestParseConfig_APIKeyFile_Missing(t *testing.T) {
