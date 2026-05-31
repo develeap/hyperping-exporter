@@ -393,6 +393,57 @@ func TestParseConfig_APIKeyFile_Missing(t *testing.T) {
 
 // --- HTTP server hardening (MEDIUM-3) ---
 
+// --- Unauthenticated bind warning (MEDIUM-6) ---
+
+// TestUnauthenticatedBindWarning_Fires asserts that binding any-interface
+// (":port" or "0.0.0.0:port") without --web.config.file logs a stderr
+// warning. The default is not changed; this is a hint, not a hard fail.
+func TestUnauthenticatedBindWarning_Fires(t *testing.T) {
+	tests := []struct {
+		name       string
+		listenAddr string
+	}{
+		{"colon-port form", ":9312"},
+		{"0.0.0.0 form", "0.0.0.0:9312"},
+		{"[::] form", "[::]:9312"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			maybeWarnUnauthenticatedBind(logger, tt.listenAddr, "")
+			assert.Contains(t, buf.String(), "unauthenticated",
+				"warning must mention unauthenticated state")
+		})
+	}
+}
+
+// TestUnauthenticatedBindWarning_Silent_WhenWebConfigSet covers the
+// "operator set --web.config.file" path: the warning must not fire because
+// exporter-toolkit will require auth/TLS.
+func TestUnauthenticatedBindWarning_Silent_WhenWebConfigSet(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	maybeWarnUnauthenticatedBind(logger, ":9312", "/etc/exporter/web.yaml")
+	assert.NotContains(t, buf.String(), "unauthenticated")
+}
+
+// TestUnauthenticatedBindWarning_Silent_WhenLoopback covers the "operator
+// chose a loopback / specific IP bind" path. The warning is only useful for
+// "any-interface + no auth"; an explicit 127.0.0.1 or a private IP is a
+// deliberate choice and does not need scolding.
+func TestUnauthenticatedBindWarning_Silent_WhenLoopback(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:9312", "[::1]:9312", "10.0.0.5:9312"} {
+		t.Run(addr, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			maybeWarnUnauthenticatedBind(logger, addr, "")
+			assert.NotContains(t, buf.String(), "unauthenticated",
+				"non-any-interface bind should not warn")
+		})
+	}
+}
+
 // TestNewHTTPServer_Hardening pins the server timeouts and header-bytes cap
 // against regression. ReadHeaderTimeout and ReadTimeout were already set;
 // IdleTimeout and MaxHeaderBytes are the new guards against keep-alive
