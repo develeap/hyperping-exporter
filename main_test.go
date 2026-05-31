@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,4 +297,96 @@ func TestParseConfig_TierTTLs_Override(t *testing.T) {
 	assert.Equal(t, 45*time.Second, cfg.hotTTL)
 	assert.Equal(t, 3*time.Minute, cfg.warmTTL)
 	assert.Equal(t, 20*time.Minute, cfg.coldTTL)
+}
+
+// --- API key handling: deprecation, file source, args sanitization (HIGH-2) ---
+
+// TestParseConfig_APIKeyFlag_DeprecationWarning asserts that passing --api-key
+// emits a stderr deprecation warning. Operators with `ps`/`/proc` visibility
+// can read the key from the cmdline; the warning steers them to the env var
+// or --api-key-file.
+func TestParseConfig_APIKeyFlag_DeprecationWarning(t *testing.T) {
+	resetFlags(t, []string{"test", "--api-key", "supersecret"})
+	t.Setenv("HYPERPING_API_KEY", "")
+	os.Unsetenv("HYPERPING_API_KEY")
+
+	var buf bytes.Buffer
+	cfg, ok := parseConfigOut(&buf)
+	require.True(t, ok)
+	assert.Equal(t, "supersecret", cfg.apiKey)
+	assert.Contains(t, strings.ToLower(buf.String()), "deprecat",
+		"expected deprecation notice for --api-key on stderr")
+}
+
+// TestParseConfig_APIKeyFlag_SanitizesOsArgs asserts that after parsing,
+// os.Args entries that carried the API key are overwritten so a snapshot
+// of /proc/<pid>/cmdline no longer leaks the secret. Defense-in-depth:
+// process accounting or kernel logs that captured argv before this point
+// are still a leak, which the deprecation warning calls out.
+func TestParseConfig_APIKeyFlag_SanitizesOsArgs(t *testing.T) {
+	resetFlags(t, []string{"test", "--api-key", "supersecret"})
+	t.Setenv("HYPERPING_API_KEY", "")
+	os.Unsetenv("HYPERPING_API_KEY")
+
+	var buf bytes.Buffer
+	_, ok := parseConfigOut(&buf)
+	require.True(t, ok)
+	for i, a := range os.Args {
+		assert.NotContains(t, a, "supersecret",
+			"os.Args[%d]=%q must not contain the raw API key after parse", i, a)
+	}
+}
+
+// TestSanitizeArgs verifies the os.Args scrubber in isolation: every byte of
+// the secret is overwritten with 'x' wherever it appears, including when the
+// secret is glued to the flag with '='. Non-matching args are untouched.
+func TestSanitizeArgs(t *testing.T) {
+	t.Run("separate flag and value", func(t *testing.T) {
+		args := []string{"prog", "--api-key", "abc123", "--other", "keep"}
+		got := sanitizeArgs(args, "abc123")
+		assert.Equal(t, []string{"prog", "--api-key", "xxxxxx", "--other", "keep"}, got)
+	})
+	t.Run("flag=value form", func(t *testing.T) {
+		args := []string{"prog", "--api-key=abc123"}
+		got := sanitizeArgs(args, "abc123")
+		// '=' is preserved; only the secret bytes are overwritten.
+		assert.Equal(t, "--api-key=xxxxxx", got[1])
+	})
+	t.Run("empty secret is a no-op", func(t *testing.T) {
+		args := []string{"prog", "--flag", "value"}
+		got := sanitizeArgs(args, "")
+		assert.Equal(t, args, got)
+	})
+}
+
+// TestParseConfig_APIKeyFile reads the key from the file given to
+// --api-key-file, stripping a single trailing newline. Trailing whitespace
+// inside the key is preserved on purpose: the file format is "exact bytes
+// minus one trailing LF", matching the common `echo "$key" > /var/run/...`
+// pattern without surprising operators who legitimately use whitespace.
+func TestParseConfig_APIKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key")
+	require.NoError(t, os.WriteFile(path, []byte("filekey-abc\n"), 0o600))
+
+	resetFlags(t, []string{"test", "--api-key-file", path})
+	t.Setenv("HYPERPING_API_KEY", "")
+	os.Unsetenv("HYPERPING_API_KEY")
+
+	var buf bytes.Buffer
+	cfg, ok := parseConfigOut(&buf)
+	require.True(t, ok)
+	assert.Equal(t, "filekey-abc", cfg.apiKey)
+}
+
+// TestParseConfig_APIKeyFile_Missing rejects a path that cannot be read so
+// boot fails fast rather than degrading to "no API key configured".
+func TestParseConfig_APIKeyFile_Missing(t *testing.T) {
+	resetFlags(t, []string{"test", "--api-key-file", "/nonexistent/path/key"})
+	t.Setenv("HYPERPING_API_KEY", "")
+	os.Unsetenv("HYPERPING_API_KEY")
+
+	var buf bytes.Buffer
+	_, ok := parseConfigOut(&buf)
+	assert.False(t, ok, "missing api-key-file must cause parseConfig to fail")
 }
