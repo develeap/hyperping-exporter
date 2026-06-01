@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -585,7 +586,15 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 	if len(cfg.projects) == 0 {
 		return nil, fmt.Errorf("buildCollectors called with empty cfg.projects (parseConfig should have synthesised a default project)")
 	}
+	type pending struct {
+		project   projectConfig
+		transport *collector.ObservedTransport
+		excludeRx *regexp.Regexp
+		client    *hyperping.Client
+		mcpMx     *collector.MCPMetrics
+	}
 	out := make([]*collector.Collector, 0, len(cfg.projects))
+	queue := make([]pending, 0, len(cfg.projects))
 	for _, p := range cfg.projects {
 		clientMetrics := collector.NewClientMetrics(registry, cfg.namespace, p.ID)
 		mcpMetrics := collector.NewMCPMetrics(registry, cfg.namespace, p.ID)
@@ -596,16 +605,6 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 			return nil, fmt.Errorf("project %q: initialize MCP transport: %w", p.ID, err)
 		}
 		observedTransport := collector.NewObservedTransport(mcpTransport, mcpMetrics)
-		// Best-effort eager init (matches the legacy single-project run()
-		// behaviour). Each project gets its own 10s budget; a slow project
-		// does not delay the others past that.
-		initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if _, initErr := observedTransport.Initialize(initCtx); initErr != nil {
-			logger.Warn("eager MCP initialize failed; SDK will lazy-retry on first tool call",
-				"project", p.ID, "error", initErr)
-		}
-		initCancel()
-		mcpClient := hyperping.NewMCPClient(observedTransport)
 
 		// Per-project exclude pattern. Empty pattern means "no filter".
 		var excludeRx *regexp.Regexp
@@ -616,11 +615,44 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 			}
 			excludeRx = rx
 		}
+		queue = append(queue, pending{
+			project:   p,
+			transport: observedTransport,
+			excludeRx: excludeRx,
+			client:    apiClient,
+			mcpMx:     mcpMetrics,
+		})
+	}
 
+	// Best-effort eager MCP init, fanned out so total wall-time is
+	// bounded by the slowest project's 10s budget rather than the sum.
+	// Sequential init at 10s per project would otherwise blow past the
+	// default Kubernetes liveness probe budget (~40s) for N>=4 hung
+	// projects and trap the Pod in CrashLoopBackOff before the HTTP
+	// server is even up. A failure on any single project is logged
+	// and does not block the others (the SDK lazy-retries on first
+	// tool call).
+	var wg sync.WaitGroup
+	for i := range queue {
+		wg.Add(1)
+		go func(item *pending) {
+			defer wg.Done()
+			initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer initCancel()
+			if _, initErr := item.transport.Initialize(initCtx); initErr != nil {
+				logger.Warn("eager MCP initialize failed; SDK will lazy-retry on first tool call",
+					"project", item.project.ID, "error", initErr)
+			}
+		}(&queue[i])
+	}
+	wg.Wait()
+
+	for _, q := range queue {
+		mcpClient := hyperping.NewMCPClient(q.transport)
 		opts := []collector.CollectorOption{
-			collector.WithProject(p.ID),
-			collector.WithExcludePattern(excludeRx),
-			collector.WithMCPMetrics(mcpMetrics),
+			collector.WithProject(q.project.ID),
+			collector.WithExcludePattern(q.excludeRx),
+			collector.WithMCPMetrics(q.mcpMx),
 		}
 		if cfg.cacheMode == "tiered" {
 			opts = append(opts,
@@ -629,7 +661,7 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 			)
 		}
 		c := collector.NewCollector(
-			apiClient, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
+			q.client, mcpClient, cfg.cacheTTL, logger, cfg.namespace,
 			opts...,
 		)
 		out = append(out, c)
