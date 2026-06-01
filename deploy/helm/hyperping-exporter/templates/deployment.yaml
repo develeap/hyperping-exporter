@@ -147,16 +147,14 @@ spec:
                   items:
                     - key: projects.yaml
                       path: projects.yaml
-                  {{- $hasInline := false }}
-                  {{- range $p := .Values.config.projects }}
-                  {{- if $p.apiKey }}
-                  {{- $hasInline = true }}
-                  {{- end }}
-                  {{- end }}
-                  {{- $es := .Values.externalSecret | default dict }}
-                  {{- if and (not $hasInline) $es.enabled }}
-                  {{- /* ESO mode: the chart-managed Secret only carries projects.yaml; the per-project api keys live on the ESO target Secret below. */}}
-                  {{- end }}
+                  {{- /*
+                    Inline-mode api-key entries live on the chart-managed
+                    Secret alongside projects.yaml. Under ESO mode the
+                    range body still runs but the inner `if $p.apiKey`
+                    is false on every project (validateProjects rejects
+                    inline apiKey under ESO), so the chart-managed
+                    Secret only carries projects.yaml in that branch.
+                  */}}
                   {{- range $p := .Values.config.projects }}
                   {{- if $p.apiKey }}
                     - key: api-key-{{ $p.id }}
