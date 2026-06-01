@@ -66,13 +66,17 @@ type config struct {
 // `project` constLabel value emitted on every series sourced from this
 // project's Collector. MCPURL and ExcludeNamePattern are per-project
 // overrides; when empty, the globals (--mcp-url / --exclude-name-pattern)
-// apply.
+// apply. ExcludeRx is the compiled form of ExcludeNamePattern, populated
+// by loadProjectsFile (or by parseConfigOut for the legacy single-key
+// synthesised project) so buildCollectors does not re-compile the same
+// pattern N+1 times when every project falls back to the global value.
 type projectConfig struct {
-	ID                 string `yaml:"id"`
-	APIKey             string `yaml:"apiKey"`
-	APIKeyFile         string `yaml:"apiKeyFile"`
-	MCPURL             string `yaml:"mcpUrl"`
-	ExcludeNamePattern string `yaml:"excludeNamePattern"`
+	ID                 string         `yaml:"id"`
+	APIKey             string         `yaml:"apiKey"`
+	APIKeyFile         string         `yaml:"apiKeyFile"`
+	MCPURL             string         `yaml:"mcpUrl"`
+	ExcludeNamePattern string         `yaml:"excludeNamePattern"`
+	ExcludeRx          *regexp.Regexp `yaml:"-"`
 }
 
 // reProjectID is the alphabet for project ids. It matches the tenant
@@ -208,7 +212,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	//   2. Legacy single-key path: synthesise one project with ID="default"
 	//      so downstream code always iterates a non-empty list.
 	if cfg.projectsFile != "" {
-		projects, err := loadProjectsFile(cfg.projectsFile, cfg.mcpURL, cfg.excludeNamePattern)
+		projects, err := loadProjectsFile(cfg.projectsFile, cfg.mcpURL, cfg.excludeNamePattern, cfg.excludeNameRx)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return cfg, false
@@ -220,6 +224,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 			APIKey:             cfg.apiKey,
 			MCPURL:             cfg.mcpURL,
 			ExcludeNamePattern: cfg.excludeNamePattern,
+			ExcludeRx:          cfg.excludeNameRx,
 		}}
 	}
 	return cfg, true
@@ -230,7 +235,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 // fallbacks for any project entry whose own value is empty. The returned
 // slice is guaranteed to have unique, regex-clean IDs and exactly one
 // API key source (inline APIKey OR APIKeyFile) per project.
-func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string) ([]projectConfig, error) {
+func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globalExcludeRx *regexp.Regexp) ([]projectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read --projects-file %q: %w", path, err)
@@ -274,8 +279,18 @@ func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string) ([]pr
 		if p.MCPURL == "" {
 			p.MCPURL = globalMCPURL
 		}
-		if p.ExcludeNamePattern == "" {
+		// Resolve the exclude regex: per-project pattern compiles a
+		// new *regexp.Regexp, absence reuses the already-compiled
+		// global so the same pattern is not recompiled N+1 times.
+		if p.ExcludeNamePattern != "" {
+			rx, err := regexp.Compile(p.ExcludeNamePattern)
+			if err != nil {
+				return nil, fmt.Errorf("--projects-file: project %q invalid excludeNamePattern %q: %w", p.ID, p.ExcludeNamePattern, err)
+			}
+			p.ExcludeRx = rx
+		} else {
 			p.ExcludeNamePattern = globalExcludeNamePattern
+			p.ExcludeRx = globalExcludeRx
 		}
 		// Apply the same scheme validation the global --mcp-url path
 		// uses (parseConfigOut). A typo like "htttps://..." in the
@@ -637,19 +652,14 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 		}
 		observedTransport := collector.NewObservedTransport(mcpTransport, mcpMetrics)
 
-		// Per-project exclude pattern. Empty pattern means "no filter".
-		var excludeRx *regexp.Regexp
-		if p.ExcludeNamePattern != "" {
-			rx, err := regexp.Compile(p.ExcludeNamePattern)
-			if err != nil {
-				return nil, fmt.Errorf("project %q: invalid excludeNamePattern %q: %w", p.ID, p.ExcludeNamePattern, err)
-			}
-			excludeRx = rx
-		}
+		// Per-project exclude regex is already resolved by parseConfig
+		// (per-project pattern compiles once in loadProjectsFile;
+		// absence reuses the global compile from parseConfigOut). A
+		// late compile here would re-do the global pattern N times.
 		queue = append(queue, pending{
 			project:   p,
 			transport: observedTransport,
-			excludeRx: excludeRx,
+			excludeRx: p.ExcludeRx,
 			client:    apiClient,
 			mcpMx:     mcpMetrics,
 		})
