@@ -266,6 +266,21 @@ empty (the legacy single-key path stays as in chart 1.5.x).
 {{- fail (printf "duplicate project id %q at projects[%d]: every project id must be unique within the list (the id becomes the value of the `project` constLabel; duplicates would collapse two projects onto one Desc)." $id $i) -}}
 {{- end -}}
 {{- $seen = set $seen $id true -}}
+{{- /*
+ESO mode is incompatible with per-project existingSecret: the
+deployment.yaml projected-volume template skips the existingSecret
+branch entirely when externalSecret.enabled is true (only the ESO
+target Secret is projected), so an operator who sets existingSecret
+under ESO mode would silently lose the on-disk api-key file. The
+externalsecret.yaml `required` filter then explodes with a
+confusing "externalSecret.remoteRef.key is required" message for
+the same project the operator deliberately moved to existingSecret.
+Catch the misconfiguration here with a message that names both
+options.
+*/ -}}
+{{- if and $esEnabled $p.existingSecret -}}
+{{- fail (printf "project %q at projects[%d]: existingSecret is incompatible with externalSecret.enabled in projects mode. Either set externalSecret.enabled: false (chart-managed or pre-existing Secrets per project) or move this project to externalSecret.remoteRef and drop existingSecret." $id $i) -}}
+{{- end -}}
 {{- $count := 0 -}}
 {{- if $p.apiKey -}}{{- $count = add $count 1 -}}{{- end -}}
 {{- if $p.existingSecret -}}{{- $count = add $count 1 -}}{{- end -}}

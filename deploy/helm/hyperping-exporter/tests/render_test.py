@@ -862,6 +862,17 @@ def main() -> int:
                 "projects-conflict-secret-source-fails.values.yaml",
                 "exactly one of")
 
+    # Case M6b — per-project existingSecret combined with
+    # externalSecret.enabled=true must fail with a descriptive message.
+    # The deployment.yaml projected-volume template would otherwise
+    # silently drop the existingSecret mount under ESO mode, and
+    # externalsecret.yaml's `required` filter would surface a confusing
+    # "remoteRef.key is required" error for the project the operator
+    # deliberately moved to a pre-existing Secret.
+    assert_fail("projects-eso-existing-secret-fails",
+                "projects-eso-existing-secret-fails.values.yaml",
+                "existingSecret is incompatible with externalSecret.enabled")
+
     # Case M7 — dev-mode inline keys: the chart-managed Secret must
     # carry one data entry per project, keyed `api-key-<id>`.
     rendered = helm_template("projects-dev-inline.values.yaml")
