@@ -276,6 +276,19 @@ func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string) ([]pr
 		if p.ExcludeNamePattern == "" {
 			p.ExcludeNamePattern = globalExcludeNamePattern
 		}
+		// Apply the same scheme validation the global --mcp-url path
+		// uses (parseConfigOut). A typo like "htttps://..." in the
+		// projects file would otherwise pass parseConfig unchecked and
+		// either surface as an opaque MCP transport error or silently
+		// route the project's API key to an attacker-controlled http://
+		// endpoint over plaintext. Reject anything that is not https://
+		// or http://localhost so the per-project path cannot bypass the
+		// defence already in place for the global flag.
+		if p.MCPURL != "" {
+			if !strings.HasPrefix(p.MCPURL, "https://") && !strings.HasPrefix(p.MCPURL, "http://localhost") {
+				return nil, fmt.Errorf("--projects-file: project %q invalid mcpUrl %q: must start with \"https://\" (or \"http://localhost\" for dev)", p.ID, p.MCPURL)
+			}
+		}
 	}
 	return projects, nil
 }

@@ -172,6 +172,34 @@ func TestParseConfig_RejectsEmptyOrInvalidID(t *testing.T) {
 	}
 }
 
+// TestParseConfig_RejectsInvalidPerProjectMcpUrl: per-project mcpUrl must
+// satisfy the same scheme rule as the global --mcp-url flag (https:// or
+// http://localhost). Without this check a typo like "htttps://..." would
+// route the per-project API key to an attacker-controlled plaintext host.
+func TestParseConfig_RejectsInvalidPerProjectMcpUrl(t *testing.T) {
+	cases := []struct {
+		name   string
+		mcpURL string
+	}{
+		{"typo_scheme", "htttps://mcp.example.com/v1/mcp"},
+		{"plain_http_remote", "http://mcp.example.com/v1/mcp"},
+		{"ftp", "ftp://mcp.example.com/v1/mcp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "- id: p\n  apiKey: k\n  mcpUrl: " + tc.mcpURL + "\n"
+			path := writeProjectsFile(t, body)
+			resetFlags(t, []string{"test", "--projects-file", path})
+			t.Setenv("HYPERPING_API_KEY", "")
+			os.Unsetenv("HYPERPING_API_KEY")
+			os.Unsetenv("HYPERPING_PROJECTS_FILE")
+
+			_, ok := parseConfig()
+			assert.False(t, ok, "per-project mcpUrl %q must be rejected at parse time", tc.mcpURL)
+		})
+	}
+}
+
 // TestParseConfig_PerProjectOptionalOverrides: per-project mcpUrl and
 // excludeNamePattern in projects-file override globals; absence falls back to
 // globals. The same RE2 pattern can apply per-project (regulated tenants on
