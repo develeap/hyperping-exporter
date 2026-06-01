@@ -157,6 +157,42 @@ func TestNewMux(t *testing.T) {
 	})
 }
 
+// TestNewMux_ReadyzOrSemantics verifies that /readyz returns 200 as soon
+// as any one Collector has produced a successful refresh, even when other
+// collectors remain perpetually unready. Multi-tenant deployments rely on
+// this: a single misconfigured project (revoked key, persistent 429)
+// must not strip the Pod from Service endpoints and drag healthy peers
+// offline. The hyperping_project_ready gauge surfaces per-project status.
+func TestNewMux_ReadyzOrSemantics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	healthy := collector.NewCollector(
+		&dummyCollectorAPI{}, nil, 60*time.Second, logger, "hyperping",
+		collector.WithProject("hp_core"),
+	)
+	broken := collector.NewCollector(
+		&dummyCollectorAPI{}, nil, 60*time.Second, logger, "hyperping",
+		collector.WithProject("hp_infra"),
+	)
+	reg := prometheus.NewRegistry()
+	mux, err := newMux("/metrics", reg, []*collector.Collector{healthy, broken})
+	require.NoError(t, err)
+
+	// Both unready: 503.
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
+		"with no collector ready /readyz must return 503")
+
+	// One ready, one perpetually unready: 200 (OR policy).
+	healthy.Refresh(context.Background())
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code,
+		"one healthy collector must keep /readyz at 200 even if peers stay unready")
+}
+
 // resetFlags replaces flag.CommandLine with a fresh FlagSet and sets os.Args to
 // the provided list. Returns a cleanup function that restores both globals.
 func resetFlags(t *testing.T, args []string) {

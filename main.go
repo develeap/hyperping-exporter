@@ -442,6 +442,32 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
+// registerProjectReadyGauge exposes one hyperping_project_ready gauge per
+// collector, value 1 once the project's first successful refresh has
+// landed and 0 until then. Because /readyz now ORs across collectors a
+// degraded project does not strip the Pod from Service endpoints; this
+// per-project gauge is the dashboard / alerting signal for which tenant
+// is failing. The `project` constLabel matches the value carried on
+// every other hyperping_* series for that project so a join on
+// `project` works in PromQL.
+func registerProjectReadyGauge(registry *prometheus.Registry, namespace string, collectors []*collector.Collector) {
+	for _, c := range collectors {
+		c := c
+		g := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace:   namespace,
+			Name:        "project_ready",
+			Help:        "1 if this project has completed its first successful refresh, 0 otherwise. Independent of pod /readyz, which is OR over all projects.",
+			ConstLabels: prometheus.Labels{"project": c.Project()},
+		}, func() float64 {
+			if c.IsReady() {
+				return 1
+			}
+			return 0
+		})
+		registry.MustRegister(g)
+	}
+}
+
 func newMux(metricsPath string, registry *prometheus.Registry, collectors []*collector.Collector) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
@@ -449,20 +475,24 @@ func newMux(metricsPath string, registry *prometheus.Registry, collectors []*col
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
-	// Readiness is the AND over every Collector. A single project that has
-	// not yet completed its first successful refresh keeps /readyz red so
-	// orchestrators do not flip the pod to Ready until every project has
-	// fresh data. With a single project (legacy path) this is identical to
-	// the pre-multi-project behaviour.
+	// Readiness is the OR over every Collector. As long as at least one
+	// project has completed its first successful refresh /readyz returns
+	// 200 so the Service does not strip the Pod from endpoints when one
+	// tenant is misconfigured (revoked API key, persistent 429) while
+	// healthy peers keep producing fresh data. Per-project readiness is
+	// surfaced separately via the hyperping_project_ready gauge so
+	// dashboards and alerts can pinpoint the failing project. With a
+	// single project (legacy path) the OR and AND policies are
+	// indistinguishable.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		ready := true
+		anyReady := false
 		for _, c := range collectors {
-			if !c.IsReady() {
-				ready = false
+			if c.IsReady() {
+				anyReady = true
 				break
 			}
 		}
-		if ready {
+		if anyReady {
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintln(w, "ready")
 		} else {
@@ -515,6 +545,7 @@ func run() int {
 	for _, c := range collectors {
 		registry.MustRegister(c)
 	}
+	registerProjectReadyGauge(registry, cfg.namespace, collectors)
 	mux, err := newMux(cfg.metricsPath, registry, collectors)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)

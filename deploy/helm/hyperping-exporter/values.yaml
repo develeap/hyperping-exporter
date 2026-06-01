@@ -131,7 +131,14 @@ config:
   #
   # Mutual exclusion: when projects is non-empty, config.apiKey /
   # config.existingSecret / top-level externalSecret remoteRef must be
-  # empty — every secret source moves into the per-project list.
+  # empty (every secret source moves into the per-project list).
+  #
+  # Readiness policy: /readyz is OR across all configured projects, so a
+  # single misconfigured project (revoked API key, persistent 429) does
+  # not strip this Pod from the Service and drag healthy peers offline.
+  # The exporter exposes hyperping_project_ready{project="<id>"} as the
+  # per-project readiness signal; alert on `min(hyperping_project_ready)
+  # by (project) == 0` to catch a failing tenant.
   projects: []
 
 service:

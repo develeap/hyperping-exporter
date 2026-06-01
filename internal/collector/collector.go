@@ -797,9 +797,17 @@ func (c *Collector) Refresh(ctx context.Context) {
 	)
 }
 
+// Project returns the resolved project constLabel value for this Collector
+// (the value of WithProject, or "default" if unset). main.go consumes this
+// to label the per-project readiness gauge so dashboards/alerts can see
+// which project is failing under the OR readiness policy.
+func (c *Collector) Project() string {
+	return c.project
+}
+
 // IsReady returns true once at least one successful API scrape has completed.
 // It never reverts to false: transient failures after the first success do not
-// affect readiness — staleness is surfaced by hyperping_data_age_seconds instead.
+// affect readiness, staleness is surfaced by hyperping_data_age_seconds instead.
 //
 // In tiered mode "successful" means the HOT tier has published at least once;
 // WARM and COLD lag is expected during the post-boot cold-start window and
