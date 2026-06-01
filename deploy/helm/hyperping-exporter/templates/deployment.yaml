@@ -29,6 +29,16 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.service.port | quote }}
         prometheus.io/path: {{ .Values.config.metricsPath | quote }}
+        {{- if .Values.config.projects }}
+        # checksum of the rendered projects.yaml so a chart upgrade that
+        # changes the project list (or any per-project field that flows
+        # into the mounted document) triggers a Pod rollout. Note this
+        # does NOT catch external Secret rotations: kubelet updates the
+        # projected volume on disk (~60s) but the exporter has already
+        # read p.APIKey at boot, so rotating an externally-managed key
+        # still requires `kubectl rollout restart deploy/<name>`.
+        checksum/projects-yaml: {{ include "hyperping-exporter.projectsYaml" . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

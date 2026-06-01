@@ -139,6 +139,15 @@ config:
   # The exporter exposes hyperping_project_ready{project="<id>"} as the
   # per-project readiness signal; alert on `min(hyperping_project_ready)
   # by (project) == 0` to catch a failing tenant.
+  #
+  # Secret rotation: the exporter reads each project's apiKeyFile once
+  # at boot and never re-reads it. Chart upgrades that change the
+  # projects list trigger a Pod rollout via the deployment.yaml
+  # `checksum/projects-yaml` annotation, but rotating an externally
+  # managed Secret (existingSecret or ESO target) updates only the
+  # projected volume on disk (~60s) and does NOT propagate into the
+  # running process. After rotating any per-project Secret outside of
+  # `helm upgrade`, run `kubectl rollout restart deployment/<name>`.
   projects: []
 
 service:
