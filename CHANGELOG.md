@@ -57,6 +57,19 @@ All notable changes to this project will be documented in this file.
   hyperping-automation; transitional alert selectors should use
   `project=~"hyp_core|"` so the rule ships before the exporter is
   cut over without breaking the pre-upgrade single-project series.
+- CUTOVER REQUIREMENT: when deploying 1.7.0, cut over to
+  `config.projects` mode, NOT the legacy single-key path. A 1.7.0
+  binary on the legacy path emits `project="default"`, which the
+  transitional `project=~"hyp_core|"` selectors do NOT match (they
+  match `hyp_core` or the pre-1.7.0 unlabeled series only), silently
+  hiding the whole fleet from those alerts. If a deployment must stay
+  on the legacy path during transition, widen the selectors to
+  include `default` (`project=~"hyp_core|default|"`).
+- CUTOVER REQUIREMENT: set `config.cacheMode: tiered` if the
+  downstream per-tier `HyperpingDataStale` alerts are expected to
+  fire. The chart default is `legacy`, which emits only
+  `tier="hot"`; the warm/cold staleness rules have no series to
+  evaluate under legacy mode and stay permanently inert.
 - Dashboard `$project` variable defaults should be set to an
   explicit project id (e.g. `hyp_core`), NOT `All` or `.*`; the
   latter silently includes drill or staging series in headline
