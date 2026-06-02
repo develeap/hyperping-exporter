@@ -236,6 +236,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 // slice is guaranteed to have unique, regex-clean IDs and exactly one
 // API key source (inline APIKey OR APIKeyFile) per project.
 func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globalExcludeRx *regexp.Regexp) ([]projectConfig, error) {
+	// #nosec G304 G703 -- path is the operator-supplied --projects-file CLI flag (chart-mounted), not external/user input.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read --projects-file %q: %w", path, err)
