@@ -290,7 +290,7 @@ func TestRefresh_MaintenanceErrorIsNonFatal(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_in_maintenance 1 if the monitor is currently covered by an active maintenance window, 0 otherwise.
 # TYPE hyperping_monitor_in_maintenance gauge
-hyperping_monitor_in_maintenance{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
+hyperping_monitor_in_maintenance{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 1
 `
 	t.Run("legacy", func(t *testing.T) {
 		api := &mockAPI{
@@ -374,7 +374,7 @@ func TestRefresh_IncidentErrorIsNonFatal(t *testing.T) {
 		expected := `
 # HELP hyperping_incidents_open Number of open (non-resolved) incidents.
 # TYPE hyperping_incidents_open gauge
-hyperping_incidents_open 1
+hyperping_incidents_open{project="default"} 1
 `
 		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
 		require.NoError(t, err)
@@ -392,7 +392,7 @@ hyperping_incidents_open 1
 		expected := `
 # HELP hyperping_incidents_open Number of open (non-resolved) incidents.
 # TYPE hyperping_incidents_open gauge
-hyperping_incidents_open 1
+hyperping_incidents_open{project="default"} 1
 `
 		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_incidents_open")
 		require.NoError(t, err)
@@ -527,13 +527,13 @@ func TestCollect_SummaryMetricValues(t *testing.T) {
 	expected := `
 # HELP hyperping_monitors Total number of monitors.
 # TYPE hyperping_monitors gauge
-hyperping_monitors 2
+hyperping_monitors{project="default"} 2
 # HELP hyperping_healthchecks Total number of healthchecks.
 # TYPE hyperping_healthchecks gauge
-hyperping_healthchecks 1
+hyperping_healthchecks{project="default"} 1
 # HELP hyperping_scrape_success Whether the last API scrape succeeded (1) or failed (0).
 # TYPE hyperping_scrape_success gauge
-hyperping_scrape_success 1
+hyperping_scrape_success{project="default"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitors",
@@ -568,16 +568,16 @@ func TestCollect_MonitorMetricValues(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_up Whether the monitor is up (1) or down (0).
 # TYPE hyperping_monitor_up gauge
-hyperping_monitor_up{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
+hyperping_monitor_up{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 1
 # HELP hyperping_monitor_paused Whether the monitor is paused (1) or active (0).
 # TYPE hyperping_monitor_paused gauge
-hyperping_monitor_paused{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0
+hyperping_monitor_paused{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0
 # HELP hyperping_monitor_check_interval_seconds Monitor check frequency in seconds.
 # TYPE hyperping_monitor_check_interval_seconds gauge
-hyperping_monitor_check_interval_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 120
+hyperping_monitor_check_interval_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 120
 # HELP hyperping_monitor_ssl_expiration_days Days until SSL certificate expiration.
 # TYPE hyperping_monitor_ssl_expiration_days gauge
-hyperping_monitor_ssl_expiration_days{name="Web",tenant="",tier="unknown",uuid="mon_1"} 45
+hyperping_monitor_ssl_expiration_days{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 45
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_up",
@@ -603,16 +603,16 @@ func TestCollect_HealthcheckMetricValues(t *testing.T) {
 	expected := `
 # HELP hyperping_healthcheck_up Whether the healthcheck is up (1) or down (0).
 # TYPE hyperping_healthcheck_up gauge
-hyperping_healthcheck_up{name="Daily Backup",uuid="tok_1"} 0
-hyperping_healthcheck_up{name="Hourly Sync",uuid="tok_2"} 1
+hyperping_healthcheck_up{name="Daily Backup",project="default",uuid="tok_1"} 0
+hyperping_healthcheck_up{name="Hourly Sync",project="default",uuid="tok_2"} 1
 # HELP hyperping_healthcheck_paused Whether the healthcheck is paused (1) or active (0).
 # TYPE hyperping_healthcheck_paused gauge
-hyperping_healthcheck_paused{name="Daily Backup",uuid="tok_1"} 0
-hyperping_healthcheck_paused{name="Hourly Sync",uuid="tok_2"} 1
+hyperping_healthcheck_paused{name="Daily Backup",project="default",uuid="tok_1"} 0
+hyperping_healthcheck_paused{name="Hourly Sync",project="default",uuid="tok_2"} 1
 # HELP hyperping_healthcheck_period_seconds Expected healthcheck ping period in seconds.
 # TYPE hyperping_healthcheck_period_seconds gauge
-hyperping_healthcheck_period_seconds{name="Daily Backup",uuid="tok_1"} 86400
-hyperping_healthcheck_period_seconds{name="Hourly Sync",uuid="tok_2"} 3600
+hyperping_healthcheck_period_seconds{name="Daily Backup",project="default",uuid="tok_1"} 86400
+hyperping_healthcheck_period_seconds{name="Hourly Sync",project="default",uuid="tok_2"} 3600
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_healthcheck_up",
@@ -633,7 +633,7 @@ func TestCollect_ScrapeFailureMetric(t *testing.T) {
 	expected := `
 # HELP hyperping_scrape_success Whether the last API scrape succeeded (1) or failed (0).
 # TYPE hyperping_scrape_success gauge
-hyperping_scrape_success 0
+hyperping_scrape_success{project="default"} 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_scrape_success",
@@ -679,12 +679,12 @@ func TestCollect_ActiveOutageMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_outage_active Whether the monitor has an active (unresolved) outage (1) or not (0).
 # TYPE hyperping_monitor_outage_active gauge
-hyperping_monitor_outage_active{name="API",tenant="",tier="unknown",uuid="mon_2"} 0
-hyperping_monitor_outage_active{name="Web",tenant="",tier="unknown",uuid="mon_1"} 1
+hyperping_monitor_outage_active{name="API",project="default",tenant="",tier="unknown",uuid="mon_2"} 0
+hyperping_monitor_outage_active{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 1
 # HELP hyperping_monitor_active_outage_status_code HTTP status code of the current active outage; 0 when no active outage.
 # TYPE hyperping_monitor_active_outage_status_code gauge
-hyperping_monitor_active_outage_status_code{name="API",tenant="",tier="unknown",uuid="mon_2"} 0
-hyperping_monitor_active_outage_status_code{name="Web",tenant="",tier="unknown",uuid="mon_1"} 503
+hyperping_monitor_active_outage_status_code{name="API",project="default",tenant="",tier="unknown",uuid="mon_2"} 0
+hyperping_monitor_active_outage_status_code{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 503
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_outage_active",
@@ -709,9 +709,9 @@ func TestCollect_EscalationTierMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_escalation_tier Escalation tier info (always 1). Join on uuid+name; use tier label to filter core/noncore.
 # TYPE hyperping_monitor_escalation_tier gauge
-hyperping_monitor_escalation_tier{name="Core",tier="core",uuid="mon_1"} 1
-hyperping_monitor_escalation_tier{name="Edge",tier="unknown",uuid="mon_2"} 1
-hyperping_monitor_escalation_tier{name="NonCore",tier="noncore",uuid="mon_3"} 1
+hyperping_monitor_escalation_tier{name="Core",project="default",tier="core",uuid="mon_1"} 1
+hyperping_monitor_escalation_tier{name="Edge",project="default",tier="unknown",uuid="mon_2"} 1
+hyperping_monitor_escalation_tier{name="NonCore",project="default",tier="noncore",uuid="mon_3"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_escalation_tier",
@@ -748,9 +748,9 @@ func TestCollect_SLAReportMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_sla_ratio Monitor SLA as a ratio (0–1) over the labelled period.
 # TYPE hyperping_monitor_sla_ratio gauge
-hyperping_monitor_sla_ratio{name="Web",period="24h",tenant="",tier="unknown",uuid="mon_1"} 0.995
-hyperping_monitor_sla_ratio{name="Web",period="7d",tenant="",tier="unknown",uuid="mon_1"} 0.995
-hyperping_monitor_sla_ratio{name="Web",period="30d",tenant="",tier="unknown",uuid="mon_1"} 0.995
+hyperping_monitor_sla_ratio{name="Web",period="24h",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.995
+hyperping_monitor_sla_ratio{name="Web",period="7d",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.995
+hyperping_monitor_sla_ratio{name="Web",period="30d",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.995
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_sla_ratio",
@@ -779,10 +779,10 @@ func TestCollect_TenantHealthMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_tenant_monitors_up_ratio Fraction of monitors currently up (0–1).
 # TYPE hyperping_tenant_monitors_up_ratio gauge
-hyperping_tenant_monitors_up_ratio 1
+hyperping_tenant_monitors_up_ratio{project="default"} 1
 # HELP hyperping_tenant_active_outages Total number of active (unresolved) outages across all monitors.
 # TYPE hyperping_tenant_active_outages gauge
-hyperping_tenant_active_outages 0
+hyperping_tenant_active_outages{project="default"} 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_tenant_monitors_up_ratio",
@@ -1168,7 +1168,7 @@ func TestSanitizeURL(t *testing.T) {
 
 func TestNewClientMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewClientMetrics(reg, "hyperping")
+	m := NewClientMetrics(reg, "hyperping", "")
 	require.NotNil(t, m)
 
 	// Seed an observation so the histogram appears in Gather output.
@@ -1181,7 +1181,7 @@ func TestNewClientMetrics(t *testing.T) {
 
 func TestClientMetrics_RecordAPICall(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewClientMetrics(reg, "hyperping")
+	m := NewClientMetrics(reg, "hyperping", "")
 
 	m.RecordAPICall(context.Background(), "GET", "/monitors", 200, 0.05)
 	m.RecordAPICall(context.Background(), "GET", "/monitors", 200, 0.10)
@@ -1207,7 +1207,7 @@ func TestClientMetrics_RecordAPICall(t *testing.T) {
 
 func TestClientMetrics_RecordRetry(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewClientMetrics(reg, "hyperping")
+	m := NewClientMetrics(reg, "hyperping", "")
 
 	m.RecordRetry(context.Background(), "GET", "/monitors", 1)
 	m.RecordRetry(context.Background(), "GET", "/monitors", 1)
@@ -1229,7 +1229,7 @@ func TestClientMetrics_RecordRetry(t *testing.T) {
 
 func TestClientMetrics_RecordCircuitBreakerState(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewClientMetrics(reg, "hyperping")
+	m := NewClientMetrics(reg, "hyperping", "")
 
 	// Cycle through all states to exercise the reset loop; last state is "half-open".
 	for _, state := range []string{"closed", "open", "half-open"} {
@@ -1408,8 +1408,8 @@ func TestCollect_InMaintenanceMetric(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_in_maintenance 1 if the monitor is currently covered by an active maintenance window, 0 otherwise.
 # TYPE hyperping_monitor_in_maintenance gauge
-hyperping_monitor_in_maintenance{name="API",tenant="",tier="unknown",uuid="m2"} 0
-hyperping_monitor_in_maintenance{name="Web",tenant="",tier="unknown",uuid="m1"} 1
+hyperping_monitor_in_maintenance{name="API",project="default",tenant="",tier="unknown",uuid="m2"} 0
+hyperping_monitor_in_maintenance{name="Web",project="default",tenant="",tier="unknown",uuid="m1"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_in_maintenance",
@@ -1447,9 +1447,9 @@ func TestCollect_UpByRegionMetric(t *testing.T) {
 	expected := `
 # HELP hyperping_monitor_up_by_region 1 if the monitor is up in the given region, 0 if confirmed down. Derived from active outage confirmed locations; approximation only.
 # TYPE hyperping_monitor_up_by_region gauge
-hyperping_monitor_up_by_region{name="Web",region="frankfurt",tenant="",tier="unknown",uuid="m1"} 1
-hyperping_monitor_up_by_region{name="Web",region="london",tenant="",tier="unknown",uuid="m1"} 0
-hyperping_monitor_up_by_region{name="Web",region="paris",tenant="",tier="unknown",uuid="m1"} 0
+hyperping_monitor_up_by_region{name="Web",project="default",region="frankfurt",tenant="",tier="unknown",uuid="m1"} 1
+hyperping_monitor_up_by_region{name="Web",project="default",region="london",tenant="",tier="unknown",uuid="m1"} 0
+hyperping_monitor_up_by_region{name="Web",project="default",region="paris",tenant="",tier="unknown",uuid="m1"} 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_monitor_up_by_region",
@@ -1478,10 +1478,10 @@ func TestCollect_IncidentAndMaintenanceAccountMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_incidents_open Number of open (non-resolved) incidents.
 # TYPE hyperping_incidents_open gauge
-hyperping_incidents_open 2
+hyperping_incidents_open{project="default"} 2
 # HELP hyperping_maintenance_windows_active Number of currently active (ongoing) maintenance windows.
 # TYPE hyperping_maintenance_windows_active gauge
-hyperping_maintenance_windows_active 2
+hyperping_maintenance_windows_active{project="default"} 2
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
 		"hyperping_incidents_open",
@@ -1538,19 +1538,19 @@ func TestCollect_McpMetrics(t *testing.T) {
 	expected := `
 # HELP hyperping_alerts Snapshot count of alerts in history.
 # TYPE hyperping_alerts gauge
-hyperping_alerts 42
+hyperping_alerts{project="default"} 42
 # HELP hyperping_monitor_anomaly_count Number of detected anomalies for the monitor.
 # TYPE hyperping_monitor_anomaly_count gauge
-hyperping_monitor_anomaly_count{name="Web",tenant="",tier="unknown",uuid="mon_1"} 2
+hyperping_monitor_anomaly_count{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 2
 # HELP hyperping_monitor_anomaly_score Highest anomaly score for the monitor.
 # TYPE hyperping_monitor_anomaly_score gauge
-hyperping_monitor_anomaly_score{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0.95
+hyperping_monitor_anomaly_score{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.95
 # HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds.
 # TYPE hyperping_monitor_mtta_seconds gauge
-hyperping_monitor_mtta_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 45
+hyperping_monitor_mtta_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 45
 # HELP hyperping_monitor_response_time_seconds Average monitor response time in seconds.
 # TYPE hyperping_monitor_response_time_seconds gauge
-hyperping_monitor_response_time_seconds{name="Web",tenant="",tier="unknown",uuid="mon_1"} 0.123
+hyperping_monitor_response_time_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.123
 `
 
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected),
@@ -1693,7 +1693,7 @@ func TestRefresh_ExcludePattern_TenantUpRatioExcludesDrillMonitors(t *testing.T)
 	expected := `
 # HELP hyperping_tenant_monitors_up_ratio Fraction of monitors currently up (0–1).
 # TYPE hyperping_tenant_monitors_up_ratio gauge
-hyperping_tenant_monitors_up_ratio 1
+hyperping_tenant_monitors_up_ratio{project="default"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_monitors_up_ratio")
 	require.NoError(t, err)
@@ -1719,7 +1719,7 @@ func TestRefresh_ExcludePattern_TenantActiveOutagesExcludesDrillOutages(t *testi
 	expected := `
 # HELP hyperping_tenant_active_outages Total number of active (unresolved) outages across all monitors.
 # TYPE hyperping_tenant_active_outages gauge
-hyperping_tenant_active_outages 1
+hyperping_tenant_active_outages{project="default"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_active_outages")
 	require.NoError(t, err)
@@ -1776,7 +1776,7 @@ func TestCollect_CacheTTLSeconds(t *testing.T) {
 	expected := `
 # HELP hyperping_cache_ttl_seconds Cache refresh interval in seconds (value of --cache-ttl).
 # TYPE hyperping_cache_ttl_seconds gauge
-hyperping_cache_ttl_seconds 45
+hyperping_cache_ttl_seconds{project="default"} 45
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_cache_ttl_seconds")
 	require.NoError(t, err)
@@ -1800,7 +1800,7 @@ func TestCollect_MonitorsExcluded(t *testing.T) {
 		expected := `
 # HELP hyperping_excluded_monitors Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_excluded_monitors gauge
-hyperping_excluded_monitors 2
+hyperping_excluded_monitors{project="default"} 2
 `
 		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_excluded_monitors")
 		require.NoError(t, err)
@@ -1813,7 +1813,7 @@ hyperping_excluded_monitors 2
 		expected := `
 # HELP hyperping_excluded_monitors Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_excluded_monitors gauge
-hyperping_excluded_monitors 0
+hyperping_excluded_monitors{project="default"} 0
 `
 		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_excluded_monitors")
 		require.NoError(t, err)
@@ -1834,7 +1834,7 @@ hyperping_excluded_monitors 0
 		expected := `
 # HELP hyperping_excluded_monitors Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.
 # TYPE hyperping_excluded_monitors gauge
-hyperping_excluded_monitors 0
+hyperping_excluded_monitors{project="default"} 0
 `
 		err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_excluded_monitors")
 		require.NoError(t, err)
@@ -1869,9 +1869,9 @@ func TestRefresh_ExcludePattern_TenantAvgSLAExcludesDrillReports(t *testing.T) {
 	expected := `
 # HELP hyperping_tenant_avg_sla_ratio Average SLA ratio across all monitors for the labelled period.
 # TYPE hyperping_tenant_avg_sla_ratio gauge
-hyperping_tenant_avg_sla_ratio{period="24h"} 0.995
-hyperping_tenant_avg_sla_ratio{period="30d"} 0.995
-hyperping_tenant_avg_sla_ratio{period="7d"} 0.995
+hyperping_tenant_avg_sla_ratio{period="24h",project="default"} 0.995
+hyperping_tenant_avg_sla_ratio{period="30d",project="default"} 0.995
+hyperping_tenant_avg_sla_ratio{period="7d",project="default"} 0.995
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_avg_sla_ratio")
 	require.NoError(t, err)
@@ -1906,7 +1906,7 @@ func TestRefresh_ExcludePattern_TenantHealthScoreExcludesDrillReports(t *testing
 	expected := `
 # HELP hyperping_tenant_health_score Composite tenant health score from 0 to 100.
 # TYPE hyperping_tenant_health_score gauge
-hyperping_tenant_health_score 100
+hyperping_tenant_health_score{project="default"} 100
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), "hyperping_tenant_health_score")
 	require.NoError(t, err)

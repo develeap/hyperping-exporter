@@ -93,6 +93,7 @@ All flags can also be set via environment variables.
 | `--namespace` | `HYPERPING_EXPORTER_NAMESPACE` | `hyperping` | Metric name prefix. Must match `[a-zA-Z_][a-zA-Z0-9_]{0,63}`. |
 | `--mcp-url` | `(flag only)` | `(official)` | Custom Hyperping MCP server URL. |
 | `--exclude-name-pattern` | `(flag only)` | *(none)* | RE2 regex; monitors whose name matches are dropped from all per-monitor metrics and tenant aggregates. Typical use: `'\[DRILL|\[TEST'` to keep synthetic monitors out of fleet health. |
+| `--projects-file` | `HYPERPING_PROJECTS_FILE` | *(none)* | Path to a YAML list of `{id, apiKey\|apiKeyFile, mcpUrl?, excludeNamePattern?}` entries. Mutually exclusive with `--api-key` / `--api-key-file` / `HYPERPING_API_KEY`. Enables multi-project mode: every metric series carries a `project` constLabel set to the entry's `id`. See the [Multi-project deployments](#multi-project-deployments) section. |
 | `--web.config.file` | `(flag only)` | *(none)* | Path to web config file for TLS / basic auth. See [exporter-toolkit web-configuration](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md). |
 
 > Only `HYPERPING_API_KEY` is read from the environment by default;
@@ -106,6 +107,50 @@ All flags can also be set via environment variables.
 | **Worker Pool** | MCP metrics use a worker pool of 10 concurrent requests to minimize latency while protecting the API. |
 | **Cardinality** | Each monitor contributes ~13 time series. 100 monitors ≈ 1300 series — negligible for any Prometheus setup. |
 | **Scrape interval** | Set Prometheus scrape interval ≥ cache-ttl. Scraping faster than the cache refreshes returns identical data. |
+
+### Multi-project deployments
+
+A single exporter Pod can serve multiple Hyperping projects (separate
+accounts / API keys / billing scopes). Each project's metrics carry a
+`project` constLabel set to the project's `id`, so series from
+different projects coexist in one Prometheus tenant without name
+collisions.
+
+Single-project (legacy) deployments need no changes: the binary
+synthesises a single `project="default"` entry from `--api-key` /
+`HYPERPING_API_KEY` / `--api-key-file` and every metric series keeps
+the same names as in chart 1.5.x.
+
+To opt in, point `--projects-file` (or `HYPERPING_PROJECTS_FILE`) at a
+YAML list:
+
+```yaml
+- id: hyp_core
+  apiKeyFile: /etc/hyperping/api-key-hyp_core
+  excludeNamePattern: '\[DRILL|\[TEST'  # per-project override
+- id: hyp_infra
+  apiKeyFile: /etc/hyperping/api-key-hyp_infra
+```
+
+Project ids must match `[a-zA-Z0-9._-]{1,64}` (same alphabet as the
+tenant regex) and are globally unique within the file. Each entry sets
+exactly one of `apiKey` (inline; dev only) or `apiKeyFile` (path to a
+file containing the API key); the per-project `mcpUrl` and
+`excludeNamePattern` fall back to the corresponding global flags when
+empty.
+
+The Helm chart's `config.projects` values knob renders the projects
+file and the projected Secret volume that surfaces each project's API
+key on disk; see `deploy/helm/hyperping-exporter/values.yaml` for the
+full schema. Dashboards and alerts must be updated to add a
+`project=<id>` (or `project=~<regex>`) selector during the rollout;
+the dashboard migration in
+[hyperping-automation](https://github.com/develeap/hyperping-automation)
+tracks alongside this release.
+
+> Set Grafana dashboard `$project` variable defaults to an explicit
+> project id, **not** `All` or `.*`. The latter silently includes drill
+> or staging series in headline numbers.
 
 ---
 

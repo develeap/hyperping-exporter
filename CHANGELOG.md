@@ -4,6 +4,77 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `--projects-file` flag (env `HYPERPING_PROJECTS_FILE`) on the exporter
+  binary. The flag points at a YAML list of `{id, apiKey|apiKeyFile,
+  mcpUrl?, excludeNamePattern?}` entries; the exporter fans out one
+  `hyperping.Client`, one `ObservedTransport`, and one
+  `*collector.Collector` per project. Each Collector runs its own
+  refresh loop (legacy ticker or `tieredRefresher`) so a rate-limit
+  pause on one project does not stall the others.
+- Helm chart `config.projects` values knob. When the list is non-empty,
+  the chart renders `--projects-file=/etc/hyperping/projects.yaml` and
+  mounts a projected volume that composes the chart-managed Secret
+  (`projects.yaml` + inline-mode `api-key-<id>` entries) with each
+  per-project external Secret (existingSecret or the ESO target Secret
+  re-keyed to `api-key-<id>`).
+- `validateProjects` Helm helper enforcing per-project id alphabet
+  (`[a-zA-Z0-9._-]{1,64}`, same as the binary's tenant regex), id
+  uniqueness, and exactly-one-secret-source per project. The top-level
+  `config.apiKey` / `config.existingSecret` / `externalSecret.remoteRef`
+  surface is mutually exclusive with the projects list.
+- Multi-key ExternalSecret rendering: in projects mode the chart's
+  `externalsecret.yaml` renders one `data` entry per project
+  (`secretKey: api-key-<id>`) targeting a single `<fullname>-projects`
+  Secret. The chart-managed Secret retains ownership of `projects.yaml`.
+
+### Changed
+
+- BREAKING (downstream dashboards/alerts): every `hyperping_*`,
+  `hyperping_client_*`, and `hyperping_mcp_*` metric now carries a
+  `project` constLabel. The new project label defaults to
+  `project="default"` on single-project deployments so series remain
+  joinable, but Grafana panels and Prometheus alerts that hardcode
+  label sets without a `project=...` matcher must add one during this
+  rollout. Recording rules that aggregate across the exporter should
+  add a `by (project, ...)` or `without (project)` clause as
+  appropriate.
+- Helm chart version `1.5.4 -> 1.6.0`; appVersion `1.5.1 -> 1.7.0`.
+
+### Migration
+
+- Existing single-project deployments need no values changes. The
+  legacy `--api-key` / `--api-key-file` / `HYPERPING_API_KEY` path is
+  preserved verbatim and synthesises a single project with id
+  `default`; the chart's `config.apiKey` / `config.existingSecret`
+  / `externalSecret` flow stays as in chart 1.5.x.
+- Operators adopting multi-project mode populate `config.projects`
+  in the chart values; the top-level secret-source knobs MUST be
+  cleared in the same change (validateProjects fails the render
+  otherwise).
+- Dashboard and alert migration tracks alongside this release in
+  hyperping-automation; transitional alert selectors should use
+  `project=~"hyp_core|"` so the rule ships before the exporter is
+  cut over without breaking the pre-upgrade single-project series.
+- CUTOVER REQUIREMENT: when deploying 1.7.0, cut over to
+  `config.projects` mode, NOT the legacy single-key path. A 1.7.0
+  binary on the legacy path emits `project="default"`, which the
+  transitional `project=~"hyp_core|"` selectors do NOT match (they
+  match `hyp_core` or the pre-1.7.0 unlabeled series only), silently
+  hiding the whole fleet from those alerts. If a deployment must stay
+  on the legacy path during transition, widen the selectors to
+  include `default` (`project=~"hyp_core|default|"`).
+- CUTOVER REQUIREMENT: set `config.cacheMode: tiered` if the
+  downstream per-tier `HyperpingDataStale` alerts are expected to
+  fire. The chart default is `legacy`, which emits only
+  `tier="hot"`; the warm/cold staleness rules have no series to
+  evaluate under legacy mode and stay permanently inert.
+- Dashboard `$project` variable defaults should be set to an
+  explicit project id (e.g. `hyp_core`), NOT `All` or `.*`; the
+  latter silently includes drill or staging series in headline
+  numbers and is a common silent-regression source.
+
 ## [1.6.0] - 2026-05-31
 
 ### Security

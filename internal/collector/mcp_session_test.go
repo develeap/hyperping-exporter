@@ -122,7 +122,7 @@ func TestMCPSessionPropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	reg := prometheus.NewRegistry()
-	mcpMetrics := NewMCPMetrics(reg, "hyperping")
+	mcpMetrics := NewMCPMetrics(reg, "hyperping", "")
 	observed := NewObservedTransport(rawTransport, mcpMetrics)
 	// Eager init through the wrapper, mirroring what main.go does at process
 	// startup. The SDK's lazy init bypasses the MCPTransport interface
@@ -162,7 +162,7 @@ func TestMCPSessionPropagation(t *testing.T) {
 	require.Equal(t, float64(1), counterValue(t, reg, "hyperping_mcp_initialize_total"),
 		"hyperping_mcp_initialize_total must be 1")
 	require.Equal(t, float64(0), counterVecSum(t, reg, "hyperping_mcp_call_rate_limited_total"),
-		"hyperping_mcp_call_rate_limited_total{*} must sum to 0")
+		"hyperping_mcp_call_rate_limited_total must sum to 0")
 
 	t.Logf("tools/call breakdown: %v (total=%d)", toolsCallMethods, toolsCallCount.Load())
 }

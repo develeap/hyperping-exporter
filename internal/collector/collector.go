@@ -80,6 +80,30 @@ func WithMCPMetrics(m *MCPMetrics) CollectorOption {
 	}
 }
 
+// WithProject sets the value of the `project` constLabel emitted on every
+// metric Desc this Collector produces. Empty string collapses to "default"
+// so legacy single-project deployments still see a stable label set on
+// every series.
+func WithProject(id string) CollectorOption {
+	return func(c *Collector) {
+		c.project = id
+	}
+}
+
+// defaultProjectID is the constLabel value used when WithProject is unset
+// or empty. Kept explicit so downstream dashboards/alerts can always
+// select on `project=<value>` without special-casing the unset path.
+const defaultProjectID = "default"
+
+// resolveProjectID returns id with the unset/empty path collapsed to
+// "default". Used by NewCollector and the per-Desc construction helpers.
+func resolveProjectID(id string) string {
+	if id == "" {
+		return defaultProjectID
+	}
+	return id
+}
+
 // reportPeriods defines the SLA/outage report windows fetched on each refresh.
 var reportPeriods = []string{"24h", "7d", "30d"}
 
@@ -145,93 +169,97 @@ type collectorDescs struct {
 	excludedDesc              *prometheus.Desc
 }
 
-// newCollectorDescs initialises all Prometheus metric descriptors.
-func newCollectorDescs(ns string) collectorDescs {
+// newCollectorDescs initialises all Prometheus metric descriptors. The
+// `project` constLabel is applied to every Desc so series produced by
+// distinct Collector instances coexist in one Registry (constLabel value
+// is part of Desc identity).
+func newCollectorDescs(ns, project string) collectorDescs {
 	fqn := prometheus.BuildFQName
 	ml := []string{"uuid", "name", "tenant", "tier"}
 	mpl := []string{"uuid", "name", "tenant", "tier", "period"}
+	cl := prometheus.Labels{"project": resolveProjectID(project)}
 	return collectorDescs{
-		monitorUp:                 prometheus.NewDesc(fqn(ns, "monitor", "up"), "Whether the monitor is up (1) or down (0).", ml, nil),
-		monitorPaused:             prometheus.NewDesc(fqn(ns, "monitor", "paused"), "Whether the monitor is paused (1) or active (0).", ml, nil),
-		monitorSSLExpDays:         prometheus.NewDesc(fqn(ns, "monitor", "ssl_expiration_days"), "Days until SSL certificate expiration.", ml, nil),
-		monitorCheckInterval:      prometheus.NewDesc(fqn(ns, "monitor", "check_interval_seconds"), "Monitor check frequency in seconds.", ml, nil),
-		monitorInfo:               prometheus.NewDesc(fqn(ns, "monitor", "info"), "Monitor metadata (value is always 1).", []string{"uuid", "name", "protocol", "url", "project_uuid", "http_method"}, nil),
-		healthcheckUp:             prometheus.NewDesc(fqn(ns, "healthcheck", "up"), "Whether the healthcheck is up (1) or down (0).", []string{"uuid", "name"}, nil),
-		healthcheckPaused:         prometheus.NewDesc(fqn(ns, "healthcheck", "paused"), "Whether the healthcheck is paused (1) or active (0).", []string{"uuid", "name"}, nil),
-		healthcheckPeriod:         prometheus.NewDesc(fqn(ns, "healthcheck", "period_seconds"), "Expected healthcheck ping period in seconds.", []string{"uuid", "name"}, nil),
-		monitorsTotal:             prometheus.NewDesc(fqn(ns, "", "monitors"), "Total number of monitors.", nil, nil),
-		healthchecksTotal:         prometheus.NewDesc(fqn(ns, "", "healthchecks"), "Total number of healthchecks.", nil, nil),
-		scrapeDurationDesc:        prometheus.NewDesc(fqn(ns, "scrape", "duration_seconds"), "Duration of the last API scrape in seconds.", nil, nil),
-		scrapeSuccessDesc:         prometheus.NewDesc(fqn(ns, "scrape", "success"), "Whether the last API scrape succeeded (1) or failed (0).", nil, nil),
-		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh, labelled by tier. In legacy mode only `tier=\"hot\"` is emitted (matches the pre-tiered single-ticker semantics). In tiered mode each of `hot`/`warm`/`cold` is emitted as a separate series.", []string{"tier"}, nil),
-		monitorOutageActive:       prometheus.NewDesc(fqn(ns, "monitor", "outage_active"), "Whether the monitor has an active (unresolved) outage (1) or not (0).", ml, nil),
-		monitorActiveOutageStatus: prometheus.NewDesc(fqn(ns, "monitor", "active_outage_status_code"), "HTTP status code of the current active outage; 0 when no active outage.", ml, nil),
-		monitorSLA:                prometheus.NewDesc(fqn(ns, "monitor", "sla_ratio"), "Monitor SLA as a ratio (0–1) over the labelled period.", mpl, nil),
-		monitorOutages:            prometheus.NewDesc(fqn(ns, "monitor", "outages"), "Number of outages over the labelled period.", mpl, nil),
-		monitorDowntime:           prometheus.NewDesc(fqn(ns, "monitor", "downtime_seconds"), "Total downtime in seconds over the labelled period.", mpl, nil),
-		monitorLongestOutage:      prometheus.NewDesc(fqn(ns, "monitor", "longest_outage_seconds"), "Duration of the longest single outage in seconds over the labelled period.", mpl, nil),
-		monitorMTTR:               prometheus.NewDesc(fqn(ns, "monitor", "mttr_seconds"), "Mean Time To Recovery in seconds over the labelled period.", mpl, nil),
-		tenantHealthScore:         prometheus.NewDesc(fqn(ns, "tenant", "health_score"), "Composite tenant health score from 0 to 100.", nil, nil),
-		tenantUpRatio:             prometheus.NewDesc(fqn(ns, "tenant", "monitors_up_ratio"), "Fraction of monitors currently up (0–1).", nil, nil),
-		tenantActiveOutages:       prometheus.NewDesc(fqn(ns, "tenant", "active_outages"), "Total number of active (unresolved) outages across all monitors.", nil, nil),
-		tenantAvgSLA:              prometheus.NewDesc(fqn(ns, "tenant", "avg_sla_ratio"), "Average SLA ratio across all monitors for the labelled period.", []string{"period"}, nil),
-		monitorTier:               prometheus.NewDesc(fqn(ns, "monitor", "escalation_tier"), "Escalation tier info (always 1). Join on uuid+name; use tier label to filter core/noncore.", []string{"uuid", "name", "tier"}, nil),
+		monitorUp:                 prometheus.NewDesc(fqn(ns, "monitor", "up"), "Whether the monitor is up (1) or down (0).", ml, cl),
+		monitorPaused:             prometheus.NewDesc(fqn(ns, "monitor", "paused"), "Whether the monitor is paused (1) or active (0).", ml, cl),
+		monitorSSLExpDays:         prometheus.NewDesc(fqn(ns, "monitor", "ssl_expiration_days"), "Days until SSL certificate expiration.", ml, cl),
+		monitorCheckInterval:      prometheus.NewDesc(fqn(ns, "monitor", "check_interval_seconds"), "Monitor check frequency in seconds.", ml, cl),
+		monitorInfo:               prometheus.NewDesc(fqn(ns, "monitor", "info"), "Monitor metadata (value is always 1).", []string{"uuid", "name", "protocol", "url", "project_uuid", "http_method"}, cl),
+		healthcheckUp:             prometheus.NewDesc(fqn(ns, "healthcheck", "up"), "Whether the healthcheck is up (1) or down (0).", []string{"uuid", "name"}, cl),
+		healthcheckPaused:         prometheus.NewDesc(fqn(ns, "healthcheck", "paused"), "Whether the healthcheck is paused (1) or active (0).", []string{"uuid", "name"}, cl),
+		healthcheckPeriod:         prometheus.NewDesc(fqn(ns, "healthcheck", "period_seconds"), "Expected healthcheck ping period in seconds.", []string{"uuid", "name"}, cl),
+		monitorsTotal:             prometheus.NewDesc(fqn(ns, "", "monitors"), "Total number of monitors.", nil, cl),
+		healthchecksTotal:         prometheus.NewDesc(fqn(ns, "", "healthchecks"), "Total number of healthchecks.", nil, cl),
+		scrapeDurationDesc:        prometheus.NewDesc(fqn(ns, "scrape", "duration_seconds"), "Duration of the last API scrape in seconds.", nil, cl),
+		scrapeSuccessDesc:         prometheus.NewDesc(fqn(ns, "scrape", "success"), "Whether the last API scrape succeeded (1) or failed (0).", nil, cl),
+		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh, labelled by tier. In legacy mode only `tier=\"hot\"` is emitted (matches the pre-tiered single-ticker semantics). In tiered mode each of `hot`/`warm`/`cold` is emitted as a separate series.", []string{"tier"}, cl),
+		monitorOutageActive:       prometheus.NewDesc(fqn(ns, "monitor", "outage_active"), "Whether the monitor has an active (unresolved) outage (1) or not (0).", ml, cl),
+		monitorActiveOutageStatus: prometheus.NewDesc(fqn(ns, "monitor", "active_outage_status_code"), "HTTP status code of the current active outage; 0 when no active outage.", ml, cl),
+		monitorSLA:                prometheus.NewDesc(fqn(ns, "monitor", "sla_ratio"), "Monitor SLA as a ratio (0–1) over the labelled period.", mpl, cl),
+		monitorOutages:            prometheus.NewDesc(fqn(ns, "monitor", "outages"), "Number of outages over the labelled period.", mpl, cl),
+		monitorDowntime:           prometheus.NewDesc(fqn(ns, "monitor", "downtime_seconds"), "Total downtime in seconds over the labelled period.", mpl, cl),
+		monitorLongestOutage:      prometheus.NewDesc(fqn(ns, "monitor", "longest_outage_seconds"), "Duration of the longest single outage in seconds over the labelled period.", mpl, cl),
+		monitorMTTR:               prometheus.NewDesc(fqn(ns, "monitor", "mttr_seconds"), "Mean Time To Recovery in seconds over the labelled period.", mpl, cl),
+		tenantHealthScore:         prometheus.NewDesc(fqn(ns, "tenant", "health_score"), "Composite tenant health score from 0 to 100.", nil, cl),
+		tenantUpRatio:             prometheus.NewDesc(fqn(ns, "tenant", "monitors_up_ratio"), "Fraction of monitors currently up (0–1).", nil, cl),
+		tenantActiveOutages:       prometheus.NewDesc(fqn(ns, "tenant", "active_outages"), "Total number of active (unresolved) outages across all monitors.", nil, cl),
+		tenantAvgSLA:              prometheus.NewDesc(fqn(ns, "tenant", "avg_sla_ratio"), "Average SLA ratio across all monitors for the labelled period.", []string{"period"}, cl),
+		monitorTier:               prometheus.NewDesc(fqn(ns, "monitor", "escalation_tier"), "Escalation tier info (always 1). Join on uuid+name; use tier label to filter core/noncore.", []string{"uuid", "name", "tier"}, cl),
 		monitorInMaintenance: prometheus.NewDesc(
 			fqn(ns, "monitor", "in_maintenance"),
 			"1 if the monitor is currently covered by an active maintenance window, 0 otherwise.",
-			[]string{"uuid", "name", "tenant", "tier"}, nil,
+			[]string{"uuid", "name", "tenant", "tier"}, cl,
 		),
 		monitorUpByRegion: prometheus.NewDesc(
 			fqn(ns, "monitor", "up_by_region"),
 			"1 if the monitor is up in the given region, 0 if confirmed down. "+
 				"Derived from active outage confirmed locations; approximation only.",
-			[]string{"uuid", "name", "tenant", "tier", "region"}, nil,
+			[]string{"uuid", "name", "tenant", "tier", "region"}, cl,
 		),
 		incidentsOpen: prometheus.NewDesc(
 			fqn(ns, "", "incidents_open"),
 			"Number of open (non-resolved) incidents.",
-			nil, nil,
+			nil, cl,
 		),
 		maintenanceWindowsActive: prometheus.NewDesc(
 			fqn(ns, "", "maintenance_windows_active"),
 			"Number of currently active (ongoing) maintenance windows.",
-			nil, nil,
+			nil, cl,
 		),
 		// previously named response_time_avg_seconds
 		monitorResponseTimeAvg: prometheus.NewDesc(
 			fqn(ns, "monitor", "response_time_seconds"),
 			"Average monitor response time in seconds.",
-			ml, nil,
+			ml, cl,
 		),
 		monitorMtta: prometheus.NewDesc(
 			fqn(ns, "monitor", "mtta_seconds"),
 			"Mean Time To Acknowledge in seconds.",
-			ml, nil,
+			ml, cl,
 		),
 		monitorAnomalyCount: prometheus.NewDesc(
 			fqn(ns, "monitor", "anomaly_count"),
 			"Number of detected anomalies for the monitor.",
-			ml, nil,
+			ml, cl,
 		),
 		monitorAnomalyScore: prometheus.NewDesc(
 			fqn(ns, "monitor", "anomaly_score"),
 			"Highest anomaly score for the monitor.",
-			ml, nil,
+			ml, cl,
 		),
 		alertCount: prometheus.NewDesc(
 			fqn(ns, "", "alerts"),
 			"Snapshot count of alerts in history.",
-			nil, nil,
+			nil, cl,
 		),
 		cacheTTLDesc: prometheus.NewDesc(
 			fqn(ns, "cache", "ttl_seconds"),
 			"Cache refresh interval in seconds (value of --cache-ttl).",
-			nil, nil,
+			nil, cl,
 		),
 		excludedDesc: prometheus.NewDesc(
 			fqn(ns, "excluded", "monitors"),
 			"Number of monitors filtered out by --exclude-name-pattern on the last cache refresh; hyperping_monitors counts the visible remainder.",
-			nil, nil,
+			nil, cl,
 		),
 	}
 }
@@ -277,6 +305,7 @@ type Collector struct {
 	cacheTTL       time.Duration
 	logger         *slog.Logger
 	excludePattern *regexp.Regexp
+	project        string // resolved via resolveProjectID at NewCollector time
 
 	// Tiered cache (CacheModeTiered only). When cacheMode == CacheModeLegacy
 	// the tiered field is nil and Start/Collect take the legacy path.
@@ -325,11 +354,16 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 		mttaIndex:         make(map[string]float64),
 		anomalyCountIndex: make(map[string]int),
 		anomalyScoreIndex: make(map[string]float64),
-		collectorDescs:    newCollectorDescs(namespace),
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	// Build Descs AFTER options so WithProject can influence the
+	// constLabel; project="default" is the unconditional fallback so
+	// downstream dashboards see a stable label set even before the
+	// chart's multi-project knob is enabled.
+	c.project = resolveProjectID(c.project)
+	c.collectorDescs = newCollectorDescs(namespace, c.project)
 	// In tiered mode build the refresher up front so callers can drive
 	// per-tier refreshes directly (tests do this) and so Start has nothing
 	// to allocate on the hot path. Legacy mode leaves c.tiered nil.
@@ -763,9 +797,17 @@ func (c *Collector) Refresh(ctx context.Context) {
 	)
 }
 
+// Project returns the resolved project constLabel value for this Collector
+// (the value of WithProject, or "default" if unset). main.go consumes this
+// to label the per-project readiness gauge so dashboards/alerts can see
+// which project is failing under the OR readiness policy.
+func (c *Collector) Project() string {
+	return c.project
+}
+
 // IsReady returns true once at least one successful API scrape has completed.
 // It never reverts to false: transient failures after the first success do not
-// affect readiness — staleness is surfaced by hyperping_data_age_seconds instead.
+// affect readiness, staleness is surfaced by hyperping_data_age_seconds instead.
 //
 // In tiered mode "successful" means the HOT tier has published at least once;
 // WARM and COLD lag is expected during the post-boot cold-start window and

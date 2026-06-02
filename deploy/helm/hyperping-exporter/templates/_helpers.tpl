@@ -194,15 +194,21 @@ operator error messages on shape mismatches honest.
 {{/*
 validateSecretSources (R4-6 boolean tree, Contract C2.4).
   1. If `replicaCount == 0` -> SKIP all checks (no Pods to authenticate).
-  2. Else if `secretSourceCount > 1` -> fail with conflict naming the pair.
-  3. Else if `secretSourceCount == 0` -> fail with missing-source message.
-  4. Else -> pass.
+  2. Else if `config.projects` is non-empty -> SKIP this validator and
+     delegate to validateProjects, which enforces per-project source
+     uniqueness. Letting both run would double-fail when projects mode
+     intentionally moves every secret source into the per-project list.
+  3. Else if `secretSourceCount > 1` -> fail with conflict naming the pair.
+  4. Else if `secretSourceCount == 0` -> fail with missing-source message.
+  5. Else -> pass.
 The conflict message enumerates every set pair so the operator does not
 have to guess which two values to reconcile.
 */}}
 {{- define "hyperping-exporter.validateSecretSources" -}}
 {{- if eq (int .Values.replicaCount) 0 -}}
 {{- /* skip */ -}}
+{{- else if .Values.config.projects -}}
+{{- /* multi-project mode: per-project validation owns this; see validateProjects */ -}}
 {{- else -}}
 {{- $count := int (include "hyperping-exporter.secretSourceCount" .) -}}
 {{- if gt $count 1 -}}
@@ -216,6 +222,100 @@ have to guess which two values to reconcile.
 {{- fail "secret-source missing: set exactly one of config.apiKey (dev-only), config.existingSecret (recommended for production; references an externally-managed Secret with key 'api-key'), or externalSecret.enabled: true (lets External Secrets Operator manage the Secret)." -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+validateProjects (multi-project mode, Contract C2.4+). Enforces the
+per-project secret-source contract when config.projects is non-empty:
+  - Each project id must match [a-zA-Z0-9._-]{1,64} (same alphabet as
+    the tenant regex used elsewhere; matches reProjectID in main.go).
+  - Project ids are globally unique within the list.
+  - Each project sets exactly ONE secret source: inline apiKey, or
+    existingSecret, or (when top-level externalSecret.enabled is true) a
+    per-project externalSecret.remoteRef block.
+  - Top-level secret sources (config.apiKey / config.existingSecret /
+    top-level externalSecret.remoteRef) must be empty: multi-project
+    mode moves every key into the per-project list.
+
+Skipped entirely when replicaCount == 0 or when config.projects is
+empty (the legacy single-key path stays as in chart 1.5.x).
+*/}}
+{{- define "hyperping-exporter.validateProjects" -}}
+{{- if and (ne (int .Values.replicaCount) 0) .Values.config.projects -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- $esEnabled := $es.enabled -}}
+{{- /* Top-level mutex with the projects list. */ -}}
+{{- if .Values.config.apiKey -}}
+{{- fail "config.apiKey conflicts with config.projects: multi-project mode moves every secret source into the per-project list. Move the inline key to projects[*].apiKey or clear config.apiKey." -}}
+{{- end -}}
+{{- if .Values.config.existingSecret -}}
+{{- fail "config.existingSecret conflicts with config.projects: multi-project mode moves every secret source into the per-project list. Move the existingSecret name to projects[*].existingSecret or clear config.existingSecret." -}}
+{{- end -}}
+{{- if and $esEnabled $es.remoteRef $es.remoteRef.key -}}
+{{- fail "externalSecret.remoteRef.key conflicts with config.projects: multi-project mode requires one remoteRef per project under projects[*].externalSecret.remoteRef. Move the remoteRef into each project entry." -}}
+{{- end -}}
+{{- /* Per-project alphabet, uniqueness, secret-source uniqueness. */ -}}
+{{- $idAlphabet := `^[a-zA-Z0-9._-]{1,64}$` -}}
+{{- $seen := dict -}}
+{{- range $i, $p := .Values.config.projects -}}
+{{- $id := $p.id | default "" -}}
+{{- if not (regexMatch $idAlphabet $id) -}}
+{{- fail (printf "project id %q at projects[%d] is invalid: project id must match %s (same alphabet as the tenant regex; ensures the Prometheus constLabel cannot inject characters that downstream label matchers cannot escape)." $id $i $idAlphabet) -}}
+{{- end -}}
+{{- if hasKey $seen $id -}}
+{{- fail (printf "duplicate project id %q at projects[%d]: every project id must be unique within the list (the id becomes the value of the `project` constLabel; duplicates would collapse two projects onto one Desc)." $id $i) -}}
+{{- end -}}
+{{- $seen = set $seen $id true -}}
+{{- /*
+ESO mode is incompatible with per-project existingSecret: the
+deployment.yaml projected-volume template skips the existingSecret
+branch entirely when externalSecret.enabled is true (only the ESO
+target Secret is projected), so an operator who sets existingSecret
+under ESO mode would silently lose the on-disk api-key file. The
+externalsecret.yaml `required` filter then explodes with a
+confusing "externalSecret.remoteRef.key is required" message for
+the same project the operator deliberately moved to existingSecret.
+Catch the misconfiguration here with a message that names both
+options.
+*/ -}}
+{{- if and $esEnabled $p.existingSecret -}}
+{{- fail (printf "project %q at projects[%d]: existingSecret is incompatible with externalSecret.enabled in projects mode. Either set externalSecret.enabled: false (chart-managed or pre-existing Secrets per project) or move this project to externalSecret.remoteRef and drop existingSecret." $id $i) -}}
+{{- end -}}
+{{- $count := 0 -}}
+{{- if $p.apiKey -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- if $p.existingSecret -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- $pEs := $p.externalSecret | default dict -}}
+{{- if and $esEnabled $pEs.remoteRef $pEs.remoteRef.key -}}{{- $count = add $count 1 -}}{{- end -}}
+{{- if gt $count 1 -}}
+{{- fail (printf "project %q at projects[%d]: exactly one of apiKey, existingSecret, externalSecret.remoteRef may be set per project; got %d. Pick a single secret source per project." $id $i $count) -}}
+{{- end -}}
+{{- if eq $count 0 -}}
+{{- fail (printf "project %q at projects[%d]: missing secret source. Set exactly one of apiKey (dev-only), existingSecret (recommended), or externalSecret.remoteRef (requires top-level externalSecret.enabled: true)." $id $i) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+projectsYaml (multi-project mode). Renders the YAML document mounted at
+/etc/hyperping/projects.yaml. Every project entry resolves to an
+apiKeyFile reference under /etc/hyperping/api-key-<id>; the
+deployment.yaml template projects per-project Secrets at those paths so
+the binary can read each key off disk without env-var leakage. Inline
+apiKey entries are also indirected through the same path so the
+projects.yaml document never carries plaintext secrets.
+*/}}
+{{- define "hyperping-exporter.projectsYaml" -}}
+{{- range $i, $p := .Values.config.projects -}}
+- id: {{ $p.id | quote }}
+  apiKeyFile: /etc/hyperping/api-key-{{ $p.id }}
+{{- if $p.mcpUrl }}
+  mcpUrl: {{ $p.mcpUrl | quote }}
+{{- end }}
+{{- if $p.excludeNamePattern }}
+  excludeNamePattern: {{ $p.excludeNamePattern | quote }}
+{{- end }}
+{{ end -}}
 {{- end -}}
 
 {{/*

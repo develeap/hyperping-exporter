@@ -1,0 +1,10 @@
+# Multi-project fixture: dev-mode inline keys. When projects[*].apiKey
+# is set inline, the chart-managed Secret must carry one data entry per
+# project (api-key-hyp_core, api-key-hyp_infra). NOT for production: same
+# plaintext-in-release-metadata caveat as the legacy single-key path.
+config:
+  projects:
+    - id: hyp_core
+      apiKey: dev-core-key
+    - id: hyp_infra
+      apiKey: dev-infra-key

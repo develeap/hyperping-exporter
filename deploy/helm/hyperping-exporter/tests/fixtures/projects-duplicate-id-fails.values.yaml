@@ -1,0 +1,8 @@
+# Multi-project fixture: duplicate project IDs MUST be rejected by
+# validateProjects so the render aborts before the Deployment is templated.
+config:
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core-a
+    - id: hyp_core
+      existingSecret: hp-core-b

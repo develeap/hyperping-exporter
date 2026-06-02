@@ -1,0 +1,8 @@
+# Multi-project fixture: an empty project ID MUST be rejected by
+# validateProjects so the rendered constLabel cannot contain ""
+# (Prometheus would accept it but every dashboard's project= matcher
+# would silently miss the unlabelled series).
+config:
+  projects:
+    - id: ""
+      existingSecret: hp-core

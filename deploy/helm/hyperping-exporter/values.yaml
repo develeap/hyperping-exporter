@@ -107,6 +107,49 @@ config:
   # endpoint (https://api.hyperping.io/v1/mcp).
   mcpUrl: ""
 
+  # Multi-project deployment knob. When non-empty, the chart switches to the
+  # `--projects-file=/etc/hyperping/projects.yaml` path: a Secret carrying one
+  # `api-key-<id>` data entry per project is mounted at /etc/hyperping, and
+  # the exporter loads the YAML projects list at boot. Each project's
+  # metrics carry the `project=<id>` constLabel so multiple projects can
+  # share one exporter Pod without Prometheus Desc collisions.
+  #
+  # When empty (default), the chart renders the legacy single-key path
+  # exactly as in chart 1.5.x — fully back-compat for operators who do not
+  # know about this knob.
+  #
+  # Each project entry supports:
+  #   id:                 required; must match [a-zA-Z0-9._-]{1,64}
+  #   apiKey:             dev-only inline key; mutually exclusive with
+  #                       existingSecret and externalSecret per project
+  #   existingSecret:     name of a pre-existing Secret carrying `api-key`
+  #   externalSecret:     per-project ESO remoteRef wiring (only honored
+  #                       when top-level externalSecret.enabled is true)
+  #   mcpUrl:             per-project override; falls back to config.mcpUrl
+  #   excludeNamePattern: per-project RE2 override; falls back to
+  #                       config.excludeNamePattern
+  #
+  # Mutual exclusion: when projects is non-empty, config.apiKey /
+  # config.existingSecret / top-level externalSecret remoteRef must be
+  # empty (every secret source moves into the per-project list).
+  #
+  # Readiness policy: /readyz is OR across all configured projects, so a
+  # single misconfigured project (revoked API key, persistent 429) does
+  # not strip this Pod from the Service and drag healthy peers offline.
+  # The exporter exposes hyperping_project_ready{project="<id>"} as the
+  # per-project readiness signal; alert on `min(hyperping_project_ready)
+  # by (project) == 0` to catch a failing tenant.
+  #
+  # Secret rotation: the exporter reads each project's apiKeyFile once
+  # at boot and never re-reads it. Chart upgrades that change the
+  # projects list trigger a Pod rollout via the deployment.yaml
+  # `checksum/projects-yaml` annotation, but rotating an externally
+  # managed Secret (existingSecret or ESO target) updates only the
+  # projected volume on disk (~60s) and does NOT propagate into the
+  # running process. After rotating any per-project Secret outside of
+  # `helm upgrade`, run `kubectl rollout restart deployment/<name>`.
+  projects: []
+
 service:
   type: ClusterIP
   port: 9312
