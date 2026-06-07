@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.3'
+          go-version: '1.26.4'
           cache: true
       - name: Check go.mod tidy
         run: |
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.3'
+          go-version: '1.26.4'
           cache: true
       - run: go build ./...
       - run: go vet ./...
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.3'
+          go-version: '1.26.4'
           cache: true
       # Install from source so the binary is compiled with Go 1.26,
       # which allows it to analyse go 1.26.x modules without the
@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.3'
+          go-version: '1.26.4'
           cache: true
       - name: govulncheck
         run: |
@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.3'
+          go-version: '1.26.4'
           cache: true
       - name: Cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
@@ -166,7 +166,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.3'
+          go-version: '1.26.4'
           cache: true
       - name: Build binary
         run: CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o hyperping-exporter .

@@ -75,6 +75,14 @@ All notable changes to this project will be documented in this file.
   latter silently includes drill or staging series in headline
   numbers and is a common silent-regression source.
 
+### Fixed
+
+- Bump `github.com/develeap/hyperping-go` v0.6.2 -> v0.6.3. v0.6.2 had a critical HTTP/2 ALPN regression that broke all HTTPS API calls to non-localhost servers (manifested as `Unsolicited response received on idle HTTP channel` errors with `\x00\x00\x12\x04` byte patterns, HTTP/2 SETTINGS frames being misread by Go's HTTP/1 parser). Affects both REST and MCP paths. Upstream fix: https://github.com/develeap/hyperping-go/pull/37.
+
+### Security
+
+- Bump Go toolchain `1.26.3` -> `1.26.4`. Resolves two newly-disclosed stdlib CVEs: `GO-2026-5039` (arbitrary inputs unescaped in `net/textproto` errors; reached via the MCP transport's MIME header parsing) and `GO-2026-5037` (`CVE-2026-42504`, inefficient candidate hostname parsing in `crypto/x509`; reached via TLS hostname verification). Both fixed in stdlib 1.26.4.
+
 ## [1.6.0] - 2026-05-31
 
 ### Security
