@@ -82,8 +82,10 @@ type projectConfig struct {
 	// Cache carries optional per-project tier overrides. A nil pointer
 	// (no cache: block in YAML) inherits every global value byte-for-byte,
 	// which is the backward-compat path for upgrades from chart 1.6.x.
-	// See projectCacheOverride for the per-field pointer semantics.
-	Cache *projectCacheOverride `yaml:"cache,omitempty"`
+	// See projectCacheOverride for the per-field pointer semantics. The
+	// yaml tag carries no omitempty: that flag only affects encode, and we
+	// only decode here.
+	Cache *projectCacheOverride `yaml:"cache"`
 }
 
 // projectCacheOverride is one optional `cache:` block on a project entry.
@@ -103,12 +105,12 @@ type projectConfig struct {
 // pointing to false is rejected at parse time: a project with HOT
 // disabled produces no scrape at all, which is a misconfiguration.
 type projectCacheOverride struct {
-	HotTTL      *time.Duration `yaml:"hotTTL,omitempty"`
-	WarmTTL     *time.Duration `yaml:"warmTTL,omitempty"`
-	ColdTTL     *time.Duration `yaml:"coldTTL,omitempty"`
-	HotEnabled  *bool          `yaml:"hotEnabled,omitempty"`
-	WarmEnabled *bool          `yaml:"warmEnabled,omitempty"`
-	ColdEnabled *bool          `yaml:"coldEnabled,omitempty"`
+	HotTTL      *time.Duration `yaml:"hotTTL"`
+	WarmTTL     *time.Duration `yaml:"warmTTL"`
+	ColdTTL     *time.Duration `yaml:"coldTTL"`
+	HotEnabled  *bool          `yaml:"hotEnabled"`
+	WarmEnabled *bool          `yaml:"warmEnabled"`
+	ColdEnabled *bool          `yaml:"coldEnabled"`
 }
 
 // effectiveTierTTLs returns the resolved (hot, warm, cold) tier TTLs for
