@@ -1,0 +1,15 @@
+# Multi-period invalid-token fixture (chart 1.8.0). The chart performs NO
+# period-token validation; that responsibility lives in the binary's
+# resolvePeriods (see main.go:allowedPeriods). The chart renders the
+# operator's list verbatim into projects.yaml so the binary surfaces the
+# precise offending token at boot, with the project id wrapped into the
+# error. This fixture pins the boundary: chart-side passes through, binary-
+# side fails fast.
+#
+# Companion go test: main.TestLoadProjectsFile_PeriodsInvalid asserts the
+# binary rejects "42d" with an actionable error.
+config:
+  projects:
+    - id: hyp_core
+      apiKey: dev-core-key
+      periods: ["24h", "42d"]

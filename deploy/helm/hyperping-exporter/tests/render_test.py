@@ -1056,6 +1056,31 @@ def main() -> int:
         )
     print("PASS projects-multi-period-absent: no orphan periods: keys in pre-1.8 values.yaml")
 
+    # Case MP3 — invalid period token (chart 1.8.0). The chart does NOT
+    # validate the period token alphabet; that responsibility lives in
+    # the binary's resolvePeriods (main.go: allowedPeriods is the closed
+    # set {24h,7d,30d,90d,365d}). The chart's job is to render the
+    # operator's list verbatim into projects.yaml so the binary surfaces
+    # the offending token in its error, with the project id wrapped.
+    # This case pins that boundary so a future template-side validation
+    # addition is a deliberate, test-visible change, and any regression
+    # that drops the verbatim passthrough also fails here.
+    rendered = helm_template("projects-multi-period-invalid-token.values.yaml")
+    projects_yaml_text = _extract_projects_yaml(rendered)
+    assert projects_yaml_text is not None, (
+        "FAIL projects-multi-period-invalid-token: rendered projects.yaml not located"
+    )
+    parsed = yaml.safe_load(projects_yaml_text)
+    assert isinstance(parsed, list) and len(parsed) == 1, (
+        f"FAIL projects-multi-period-invalid-token: expected 1 project entry; got {parsed!r}"
+    )
+    assert parsed[0]["periods"] == ["24h", "42d"], (
+        f"FAIL projects-multi-period-invalid-token: chart must pass periods through verbatim "
+        f"(binary owns validation); got {parsed[0].get('periods')!r}"
+    )
+    print("PASS projects-multi-period-invalid-token: chart renders 42d verbatim; binary rejects at startup "
+          "(see main.TestLoadProjectsFile_PeriodsInvalid)")
+
     print("\nALL RENDER TESTS PASSED")
     return 0
 
