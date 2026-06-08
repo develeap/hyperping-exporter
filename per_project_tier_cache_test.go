@@ -270,7 +270,9 @@ func TestPerProjectTierCache_StartupLogIncludesEffectiveConfig(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "hyp_infra", "log line must name the project")
 	assert.Contains(t, out, "30m0s", "log line must show the resolved warmTTL")
-	assert.Contains(t, out, "60s", "log line must show inherited hotTTL")
+	// time.Duration.String() normalises 60s to "1m0s"; assert on that
+	// canonical form rather than the operator-facing input string.
+	assert.Contains(t, out, "1m0s", "log line must show inherited hotTTL (normalised by time.Duration.String)")
 	// coldEnabled=false must appear as a structured attribute, regardless of
 	// JSON key ordering. We assert on the substring "cold_enabled" (the snake
 	// case slog key) and the value "false".
