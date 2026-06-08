@@ -1556,9 +1556,9 @@ hyperping_monitor_anomaly_count{name="Web",project="default",tenant="",tier="unk
 # HELP hyperping_monitor_anomaly_score Highest anomaly score for the monitor.
 # TYPE hyperping_monitor_anomaly_score gauge
 hyperping_monitor_anomaly_score{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.95
-# HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds.
+# HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds over the labelled period. v1.8.0 BREAKING: a period label is now ALWAYS present on this metric, defaulting to "24h" for projects that do not opt into additional windows.
 # TYPE hyperping_monitor_mtta_seconds gauge
-hyperping_monitor_mtta_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 45
+hyperping_monitor_mtta_seconds{name="Web",period="24h",project="default",tenant="",tier="unknown",uuid="mon_1"} 45
 # HELP hyperping_monitor_response_time_seconds Average monitor response time in seconds.
 # TYPE hyperping_monitor_response_time_seconds gauge
 hyperping_monitor_response_time_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.123

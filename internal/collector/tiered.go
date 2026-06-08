@@ -47,6 +47,14 @@ type tieredRefresher struct {
 	warmDisabled bool
 	coldDisabled bool
 
+	// periods is the per-collector list of configured SLA report windows.
+	// The cold-tier refresh uses this to decide which long-window reports
+	// to fetch and which per-period MTTA/MTTR calls to make. The warm
+	// tier ignores periods today (warm always fetches the 24h slice in
+	// the legacy shape); a future change could swap to a period-driven
+	// warm fetch without affecting the tiered.go public surface.
+	periods []string
+
 	hot  atomic.Pointer[hotSnapshot]
 	warm atomic.Pointer[warmSnapshot]
 	cold atomic.Pointer[coldSnapshot]
@@ -165,6 +173,7 @@ func newTieredRefresher(c *Collector, hotTTL, warmTTL, coldTTL time.Duration) *t
 		hotTTL:         hotTTL,
 		warmTTL:        warmTTL,
 		coldTTL:        coldTTL,
+		periods:        c.periods,
 		// Default *Disabled to zero (i.e. all tiers enabled). NewCollector
 		// flips warm/cold *Disabled to true only when the Collector's
 		// WithTierEnable option set the corresponding *Enabled flag to
@@ -389,79 +398,161 @@ func (t *tieredRefresher) refreshWarm(ctx context.Context) {
 	)
 }
 
-// refreshCold fetches the COLD-tier endpoints: 7d and 30d SLA reports.
-// COLD has no MCP fetches and no real-time data, so its failure handling
-// is simple: per-window errors leave that window's slice nil; both-fail
-// leaves the previous COLD snapshot in place (no store).
+// refreshCold fetches the COLD-tier endpoints for every cold-mapped
+// period configured on this refresher. The legacy 7d + 30d windows are
+// always fetched when t.periods is empty (backward compat for test
+// callers constructing tieredRefresher{} literals); otherwise the
+// concrete cold-mapped subset of t.periods drives the fan-out.
+//
+// Per-window report errors leave that window's slice nil but the snapshot
+// is still published with the survivors. Per-period MTTA/MTTR failures
+// leave the corresponding map entry nil and degrade emission to skip the
+// (uuid, period) series. When every report fetch failed the snapshot is
+// not stored (previous snapshot kept) so /metrics continues serving stale
+// cold-tier data.
 func (t *tieredRefresher) refreshCold(ctx context.Context) {
 	t.coldMu.Lock()
 	defer t.coldMu.Unlock()
 
 	now := time.Now().UTC()
-	from7d := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
-	from30d := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
-	to := now.Format(time.RFC3339)
+	to := now
+
+	// coldPeriods are the period tokens this refresher is responsible
+	// for. Empty t.periods means a test caller did not configure
+	// periods; fall back to the legacy 7d+30d set so existing tiered_test
+	// expectations keep passing.
+	coldPeriods := make([]string, 0, len(t.periods))
+	if len(t.periods) == 0 {
+		coldPeriods = append(coldPeriods, "7d", "30d")
+	} else {
+		for _, p := range t.periods {
+			if PeriodTier(p) == "cold" {
+				coldPeriods = append(coldPeriods, p)
+			}
+		}
+	}
 
 	var (
-		report7d  []hyperping.MonitorReport
-		report30d []hyperping.MonitorReport
-		err7d     error
-		err30d    error
-		wg        sync.WaitGroup
+		mu              sync.Mutex
+		wg              sync.WaitGroup
+		reportsByPeriod = make(map[string][]hyperping.MonitorReport, len(coldPeriods))
+		mttaByPeriod    = make(map[string]map[string]float64, len(coldPeriods))
+		anyReportOK     bool
 	)
-	wg.Add(2)
-	go func() { defer wg.Done(); report7d, err7d = t.api.ListMonitorReports(ctx, from7d, to) }()
-	go func() { defer wg.Done(); report30d, err30d = t.api.ListMonitorReports(ctx, from30d, to) }()
+
+	for _, period := range coldPeriods {
+		dur, ok := reportDurations[period]
+		if !ok {
+			// Defensive: a period token validated by main is always in
+			// the table, but the refresher constructor accepts any
+			// slice. Skip unknown tokens rather than crashing.
+			continue
+		}
+		from := now.Add(-dur).Format(time.RFC3339)
+		toStr := to.Format(time.RFC3339)
+
+		wg.Add(1)
+		go func(p, fromStr, toStr string) {
+			defer wg.Done()
+			rep, err := t.api.ListMonitorReports(ctx, fromStr, toStr)
+			if err != nil {
+				t.logger.Warn("cold tier list reports failed", "tier", "cold", "period", p, "error", err)
+				return
+			}
+			mu.Lock()
+			reportsByPeriod[p] = rep
+			anyReportOK = true
+			mu.Unlock()
+		}(period, from, toStr)
+
+		// MTTA + MTTR per period: one all-monitors call per period.
+		// v0.7.0 supports an empty uuids slice meaning "every monitor in
+		// the project" and returns a Monitors []Entry array. This
+		// collapses an N*P-call fan-out to P calls, keeping the new
+		// long-window fetches inside the MCP burst budget for projects
+		// with hundreds of monitors.
+		if t.mcp != nil {
+			from := now.Add(-dur)
+			toT := now
+
+			wg.Add(1)
+			go func(p string) {
+				defer wg.Done()
+				opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				defer cancel()
+				resp, err := t.mcp.GetMonitorMtta(opCtx, from, toT)
+				if err != nil || resp == nil {
+					if err != nil {
+						t.logger.Warn("cold tier mcp mtta failed", "tier", "cold", "period", p, "error", err)
+					}
+					return
+				}
+				m := make(map[string]float64, len(resp.Monitors))
+				for _, e := range resp.Monitors {
+					m[e.UUID] = e.Mtta
+				}
+				mu.Lock()
+				mttaByPeriod[p] = m
+				mu.Unlock()
+			}(period)
+
+			// Note: MTTR for cold-tier periods is sourced from the
+			// per-period MonitorReport (r.MTTR) already fetched above.
+			// We don't issue an extra mcp.GetMonitorMttr call here to
+			// stay inside the MCP rate-limit budget; the reports endpoint
+			// already carries MTTR per window and is cheaper.
+			_ = period
+		}
+	}
 	wg.Wait()
 
-	if err7d != nil {
-		t.logger.Warn("cold tier list reports (7d) failed", "tier", "cold", "error", err7d)
-		report7d = nil
-	}
-	if err30d != nil {
-		t.logger.Warn("cold tier list reports (30d) failed", "tier", "cold", "error", err30d)
-		report30d = nil
-	}
-
-	// If both windows failed we have no fresh data; leave the previous
-	// snapshot pointer in place so /metrics keeps serving stale COLD data.
-	if report7d == nil && report30d == nil {
-		t.logger.Warn("cold tier produced no fresh data; retaining stale snapshot", "tier", "cold")
+	// If every report fetch failed we have no fresh report data; leave
+	// the previous snapshot pointer in place so /metrics keeps serving
+	// stale COLD data. MTTA/MTTR-only freshness is not enough to
+	// publish a new snapshot because the per-monitor SLA gauges depend
+	// on the report slice.
+	if !anyReportOK {
+		t.logger.Warn("cold tier produced no fresh report data; retaining stale snapshot", "tier", "cold")
 		return
 	}
 
-	// Apply exclusion filter to both windows. The COLD tier does not see
-	// the HOT monitor list, so an "included uuids" set has to come from
-	// the report uuids themselves; the WARM tier's report has the same
-	// shape, so reuse the per-uuid filter helper.
+	// Apply exclusion filter to every window. The COLD tier does not see
+	// the HOT monitor list directly, so an "included uuids" set has to
+	// come from the HOT snapshot if available; absence falls back to no
+	// filtering (cold-start window).
 	if t.excludePattern != nil {
-		// Pull the included uuids from the HOT snapshot if available;
-		// otherwise fall back to the union of report uuids (no filtering).
-		// A nil HOT pointer in tiered mode is the cold-start window where
-		// exclude semantics are intentionally relaxed — the WARM tier
-		// will re-apply the filter on its next tick.
 		if hot := t.hot.Load(); hot != nil && len(hot.monitors) > 0 {
 			includedUUIDs := make(map[string]struct{}, len(hot.monitors))
 			for _, m := range hot.monitors {
 				includedUUIDs[m.UUID] = struct{}{}
 			}
-			report7d = filterReportsByMonitorUUID(report7d, includedUUIDs)
-			report30d = filterReportsByMonitorUUID(report30d, includedUUIDs)
+			for p, rep := range reportsByPeriod {
+				reportsByPeriod[p] = filterReportsByMonitorUUID(rep, includedUUIDs)
+			}
+			for p, m := range mttaByPeriod {
+				mttaByPeriod[p] = filterUUIDMap(m, includedUUIDs)
+			}
 		}
 	}
 
+	// Populate legacy fields for backward compat with existing tests
+	// that read coldSnapshot.report7d / report30d directly. The
+	// stitcher prefers reportsByPeriod when non-nil so this is a
+	// dual-write to keep both readers consistent.
 	snap := &coldSnapshot{
-		report7d:    report7d,
-		report30d:   report30d,
-		refreshedAt: time.Now(),
+		reportsByPeriod: reportsByPeriod,
+		mttaByPeriod:    mttaByPeriod,
+		report7d:        reportsByPeriod["7d"],
+		report30d:       reportsByPeriod["30d"],
+		refreshedAt:     time.Now(),
 	}
 	t.cold.Store(snap)
 	t.coldLastSuccess.Store(snap.refreshedAt.Unix())
 
 	t.logger.Info("cold tier refreshed",
 		"tier", "cold",
-		"reports_7d", len(report7d),
-		"reports_30d", len(report30d),
+		"periods", coldPeriods,
+		"reports_total", len(reportsByPeriod),
 	)
 }
 
