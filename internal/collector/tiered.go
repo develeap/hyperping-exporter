@@ -465,36 +465,47 @@ func (t *tieredRefresher) refreshCold(ctx context.Context) {
 			mu.Unlock()
 		}(period, from, toStr)
 
-		// MTTA + MTTR per period: one all-monitors call per period.
-		// v0.7.0 supports an empty uuids slice meaning "every monitor in
-		// the project" and returns a Monitors []Entry array. This
-		// collapses an N*P-call fan-out to P calls, keeping the new
-		// long-window fetches inside the MCP burst budget for projects
-		// with hundreds of monitors.
+		// MTTA per period: one call per period that fans out across all
+		// HOT-known monitor UUIDs.
+		//
+		// v1.8.1 fix: MCP get_monitor_mtta requires an explicit non-empty
+		// monitor_uuids list to return per-monitor entries. An empty
+		// uuids slice yields {monitors:[], totalAcknowledged:0, mtta:0}
+		// (project-level aggregate only), which silently collapsed every
+		// cold MTTA series in pre-1.8.1. UUIDs are sourced from the HOT
+		// snapshot via currentMonitorUUIDs(); when HOT has not yet
+		// published (cold-start race) the call is skipped and recovers
+		// on the next cold tick.
 		if t.mcp != nil {
+			uuids := t.currentMonitorUUIDs()
 			from := now.Add(-dur)
 			toT := now
 
-			wg.Add(1)
-			go func(p string) {
-				defer wg.Done()
-				opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				defer cancel()
-				resp, err := t.mcp.GetMonitorMtta(opCtx, from, toT)
-				if err != nil || resp == nil {
-					if err != nil {
-						t.logger.Warn("cold tier mcp mtta failed", "tier", "cold", "period", p, "error", err)
+			if len(uuids) == 0 {
+				t.logger.Debug("cold tier mcp mtta skipped: HOT snapshot has no monitors yet",
+					"tier", "cold", "period", period)
+			} else {
+				wg.Add(1)
+				go func(p string, uuidArg []string) {
+					defer wg.Done()
+					opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					defer cancel()
+					resp, err := t.mcp.GetMonitorMtta(opCtx, from, toT, uuidArg...)
+					if err != nil || resp == nil {
+						if err != nil {
+							t.logger.Warn("cold tier mcp mtta failed", "tier", "cold", "period", p, "error", err)
+						}
+						return
 					}
-					return
-				}
-				m := make(map[string]float64, len(resp.Monitors))
-				for _, e := range resp.Monitors {
-					m[e.UUID] = e.Mtta
-				}
-				mu.Lock()
-				mttaByPeriod[p] = m
-				mu.Unlock()
-			}(period)
+					m := make(map[string]float64, len(resp.Monitors))
+					for _, e := range resp.Monitors {
+						m[e.UUID] = e.Mtta
+					}
+					mu.Lock()
+					mttaByPeriod[p] = m
+					mu.Unlock()
+				}(period, uuids)
+			}
 
 			// Note: MTTR for cold-tier periods is sourced from the
 			// per-period MonitorReport's r.MTTR field at emit time
@@ -556,6 +567,26 @@ func (t *tieredRefresher) refreshCold(ctx context.Context) {
 		"periods", coldPeriods,
 		"reports_total", len(reportsByPeriod),
 	)
+}
+
+// currentMonitorUUIDs returns the monitor UUIDs from the most recently
+// published HOT snapshot. Empty result means HOT has not run yet (cold-
+// start race) or the project has zero monitors; callers must treat the
+// empty case as "skip this fan-out and wait for the next tick".
+//
+// The accessor reads through a single atomic.Pointer.Load() and copies
+// the slice so concurrent HOT publications cannot mutate the result the
+// caller is iterating over.
+func (t *tieredRefresher) currentMonitorUUIDs() []string {
+	hot := t.hot.Load()
+	if hot == nil || len(hot.monitors) == 0 {
+		return nil
+	}
+	uuids := make([]string, 0, len(hot.monitors))
+	for _, m := range hot.monitors {
+		uuids = append(uuids, m.UUID)
+	}
+	return uuids
 }
 
 // filterUUIDMap returns a new map containing only the keys present in
