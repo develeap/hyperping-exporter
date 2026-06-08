@@ -110,10 +110,9 @@ func TestTieredRefresher_EagerColdPrefetch(t *testing.T) {
 }
 
 // TestTieredRefresher_EagerWarmDisabledNoEagerCall: warmDisabled=true
-// must NOT run an eager warm refresh. Reports calls attributable to
-// WARM must remain at zero through the test window. COLD is also
-// suppressed (coldTTL large) and WARM is disabled, so the only path to
-// ListMonitorReports is the eager warm call, which must NOT happen.
+// must NOT run an eager warm refresh. With cold also disabled the only
+// path to ListMonitorReports is the eager warm call, which must NOT
+// happen. The WARM snapshot pointer must remain nil.
 func TestTieredRefresher_EagerWarmDisabledNoEagerCall(t *testing.T) {
 	api := &mockAPI{
 		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
@@ -126,6 +125,7 @@ func TestTieredRefresher_EagerWarmDisabledNoEagerCall(t *testing.T) {
 		warmTTL:      30 * time.Second,
 		coldTTL:      30 * time.Second,
 		warmDisabled: true,
+		coldDisabled: true, // isolate the warm-eager path from cold's report fetch
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -133,7 +133,7 @@ func TestTieredRefresher_EagerWarmDisabledNoEagerCall(t *testing.T) {
 	tr.start(ctx)
 
 	assert.Equal(t, int32(0), api.reportsCalls.Load(),
-		"warmDisabled must skip the eager warm refresh; ListMonitorReports must remain at 0")
+		"warmDisabled (with cold also disabled) must yield zero ListMonitorReports calls")
 	assert.Nil(t, tr.warm.Load(), "WARM snapshot must remain nil under warmDisabled")
 }
 
