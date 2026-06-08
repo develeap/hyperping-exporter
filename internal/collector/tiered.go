@@ -80,14 +80,24 @@ type tieredRefresher struct {
 	coldMu sync.Mutex
 }
 
-// start launches one goroutine per tier and blocks until ctx is cancelled.
-// HOT runs an eager initial refresh in-band (so /readyz can flip on as soon
-// as start returns the boot path to the caller) before its ticker is
-// installed; WARM and COLD do not block startup — they fire on first tick.
+// start launches one goroutine per enabled tier and blocks until ctx is
+// cancelled. HOT runs an eager initial refresh in-band (so /readyz can flip
+// on as soon as start returns the boot path to the caller) before its
+// ticker is installed.
+//
+// v1.8.1: WARM and COLD also run an eager refresh, but inside their own
+// goroutines so the caller is not blocked on the slow paths. Each tier's
+// goroutine performs ONE refresh before entering the ticker loop, so
+// freshly started exporters publish all three tiers in seconds rather
+// than waiting up to warmTTL/coldTTL for the first tick. Per-tier
+// mutexes (warmMu/coldMu) defend against the unlikely overlap between a
+// slow eager refresh and the first scheduled tick.
 //
 // On ctx cancellation start returns after every tier goroutine exits its
 // select loop. Each tier's refresh function holds a per-tier mutex, so an
-// in-progress refresh completes before the goroutine returns.
+// in-progress refresh completes before the goroutine returns. Ctx
+// cancellation during an eager WARM/COLD refresh propagates into the
+// underlying API/MCP calls so no goroutine leak results.
 func (t *tieredRefresher) start(ctx context.Context) {
 	// Eager initial HOT refresh: blocks until either HOT publishes a
 	// snapshot or ctx is cancelled. This mirrors the legacy Collector.Start
@@ -125,6 +135,12 @@ func (t *tieredRefresher) start(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Eager pre-ticker refresh so warm-tier data is available
+			// soon after start, not after the first warmTTL elapses.
+			t.refreshWarm(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 			ticker := time.NewTicker(t.warmTTL)
 			defer ticker.Stop()
 			for {
@@ -142,6 +158,13 @@ func (t *tieredRefresher) start(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Eager pre-ticker refresh so cold-tier (long-window SLA)
+			// data is available soon after start, not after the first
+			// coldTTL elapses.
+			t.refreshCold(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 			ticker := time.NewTicker(t.coldTTL)
 			defer ticker.Stop()
 			for {
