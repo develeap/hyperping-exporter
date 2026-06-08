@@ -315,6 +315,38 @@ projects.yaml document never carries plaintext secrets.
 {{- if $p.excludeNamePattern }}
   excludeNamePattern: {{ $p.excludeNamePattern | quote }}
 {{- end }}
+{{- /*
+Per-project cache tier overrides (feat/per-project-tier-cache). The
+`cache:` block is OPTIONAL and pass-through: every key is rendered
+verbatim only when its operator-supplied value is non-empty. Absent
+keys do NOT emit a `null` or empty-map placeholder, so a project
+without an override produces byte-identical YAML to chart 1.6.x.
+The binary parses every field as a Go duration (TTLs) or bool
+(Enabled flags); see main.projectCacheOverride for the canonical
+field semantics. Quote durations so the chart never coerces a bare
+integer; bools render with toJson so true/false round-trip cleanly.
+*/}}
+{{- if $p.cache }}
+  cache:
+  {{- if hasKey $p.cache "hotTTL" }}
+    hotTTL: {{ $p.cache.hotTTL | quote }}
+  {{- end }}
+  {{- if hasKey $p.cache "warmTTL" }}
+    warmTTL: {{ $p.cache.warmTTL | quote }}
+  {{- end }}
+  {{- if hasKey $p.cache "coldTTL" }}
+    coldTTL: {{ $p.cache.coldTTL | quote }}
+  {{- end }}
+  {{- if hasKey $p.cache "hotEnabled" }}
+    hotEnabled: {{ $p.cache.hotEnabled | toJson }}
+  {{- end }}
+  {{- if hasKey $p.cache "warmEnabled" }}
+    warmEnabled: {{ $p.cache.warmEnabled | toJson }}
+  {{- end }}
+  {{- if hasKey $p.cache "coldEnabled" }}
+    coldEnabled: {{ $p.cache.coldEnabled | toJson }}
+  {{- end }}
+{{- end }}
 {{ end -}}
 {{- end -}}
 

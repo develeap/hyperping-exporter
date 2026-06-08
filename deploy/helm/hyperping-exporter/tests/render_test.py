@@ -250,7 +250,7 @@ BASELINE_ARGS = [
 # image as its default).
 EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.7.0"
 EXPECTED_VERSION = "1.7.0"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.6.0"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.7.0"
 
 
 def main() -> int:
@@ -927,19 +927,20 @@ def main() -> int:
     )
     print("PASS projects-externalsecret: ExternalSecret data fans out per project")
 
-    # Case M9 — Chart version bump: with multi-project values support we
-    # expect chart 1.6.0 / appVersion 1.7.0 to ship from this branch.
-    # Read the rendered Chart label to confirm.
+    # Case M9 — Chart version bump: chart 1.7.0 ships per-project cache
+    # tier override support (feat/per-project-tier-cache). appVersion
+    # stays at 1.7.0 because the rendered chart still targets the
+    # existing binary tag; a new binary release will retire that pin.
     chart_label_versions = labels_with_version(rendered)
     # The chart label `app.kubernetes.io/version` is the appVersion of
     # Chart.yaml; the chart name+version label appears on every resource's
     # helm.sh/chart label. Walk the rendered ExternalSecret's labels.
     helm_chart_label = (es.get("metadata") or {}).get("labels", {}).get("helm.sh/chart")
     assert helm_chart_label is not None, "FAIL chart-version-bump: helm.sh/chart label missing"
-    assert helm_chart_label == "hyperping-exporter-1.6.0", (
-        f"FAIL chart-version-bump: chart label expected 'hyperping-exporter-1.6.0', got {helm_chart_label!r}"
+    assert helm_chart_label == EXPECTED_CHART_LABEL, (
+        f"FAIL chart-version-bump: chart label expected {EXPECTED_CHART_LABEL!r}, got {helm_chart_label!r}"
     )
-    print("PASS chart-version-bump: chart version 1.6.0 rendered")
+    print(f"PASS chart-version-bump: chart label {EXPECTED_CHART_LABEL} rendered")
 
     # ---- Per-project cache tier overrides (work item: feat/per-project-tier-cache) ----
     # These cases pin down the chart contract for an optional `cache:` block
