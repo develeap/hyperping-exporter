@@ -57,10 +57,13 @@ type warmSnapshot struct {
 // leaves that key absent and the WARM-style stale-carry semantics apply
 // via the stitcher in buildCollectorSnapshot.
 //
-// mttaByPeriod / mttrByPeriod are per-period maps of monitor UUID to the
-// MCP-reported value for that window. Empty maps (not nil) when the cold
-// refresher published a snapshot but the MCP call returned no per-monitor
-// entries; nil when the project has no cold-mapped period.
+// mttaByPeriod is a per-period map of monitor UUID to the MCP-reported
+// MTTA value for that window. Empty map (not nil) when the cold refresher
+// published a snapshot but the MCP call returned no per-monitor entries;
+// nil when the project has no cold-mapped period. MTTR is NOT stored
+// here: emitReportMetrics reads r.MTTR off the per-period MonitorReport
+// already fetched into reportsByPeriod, which avoids a redundant MCP
+// per-period fetch.
 //
 // Cold-start gap: COLD is empty for ~15 min after pod boot, so
 // hyperping_tenant_health_score is absent during that window. Documented in
@@ -72,13 +75,11 @@ type coldSnapshot struct {
 	// non-nil and falls back to the legacy fields otherwise.
 	reportsByPeriod map[string][]hyperping.MonitorReport
 
-	// Per-period MTTA and MTTR maps for cold-tier periods. Keys are
-	// monitor UUIDs; outer map keys are period tokens ("7d"/"30d"/...).
-	// Absent map key = period not configured or MCP fetch failed for
-	// that window; absent inner key = monitor had no acknowledged/resolved
-	// alerts in the window.
+	// Per-period MTTA map for cold-tier periods. Keys are monitor UUIDs;
+	// outer map keys are period tokens ("7d"/"30d"/...). Absent map key
+	// = period not configured or MCP fetch failed for that window;
+	// absent inner key = monitor had no acknowledged alerts in the window.
 	mttaByPeriod map[string]map[string]float64
-	mttrByPeriod map[string]map[string]float64
 
 	// Legacy fields retained so existing test constructors that build a
 	// coldSnapshot{report7d: ..., report30d: ...} keep compiling. The
@@ -191,14 +192,6 @@ func (t *tieredRefresher) buildCollectorSnapshot() collectorSnapshot {
 			}
 			for period, m := range c.mttaByPeriod {
 				snap.mttaByPeriod[period] = m
-			}
-		}
-		if len(c.mttrByPeriod) > 0 {
-			if snap.mttrByPeriod == nil {
-				snap.mttrByPeriod = make(map[string]map[string]float64, len(c.mttrByPeriod))
-			}
-			for period, m := range c.mttrByPeriod {
-				snap.mttrByPeriod[period] = m
 			}
 		}
 		if !c.refreshedAt.IsZero() {

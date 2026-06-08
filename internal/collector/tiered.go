@@ -497,10 +497,12 @@ func (t *tieredRefresher) refreshCold(ctx context.Context) {
 			}(period)
 
 			// Note: MTTR for cold-tier periods is sourced from the
-			// per-period MonitorReport (r.MTTR) already fetched above.
-			// We don't issue an extra mcp.GetMonitorMttr call here to
-			// stay inside the MCP rate-limit budget; the reports endpoint
-			// already carries MTTR per window and is cheaper.
+			// per-period MonitorReport's r.MTTR field at emit time
+			// (see emitReportMetrics). No separate MCP per-period MTTR
+			// fetch is issued here: the reports endpoint already carries
+			// MTTR per window and adding an MCP call per period would
+			// cost +P MCP calls per cold tick against the rate-limit
+			// budget for zero new data.
 			_ = period
 		}
 	}

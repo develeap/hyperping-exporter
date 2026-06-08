@@ -392,14 +392,17 @@ type collectorSnapshot struct {
 	anomalyScoreIndex map[string]float64
 	totalAlerts       int
 
-	// Per-period MTTA + MTTR for the multi-period fan-out. Outer map
-	// keyed by period token ("24h"/"7d"/"30d"/"90d"/"365d"). When
-	// nil/empty, the period-bearing MTTA/MTTR series for that window
-	// are not emitted. The 24h entry shadows mttaIndex (above) for the
-	// warm-tier source; cold-mapped periods are populated from the
-	// cold-tier MCP fetch only.
+	// Per-period MTTA for the multi-period fan-out. Outer map keyed by
+	// period token ("24h"/"7d"/"30d"/"90d"/"365d"). When nil/empty, the
+	// period-bearing MTTA series for that window is not emitted. The
+	// 24h entry shadows mttaIndex (above) for the warm-tier source;
+	// cold-mapped periods are populated from the cold-tier MCP fetch only.
+	//
+	// Per-period MTTR uses a different source: the MonitorReport.MTTR
+	// field already on every cold-tier report fetch (see
+	// emitReportMetrics). No separate snapshot field is needed because
+	// the emission path reads r.MTTR off snap.reports[period] directly.
 	mttaByPeriod map[string]map[string]float64
-	mttrByPeriod map[string]map[string]float64
 }
 
 // Collector fetches Hyperping data on a background timer and serves
