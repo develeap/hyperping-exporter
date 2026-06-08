@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1]
+
+### Fixed
+
+- Cold-tier MTTA fan-out (`hyperping_monitor_mtta_seconds` with
+  `period` in `7d`/`30d`/`90d`/`365d`) was silently empty in v1.8.0.
+  The cold refresher called the MCP `get_monitor_mtta` tool with an
+  empty `monitor_uuids` slice on the assumption that "empty meant
+  every monitor". The live server semantic is the opposite: empty
+  `monitor_uuids` returns the project-level aggregate only
+  (`monitors: []`, `totalAcknowledged: 0`, `mtta: 0`). The exporter
+  iterated the empty array and published an empty per-period map, so
+  no cold MTTA series were ever emitted. v1.8.1 sources monitor UUIDs
+  from the HOT snapshot and passes them explicitly as the
+  `monitor_uuids` variadic argument. **Behaviour change at rollout:**
+  operators with multi-period configs (e.g.
+  `periods: ["24h", "7d", "30d"]`) will start seeing populated
+  `hyperping_monitor_mtta_seconds` series for the cold-mapped windows.
+  Alert rules that used `absent()` on the cold MTTA series to tolerate
+  the v1.8.0 silent absence should be reviewed.
+- Tiered-mode warm and cold tiers now perform an eager refresh at
+  startup so dashboards are not dark for `warmTTL`/`coldTTL` after a
+  pod restart. Pre-1.8.1 each tier built its `time.Ticker(d)` and
+  waited `+d` for the first refresh; on a deploy with `warmTTL=30m`
+  and `coldTTL=1h` that meant no 24h SLA series for 30m after every
+  restart and no 7d/30d/90d/365d series for 1h. The eager refresh
+  runs inside the per-tier goroutine (not on the caller path) so HOT
+  remains the only tier that gates `/readyz`. Per-tier mutexes defend
+  the unlikely overlap between a slow eager refresh and the first
+  scheduled tick. Disabled tiers continue to launch no goroutine and
+  therefore do not run an eager refresh.
+
+### Changed
+
+- Chart version + appVersion bumped to `1.8.1`.
+
+### Verification
+
+- All existing tests pass under `-race -count=1`. New tests added for
+  the cold MTTA fan-out contract (3) and the eager warm/cold prefetch
+  contract (4).
+- README "Multi-period metric emission" section corrected: the prior
+  wording claimed the empty-uuids MCP call returned per-monitor
+  entries, which was the source of the v1.8.0 silent-empty bug.
+
 ## [1.8.0]
 
 ### Fixed

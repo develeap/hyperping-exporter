@@ -80,14 +80,24 @@ type tieredRefresher struct {
 	coldMu sync.Mutex
 }
 
-// start launches one goroutine per tier and blocks until ctx is cancelled.
-// HOT runs an eager initial refresh in-band (so /readyz can flip on as soon
-// as start returns the boot path to the caller) before its ticker is
-// installed; WARM and COLD do not block startup — they fire on first tick.
+// start launches one goroutine per enabled tier and blocks until ctx is
+// cancelled. HOT runs an eager initial refresh in-band (so /readyz can flip
+// on as soon as start returns the boot path to the caller) before its
+// ticker is installed.
+//
+// v1.8.1: WARM and COLD also run an eager refresh, but inside their own
+// goroutines so the caller is not blocked on the slow paths. Each tier's
+// goroutine performs ONE refresh before entering the ticker loop, so
+// freshly started exporters publish all three tiers in seconds rather
+// than waiting up to warmTTL/coldTTL for the first tick. Per-tier
+// mutexes (warmMu/coldMu) defend against the unlikely overlap between a
+// slow eager refresh and the first scheduled tick.
 //
 // On ctx cancellation start returns after every tier goroutine exits its
 // select loop. Each tier's refresh function holds a per-tier mutex, so an
-// in-progress refresh completes before the goroutine returns.
+// in-progress refresh completes before the goroutine returns. Ctx
+// cancellation during an eager WARM/COLD refresh propagates into the
+// underlying API/MCP calls so no goroutine leak results.
 func (t *tieredRefresher) start(ctx context.Context) {
 	// Eager initial HOT refresh: blocks until either HOT publishes a
 	// snapshot or ctx is cancelled. This mirrors the legacy Collector.Start
@@ -125,6 +135,12 @@ func (t *tieredRefresher) start(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Eager pre-ticker refresh so warm-tier data is available
+			// soon after start, not after the first warmTTL elapses.
+			t.refreshWarm(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 			ticker := time.NewTicker(t.warmTTL)
 			defer ticker.Stop()
 			for {
@@ -142,6 +158,13 @@ func (t *tieredRefresher) start(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Eager pre-ticker refresh so cold-tier (long-window SLA)
+			// data is available soon after start, not after the first
+			// coldTTL elapses.
+			t.refreshCold(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 			ticker := time.NewTicker(t.coldTTL)
 			defer ticker.Stop()
 			for {
@@ -465,36 +488,47 @@ func (t *tieredRefresher) refreshCold(ctx context.Context) {
 			mu.Unlock()
 		}(period, from, toStr)
 
-		// MTTA + MTTR per period: one all-monitors call per period.
-		// v0.7.0 supports an empty uuids slice meaning "every monitor in
-		// the project" and returns a Monitors []Entry array. This
-		// collapses an N*P-call fan-out to P calls, keeping the new
-		// long-window fetches inside the MCP burst budget for projects
-		// with hundreds of monitors.
+		// MTTA per period: one call per period that fans out across all
+		// HOT-known monitor UUIDs.
+		//
+		// v1.8.1 fix: MCP get_monitor_mtta requires an explicit non-empty
+		// monitor_uuids list to return per-monitor entries. An empty
+		// uuids slice yields {monitors:[], totalAcknowledged:0, mtta:0}
+		// (project-level aggregate only), which silently collapsed every
+		// cold MTTA series in pre-1.8.1. UUIDs are sourced from the HOT
+		// snapshot via currentMonitorUUIDs(); when HOT has not yet
+		// published (cold-start race) the call is skipped and recovers
+		// on the next cold tick.
 		if t.mcp != nil {
+			uuids := t.currentMonitorUUIDs()
 			from := now.Add(-dur)
 			toT := now
 
-			wg.Add(1)
-			go func(p string) {
-				defer wg.Done()
-				opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				defer cancel()
-				resp, err := t.mcp.GetMonitorMtta(opCtx, from, toT)
-				if err != nil || resp == nil {
-					if err != nil {
-						t.logger.Warn("cold tier mcp mtta failed", "tier", "cold", "period", p, "error", err)
+			if len(uuids) == 0 {
+				t.logger.Debug("cold tier mcp mtta skipped: HOT snapshot has no monitors yet",
+					"tier", "cold", "period", period)
+			} else {
+				wg.Add(1)
+				go func(p string, uuidArg []string) {
+					defer wg.Done()
+					opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					defer cancel()
+					resp, err := t.mcp.GetMonitorMtta(opCtx, from, toT, uuidArg...)
+					if err != nil || resp == nil {
+						if err != nil {
+							t.logger.Warn("cold tier mcp mtta failed", "tier", "cold", "period", p, "error", err)
+						}
+						return
 					}
-					return
-				}
-				m := make(map[string]float64, len(resp.Monitors))
-				for _, e := range resp.Monitors {
-					m[e.UUID] = e.Mtta
-				}
-				mu.Lock()
-				mttaByPeriod[p] = m
-				mu.Unlock()
-			}(period)
+					m := make(map[string]float64, len(resp.Monitors))
+					for _, e := range resp.Monitors {
+						m[e.UUID] = e.Mtta
+					}
+					mu.Lock()
+					mttaByPeriod[p] = m
+					mu.Unlock()
+				}(period, uuids)
+			}
 
 			// Note: MTTR for cold-tier periods is sourced from the
 			// per-period MonitorReport's r.MTTR field at emit time
@@ -556,6 +590,26 @@ func (t *tieredRefresher) refreshCold(ctx context.Context) {
 		"periods", coldPeriods,
 		"reports_total", len(reportsByPeriod),
 	)
+}
+
+// currentMonitorUUIDs returns the monitor UUIDs from the most recently
+// published HOT snapshot. Empty result means HOT has not run yet (cold-
+// start race) or the project has zero monitors; callers must treat the
+// empty case as "skip this fan-out and wait for the next tick".
+//
+// The accessor reads through a single atomic.Pointer.Load() and copies
+// the slice so concurrent HOT publications cannot mutate the result the
+// caller is iterating over.
+func (t *tieredRefresher) currentMonitorUUIDs() []string {
+	hot := t.hot.Load()
+	if hot == nil || len(hot.monitors) == 0 {
+		return nil
+	}
+	uuids := make([]string, 0, len(hot.monitors))
+	for _, m := range hot.monitors {
+		uuids = append(uuids, m.UUID)
+	}
+	return uuids
 }
 
 // filterUUIDMap returns a new map containing only the keys present in

@@ -264,12 +264,24 @@ tier (`cache.coldEnabled: false`) emits no `7d`/`30d`/`90d`/`365d`
 series, regardless of what its `periods` list contains. The same is
 true symmetrically for warm-disabled projects and the `24h` series.
 
-The exporter takes one all-monitors MCP call per cold-mapped period
-(via the v0.7.0 `monitor_uuids` empty-slice semantic), so 5 configured
-periods cost 5 MCP calls per cold refresh tick rather than `N x 5` for
-a project with `N` monitors. Per-period MTTR is sourced from the SLA
-report endpoint (which already carries `MTTR` per window) so no extra
-MCP call is issued for MTTR fan-out.
+The exporter takes one MCP `get_monitor_mtta` call per cold-mapped
+period, passing the full list of HOT-known monitor UUIDs as
+`monitor_uuids`. So 5 configured periods cost 5 MCP calls per cold
+refresh tick rather than `N x 5` for a project with `N` monitors.
+Per-period MTTR is sourced from the SLA report endpoint (which already
+carries `MTTR` per window) so no extra MCP call is issued for MTTR
+fan-out.
+
+The cold MTTA call relies on the HOT snapshot having published; on the
+first cold tick after a cold-start (HOT eager refresh runs first, so
+this race is brief) it is skipped and recovers on the next tick.
+
+> v1.8.0 shipped a pre-1.8.1 bug here: the cold MTTA call sent an
+> empty `monitor_uuids` slice on the wrong assumption that this meant
+> "every monitor". The actual MCP server semantic is the opposite
+> (empty `monitor_uuids` returns project-level aggregate only,
+> `monitors: []`), so cold MTTA series were silently empty in v1.8.0.
+> v1.8.1 sends explicit UUIDs.
 
 The `hyperping_data_age_seconds` self-metric gains a `period` label
 alongside the existing `tier` label so operators can write

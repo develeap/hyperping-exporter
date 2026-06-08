@@ -31,12 +31,11 @@ import (
 )
 
 // TestTieredRefresher_WarmDisabledSkipsAPI: when warm is disabled the
-// refresher's WARM ticker goroutine is never started, so ListMonitorReports
-// and ListMaintenance (the WARM-only call) record zero invocations
-// attributable to the WARM tier within the test window. The HOT tier still
-// calls ListMaintenance (active windows for incidents), so we differentiate
-// by checking reports (WARM-only) and confirming WARM never publishes a
-// snapshot.
+// refresher's WARM goroutine is never started, so the warm path performs
+// zero API calls and never publishes a snapshot. The cold tier is also
+// disabled in this test to isolate the warm path from cold-tier API
+// activity (cold's eager pre-ticker refresh, introduced in v1.8.1, also
+// calls ListMonitorReports for the configured cold periods).
 func TestTieredRefresher_WarmDisabledSkipsAPI(t *testing.T) {
 	api := &mockAPI{
 		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
@@ -47,8 +46,9 @@ func TestTieredRefresher_WarmDisabledSkipsAPI(t *testing.T) {
 		logger:       newTestLogger(),
 		hotTTL:       10 * time.Millisecond,
 		warmTTL:      10 * time.Millisecond,
-		coldTTL:      1 * time.Hour, // suppress COLD ticks so the test isolates WARM
+		coldTTL:      1 * time.Hour,
 		warmDisabled: true,
+		coldDisabled: true, // isolate warm path from cold's eager + ticker work
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -59,8 +59,7 @@ func TestTieredRefresher_WarmDisabledSkipsAPI(t *testing.T) {
 	assert.GreaterOrEqual(t, int(api.monitorsCalls.Load()), 1,
 		"HOT must still run; got monitorsCalls=%d", api.monitorsCalls.Load())
 	// WARM is responsible for ListMonitorReports (24h window) in tiered
-	// mode. With WARM disabled and COLD's first tick suppressed (1h TTL),
-	// reports must remain at zero.
+	// mode. With both WARM and COLD disabled, reports must remain at zero.
 	assert.Equal(t, int32(0), api.reportsCalls.Load(),
 		"WARM disabled must yield zero ListMonitorReports calls; got %d", api.reportsCalls.Load())
 	// The WARM snapshot pointer must remain nil because no successful
@@ -69,8 +68,8 @@ func TestTieredRefresher_WarmDisabledSkipsAPI(t *testing.T) {
 }
 
 // TestTieredRefresher_ColdDisabledSkipsAPI mirrors the warm-disabled case
-// for the COLD tier. The WARM tier's first tick is suppressed (1h TTL) so
-// the only path to ListMonitorReports is the COLD ticker.
+// for the COLD tier. WARM is also disabled so the only path to
+// ListMonitorReports would be the cold goroutine, which must not run.
 func TestTieredRefresher_ColdDisabledSkipsAPI(t *testing.T) {
 	api := &mockAPI{
 		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web"}},
@@ -80,8 +79,9 @@ func TestTieredRefresher_ColdDisabledSkipsAPI(t *testing.T) {
 		api:          api,
 		logger:       newTestLogger(),
 		hotTTL:       10 * time.Millisecond,
-		warmTTL:      1 * time.Hour, // suppress WARM ticks so the test isolates COLD
+		warmTTL:      1 * time.Hour,
 		coldTTL:      10 * time.Millisecond,
+		warmDisabled: true, // isolate cold path from warm's eager + ticker work
 		coldDisabled: true,
 	}
 
