@@ -170,8 +170,8 @@ overrides any subset of the global tier knobs for that project:
 - id: hyp_infra
   apiKeyFile: /etc/hyperping/api-key-hyp_infra
   cache:
-    warmTTL: 30m   # Override only WARM; hot/cold inherit the globals.
-    coldTTL: 2h
+    warmTTL: "30m"  # Override only WARM; hot/cold inherit the globals.
+    coldTTL: "2h"
 
 - id: hyp_thirdparty
   apiKeyFile: /etc/hyperping/api-key-hyp_thirdparty
