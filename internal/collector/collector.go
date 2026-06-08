@@ -61,6 +61,26 @@ func WithTierTTLs(hot, warm, cold time.Duration) CollectorOption {
 	}
 }
 
+// WithTierEnable configures which of the HOT/WARM/COLD tiers run for this
+// Collector. Only honored when CacheModeTiered is also set; a disabled
+// tier launches no goroutine, issues zero API calls, and emits no series
+// for that tier on this project. The default (option unset) is all-enabled
+// so existing call sites that don't know about the option behave exactly
+// as before.
+//
+// HOT must remain enabled in normal operation: a Collector with HOT
+// disabled would produce no scrape and trap /readyz at "not ready"
+// forever. The hot parameter is accepted for symmetry and is enforced
+// at parse time by the operator-facing config layer (main.parseConfig).
+func WithTierEnable(hot, warm, cold bool) CollectorOption {
+	return func(c *Collector) {
+		c.hotEnabled = hot
+		c.warmEnabled = warm
+		c.coldEnabled = cold
+		c.tierEnableSet = true
+	}
+}
+
 // WithExcludePattern sets a compiled RE2 regex; any monitor whose Name matches
 // is dropped from the monitor list immediately after the API fetch, before any
 // metric computation or tenant aggregate calculation.
@@ -313,7 +333,15 @@ type Collector struct {
 	hotTTL    time.Duration
 	warmTTL   time.Duration
 	coldTTL   time.Duration
-	tiered    *tieredRefresher
+	// hot/warm/coldEnabled are honored only in tiered mode. tierEnableSet
+	// records whether WithTierEnable was supplied; when false the defaults
+	// (true/true/true) apply so existing call sites that pre-date the
+	// per-project enable feature behave exactly as before.
+	hotEnabled    bool
+	warmEnabled   bool
+	coldEnabled   bool
+	tierEnableSet bool
+	tiered        *tieredRefresher
 
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
@@ -364,11 +392,23 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 	// chart's multi-project knob is enabled.
 	c.project = resolveProjectID(c.project)
 	c.collectorDescs = newCollectorDescs(namespace, c.project)
+	// Default the per-tier enable flags to all-true when WithTierEnable
+	// was not supplied. Doing this after the options loop keeps
+	// WithTierEnable purely additive: a caller that does not invoke it
+	// gets exactly the pre-feature behaviour.
+	if !c.tierEnableSet {
+		c.hotEnabled = true
+		c.warmEnabled = true
+		c.coldEnabled = true
+	}
 	// In tiered mode build the refresher up front so callers can drive
 	// per-tier refreshes directly (tests do this) and so Start has nothing
 	// to allocate on the hot path. Legacy mode leaves c.tiered nil.
 	if c.cacheMode == CacheModeTiered {
 		c.tiered = newTieredRefresher(c, c.hotTTL, c.warmTTL, c.coldTTL)
+		c.tiered.hotDisabled = !c.hotEnabled
+		c.tiered.warmDisabled = !c.warmEnabled
+		c.tiered.coldDisabled = !c.coldEnabled
 	}
 	return c
 }

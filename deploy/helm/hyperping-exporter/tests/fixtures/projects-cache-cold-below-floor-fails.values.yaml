@@ -1,0 +1,13 @@
+# Per-project cache.coldTTL below the 300s floor MUST be rejected at render
+# time. Same rationale as the hotTTL floor fixture: the per-project knob
+# must respect the same conservative floors as the global config.coldTTL.
+config:
+  cacheMode: tiered
+  hotTTL: "60s"
+  warmTTL: "5m"
+  coldTTL: "15m"
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core
+      cache:
+        coldTTL: "30s"

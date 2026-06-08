@@ -128,6 +128,39 @@ config:
   #   mcpUrl:             per-project override; falls back to config.mcpUrl
   #   excludeNamePattern: per-project RE2 override; falls back to
   #                       config.excludeNamePattern
+  #   cache:              OPTIONAL per-project tier cache override. Only
+  #                       meaningful when config.cacheMode = "tiered". Every
+  #                       field below is independently optional; absent
+  #                       fields inherit the global config.{hot,warm,cold}TTL.
+  #                       Setting <tier>Enabled: false skips that tier's
+  #                       ticker for this project (no API calls, no series).
+  #                       Note: hotEnabled: false is rejected at startup
+  #                       (the readiness gate depends on HOT).
+  #
+  #     cache:
+  #       hotTTL:      "60s"   # quoted Go duration; overrides config.hotTTL
+  #       warmTTL:     "30m"   # quoted Go duration; overrides config.warmTTL
+  #       coldTTL:     "2h"    # quoted Go duration; overrides config.coldTTL
+  #       warmEnabled: false   # bool; skip WARM ticker for this project
+  #       coldEnabled: false   # bool; skip COLD ticker for this project
+  #
+  #   Example: hyp_thirdparty stops emitting WARM/COLD series to save the
+  #   shared SDK rate-limit budget; hyp_infra refreshes WARM less often
+  #   while leaving every other project at the global defaults:
+  #
+  #     projects:
+  #       - id: hyp_core
+  #         existingSecret: hp-core
+  #       - id: hyp_infra
+  #         existingSecret: hp-infra
+  #         cache:
+  #           warmTTL: "30m"
+  #           coldTTL: "2h"
+  #       - id: hyp_thirdparty
+  #         existingSecret: hp-thirdparty
+  #         cache:
+  #           warmEnabled: false
+  #           coldEnabled: false
   #
   # Mutual exclusion: when projects is non-empty, config.apiKey /
   # config.existingSecret / top-level externalSecret remoteRef must be

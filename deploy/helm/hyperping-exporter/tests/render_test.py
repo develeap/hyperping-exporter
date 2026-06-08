@@ -67,6 +67,32 @@ def find_secret(rendered: str) -> dict | None:
     return None
 
 
+def _extract_projects_yaml(rendered: str) -> str | None:
+    """Locate the rendered projects.yaml document and return it as plain text.
+
+    The chart base64-encodes the document into the chart-managed Secret's
+    `data` map (key `projects.yaml`). Under ESO mode the chart-managed
+    Secret still carries the projects.yaml entry alongside any ExternalSecret
+    target; an explicit `stringData` carry-through is also accepted. Return
+    None when no candidate exists.
+    """
+    import base64
+
+    for d in docs(rendered):
+        if d.get("kind") != "Secret":
+            continue
+        sd = (d.get("stringData") or {})
+        if "projects.yaml" in sd and isinstance(sd["projects.yaml"], str):
+            return sd["projects.yaml"]
+        data = (d.get("data") or {})
+        if "projects.yaml" in data and isinstance(data["projects.yaml"], str):
+            try:
+                return base64.b64decode(data["projects.yaml"]).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                continue
+    return None
+
+
 def find_external_secret(rendered: str) -> dict | None:
     for d in docs(rendered):
         if d.get("kind") == "ExternalSecret":
@@ -224,7 +250,7 @@ BASELINE_ARGS = [
 # image as its default).
 EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.7.0"
 EXPECTED_VERSION = "1.7.0"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.6.0"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.7.0"
 
 
 def main() -> int:
@@ -901,19 +927,93 @@ def main() -> int:
     )
     print("PASS projects-externalsecret: ExternalSecret data fans out per project")
 
-    # Case M9 — Chart version bump: with multi-project values support we
-    # expect chart 1.6.0 / appVersion 1.7.0 to ship from this branch.
-    # Read the rendered Chart label to confirm.
+    # Case M9 — Chart version bump: chart 1.7.0 ships per-project cache
+    # tier override support (feat/per-project-tier-cache). appVersion
+    # stays at 1.7.0 because the rendered chart still targets the
+    # existing binary tag; a new binary release will retire that pin.
     chart_label_versions = labels_with_version(rendered)
     # The chart label `app.kubernetes.io/version` is the appVersion of
     # Chart.yaml; the chart name+version label appears on every resource's
     # helm.sh/chart label. Walk the rendered ExternalSecret's labels.
     helm_chart_label = (es.get("metadata") or {}).get("labels", {}).get("helm.sh/chart")
     assert helm_chart_label is not None, "FAIL chart-version-bump: helm.sh/chart label missing"
-    assert helm_chart_label == "hyperping-exporter-1.6.0", (
-        f"FAIL chart-version-bump: chart label expected 'hyperping-exporter-1.6.0', got {helm_chart_label!r}"
+    assert helm_chart_label == EXPECTED_CHART_LABEL, (
+        f"FAIL chart-version-bump: chart label expected {EXPECTED_CHART_LABEL!r}, got {helm_chart_label!r}"
     )
-    print("PASS chart-version-bump: chart version 1.6.0 rendered")
+    print(f"PASS chart-version-bump: chart label {EXPECTED_CHART_LABEL} rendered")
+
+    # ---- Per-project cache tier overrides (work item: feat/per-project-tier-cache) ----
+    # These cases pin down the chart contract for an optional `cache:` block
+    # on each projects[] entry. They fail today because the projectsYaml
+    # helper does not yet pass the cache: block through; that failure IS the
+    # TDD red signal for this work item.
+
+    # Case PC1 — projects-multi (no cache: block anywhere) must render the
+    # SAME projects.yaml document it rendered before this feature shipped.
+    # Walk the chart-managed Secret's projects.yaml stringData and assert no
+    # `cache:` key appears. This is the byte-identical backward-compat
+    # contract at the chart layer.
+    rendered = helm_template("projects-multi.values.yaml")
+    projects_yaml_text = _extract_projects_yaml(rendered)
+    assert projects_yaml_text is not None, (
+        "FAIL projects-multi-no-cache-keys: rendered projects.yaml document not located"
+    )
+    assert "cache:" not in projects_yaml_text, (
+        f"FAIL projects-multi-no-cache-keys: zero-override config must NOT emit `cache:` "
+        f"keys (byte-identical backward-compat); got:\n{projects_yaml_text}"
+    )
+    print("PASS projects-multi-no-cache-keys: no orphan cache: keys in zero-override render")
+
+    # Case PC2 — projects-cache-override fixture: hyp_infra has a per-project
+    # cache override (warmTTL=30m, coldEnabled=false). The rendered
+    # projects.yaml MUST carry the cache block verbatim, and hyp_core's
+    # entry MUST NOT carry a cache: key (no override on that project).
+    rendered = helm_template("projects-cache-override.values.yaml")
+    projects_yaml_text = _extract_projects_yaml(rendered)
+    assert projects_yaml_text is not None, (
+        "FAIL projects-cache-override: rendered projects.yaml document not located"
+    )
+    # Parse as YAML so we can assert structurally.
+    parsed = yaml.safe_load(projects_yaml_text)
+    assert isinstance(parsed, list) and len(parsed) == 2, (
+        f"FAIL projects-cache-override: expected 2 project entries; got {parsed!r}"
+    )
+    by_id = {p["id"]: p for p in parsed}
+    assert "cache" not in by_id["hyp_core"], (
+        f"FAIL projects-cache-override: hyp_core has no override; cache: key must be absent; got {by_id['hyp_core']!r}"
+    )
+    infra_cache = by_id["hyp_infra"].get("cache")
+    assert isinstance(infra_cache, dict), (
+        f"FAIL projects-cache-override: hyp_infra.cache must be a map; got {infra_cache!r}"
+    )
+    assert infra_cache.get("warmTTL") == "30m", (
+        f"FAIL projects-cache-override: hyp_infra.cache.warmTTL must equal '30m'; got {infra_cache.get('warmTTL')!r}"
+    )
+    assert infra_cache.get("coldEnabled") is False, (
+        f"FAIL projects-cache-override: hyp_infra.cache.coldEnabled must equal False; got {infra_cache.get('coldEnabled')!r}"
+    )
+    print("PASS projects-cache-override: cache: block rendered verbatim for overriding project")
+
+    # Case PC3 — per-project cache.hotEnabled: false must abort the render
+    # so operators get the validation error at template time rather than at
+    # pod boot. The binary rejects the same value at startup; catching it
+    # here turns a CrashLoop pod into a clear render-time failure.
+    assert_fail("projects-cache-hotenabled-false-fails",
+                "projects-cache-hotenabled-false-fails.values.yaml",
+                "cache.hotEnabled: false is rejected")
+
+    # Case PC4 — per-project cache.hotTTL below the 30s floor must abort.
+    # The global validateTierTTLs enforces this on config.hotTTL but does
+    # not recurse into per-project cache: blocks; the chart loses its
+    # safety net without an explicit per-project check.
+    assert_fail("projects-cache-hot-below-floor-fails",
+                "projects-cache-hot-below-floor-fails.values.yaml",
+                "below the 30s floor")
+
+    # Case PC5 — per-project cache.coldTTL below the 300s floor must abort.
+    assert_fail("projects-cache-cold-below-floor-fails",
+                "projects-cache-cold-below-floor-fails.values.yaml",
+                "below the 300s floor")
 
     print("\nALL RENDER TESTS PASSED")
     return 0

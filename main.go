@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -77,6 +78,86 @@ type projectConfig struct {
 	MCPURL             string         `yaml:"mcpUrl"`
 	ExcludeNamePattern string         `yaml:"excludeNamePattern"`
 	ExcludeRx          *regexp.Regexp `yaml:"-"`
+
+	// Cache carries optional per-project tier overrides. A nil pointer
+	// (no cache: block in YAML) inherits every global value byte-for-byte,
+	// which is the backward-compat path for upgrades from chart 1.6.x.
+	// See projectCacheOverride for the per-field pointer semantics. The
+	// yaml tag carries no omitempty: that flag only affects encode, and we
+	// only decode here.
+	Cache *projectCacheOverride `yaml:"cache"`
+}
+
+// projectCacheOverride is one optional `cache:` block on a project entry.
+// Every field is a pointer because the override must distinguish absent
+// (inherit the global) from present-and-zero (the operator explicitly set
+// "0s" or false, an arguably misconfigured but valid value). Value-typed
+// time.Duration / bool would collapse those two cases onto the zero value
+// and silently lose the "inherit" signal.
+//
+//   - <tier>TTL    pointer: when non-nil, overrides the global TTL for
+//     that tier on this project only.
+//   - <tier>Enabled pointer: when non-nil and false, skips that tier's
+//     ticker entirely for this project (no goroutine launched, no API
+//     calls, no series emitted for that tier).
+//
+// Constraint: HotEnabled may be true or unset (defaults true). HotEnabled
+// pointing to false is rejected at parse time: a project with HOT
+// disabled produces no scrape at all, which is a misconfiguration.
+type projectCacheOverride struct {
+	HotTTL      *time.Duration `yaml:"hotTTL"`
+	WarmTTL     *time.Duration `yaml:"warmTTL"`
+	ColdTTL     *time.Duration `yaml:"coldTTL"`
+	HotEnabled  *bool          `yaml:"hotEnabled"`
+	WarmEnabled *bool          `yaml:"warmEnabled"`
+	ColdEnabled *bool          `yaml:"coldEnabled"`
+}
+
+// effectiveTierTTLs returns the resolved (hot, warm, cold) tier TTLs for
+// the given project, falling back to the global cfg.{hot,warm,cold}TTL
+// when the project's cache block omits a field or is absent entirely.
+// The function is total: it never returns a zero Duration when the
+// global is set, so callers can plug the result straight into
+// WithTierTTLs.
+func effectiveTierTTLs(p projectConfig, cfg config) (hot, warm, cold time.Duration) {
+	hot = cfg.hotTTL
+	warm = cfg.warmTTL
+	cold = cfg.coldTTL
+	if p.Cache == nil {
+		return
+	}
+	if p.Cache.HotTTL != nil {
+		hot = *p.Cache.HotTTL
+	}
+	if p.Cache.WarmTTL != nil {
+		warm = *p.Cache.WarmTTL
+	}
+	if p.Cache.ColdTTL != nil {
+		cold = *p.Cache.ColdTTL
+	}
+	return
+}
+
+// effectiveTierEnabled returns the resolved (hot, warm, cold) tier enable
+// flags for the given project. Defaults are (true, true, true); only a
+// non-nil cache.<tier>Enabled pointer of value false flips a flag.
+// HotEnabled is enforced as true at parse time, so the returned hot is
+// always true in normal operation.
+func effectiveTierEnabled(p projectConfig) (hot, warm, cold bool) {
+	hot, warm, cold = true, true, true
+	if p.Cache == nil {
+		return
+	}
+	if p.Cache.HotEnabled != nil {
+		hot = *p.Cache.HotEnabled
+	}
+	if p.Cache.WarmEnabled != nil {
+		warm = *p.Cache.WarmEnabled
+	}
+	if p.Cache.ColdEnabled != nil {
+		cold = *p.Cache.ColdEnabled
+	}
+	return
 }
 
 // reProjectID is the alphabet for project ids. It matches the tenant
@@ -212,7 +293,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	//   2. Legacy single-key path: synthesise one project with ID="default"
 	//      so downstream code always iterates a non-empty list.
 	if cfg.projectsFile != "" {
-		projects, err := loadProjectsFile(cfg.projectsFile, cfg.mcpURL, cfg.excludeNamePattern, cfg.excludeNameRx)
+		projects, err := loadProjectsFile(cfg.projectsFile, cfg.mcpURL, cfg.excludeNamePattern, cfg.excludeNameRx, stderr)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return cfg, false
@@ -235,14 +316,23 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 // fallbacks for any project entry whose own value is empty. The returned
 // slice is guaranteed to have unique, regex-clean IDs and exactly one
 // API key source (inline APIKey OR APIKeyFile) per project.
-func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globalExcludeRx *regexp.Regexp) ([]projectConfig, error) {
+func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globalExcludeRx *regexp.Regexp, stderr io.Writer) ([]projectConfig, error) {
 	// #nosec G304 G703 -- path is the operator-supplied --projects-file CLI flag (chart-mounted), not external/user input.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read --projects-file %q: %w", path, err)
 	}
+	// Strict decode: KnownFields(true) turns a typo like cache.icyTTL or
+	// excludeNamePatten into a parse error instead of silently dropping the
+	// key. Tolerant decoding is the worst kind of operator footgun in a
+	// config file: the typo passes CI, the value never reaches the binary,
+	// and the only signal is "why is my override not taking effect?" hours
+	// after the rollout. The schema is fully documented in projectConfig
+	// and projectCacheOverride, so a strict decoder is safe here.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var projects []projectConfig
-	if err := yaml.Unmarshal(data, &projects); err != nil {
+	if err := dec.Decode(&projects); err != nil {
 		return nil, fmt.Errorf("parse --projects-file %q: %w", path, err)
 	}
 	if len(projects) == 0 {
@@ -307,7 +397,69 @@ func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globa
 			}
 		}
 	}
+	// Per-project cache override validation is consolidated into a single
+	// pass over the parsed list so an operator with multiple typos gets
+	// every warning at once rather than fixing one at a time. Fatal
+	// conditions (hotEnabled: false) short-circuit the whole load so a
+	// no-op binary never enters Refresh.
+	if err := validateProjectsCacheBlocks(projects, stderr); err != nil {
+		return nil, err
+	}
 	return projects, nil
+}
+
+// validateProjectsCacheBlocks walks every project's cache: block once
+// and reports issues in one consolidated pass to stderr (for warnings)
+// or as a returned error (for fatal conditions). The single-pass shape
+// is deliberate: operators editing a 20-project config want to fix every
+// warning at once, not chase them through successive boot attempts.
+//
+// Fatal (returns error):
+//
+//   - cache.hotEnabled: false  — HOT is the readiness gate and the source
+//     of every per-monitor up/down series; disabling it produces a Pod
+//     that boots, never readies, and emits no scrape. Better to refuse.
+//
+// Warning (writes to stderr, parse continues):
+//
+//   - cache.<tier>TTL set alongside cache.<tier>Enabled: false. The
+//     enable flag wins; the TTL is dead config. We surface the warning
+//     so operators can clean it up, but we do not fail the boot because
+//     config-merging tooling (overlays, kustomize-style patches) can
+//     legitimately produce this combination during a multi-step rollout.
+func validateProjectsCacheBlocks(projects []projectConfig, stderr io.Writer) error {
+	for _, p := range projects {
+		if p.Cache == nil {
+			continue
+		}
+		if p.Cache.HotEnabled != nil && !*p.Cache.HotEnabled {
+			return fmt.Errorf("--projects-file: project %q has cache.hotEnabled: false; HOT must remain enabled because /readyz and every per-monitor up/down series depend on it. Set hotEnabled to true or remove the field", p.ID)
+		}
+		// Reject non-positive per-project TTLs at parse time. time.NewTicker
+		// panics on d <= 0, so a project with cache.warmTTL: "0s" would
+		// crash the binary the moment its WARM goroutine starts. The Helm
+		// chart's validateTierTTLs guards the global tier TTLs but does NOT
+		// recurse into the per-project cache: block (a chart change to do
+		// so would couple validateTierTTLs to the projects schema and we
+		// prefer the binary to own this contract). Enforce it here so a
+		// raw --projects-file (no chart) is also safe.
+		if p.Cache.HotTTL != nil && *p.Cache.HotTTL <= 0 {
+			return fmt.Errorf("--projects-file: project %q has cache.hotTTL %s; must be > 0 (time.NewTicker panics on non-positive durations)", p.ID, *p.Cache.HotTTL)
+		}
+		if p.Cache.WarmTTL != nil && *p.Cache.WarmTTL <= 0 {
+			return fmt.Errorf("--projects-file: project %q has cache.warmTTL %s; must be > 0 (time.NewTicker panics on non-positive durations)", p.ID, *p.Cache.WarmTTL)
+		}
+		if p.Cache.ColdTTL != nil && *p.Cache.ColdTTL <= 0 {
+			return fmt.Errorf("--projects-file: project %q has cache.coldTTL %s; must be > 0 (time.NewTicker panics on non-positive durations)", p.ID, *p.Cache.ColdTTL)
+		}
+		if p.Cache.WarmEnabled != nil && !*p.Cache.WarmEnabled && p.Cache.WarmTTL != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: --projects-file project %q sets cache.warmTTL alongside cache.warmEnabled: false; the TTL is ignored (enabled wins). Remove warmTTL to silence this warning.\n", p.ID)
+		}
+		if p.Cache.ColdEnabled != nil && !*p.Cache.ColdEnabled && p.Cache.ColdTTL != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: --projects-file project %q sets cache.coldTTL alongside cache.coldEnabled: false; the TTL is ignored (enabled wins). Remove coldTTL to silence this warning.\n", p.ID)
+		}
+	}
+	return nil
 }
 
 // sanitizeArgs overwrites the API-key value carried in args with an equal
@@ -562,6 +714,13 @@ func run() int {
 		registry.MustRegister(c)
 	}
 	registerProjectReadyGauge(registry, cfg.namespace, collectors)
+	// Operator visibility (D4 / D5 from the design): emit one structured
+	// log line per project showing the effective tier configuration, and
+	// register an absence-based self-metric that surfaces any explicitly
+	// disabled tier so dashboards can distinguish operator intent from
+	// breakage.
+	logEffectiveTierConfig(cfg, logger)
+	registerTierDisabledMetric(registry, cfg)
 	mux, err := newMux(cfg.metricsPath, registry, collectors)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
@@ -697,9 +856,12 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 			collector.WithMCPMetrics(q.mcpMx),
 		}
 		if cfg.cacheMode == "tiered" {
+			hot, warm, cold := effectiveTierTTLs(q.project, cfg)
+			hotE, warmE, coldE := effectiveTierEnabled(q.project)
 			opts = append(opts,
 				collector.WithCacheMode(collector.CacheModeTiered),
-				collector.WithTierTTLs(cfg.hotTTL, cfg.warmTTL, cfg.coldTTL),
+				collector.WithTierTTLs(hot, warm, cold),
+				collector.WithTierEnable(hotE, warmE, coldE),
 			)
 		}
 		c := collector.NewCollector(
@@ -709,6 +871,99 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// logEffectiveTierConfig emits one structured log line per project showing
+// the resolved tier TTLs and enable flags after per-project overrides are
+// applied. Operators rely on this to verify what the binary is actually
+// running without grepping source. The line is emitted at info level so
+// it lands in central logging by default; the project id is the natural
+// search key.
+//
+// Only emitted when cacheMode == "tiered"; legacy mode has no per-tier
+// concept and the existing cache_ttl log line already covers it.
+func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
+	if cfg.cacheMode != "tiered" {
+		return
+	}
+	for _, p := range cfg.projects {
+		hot, warm, cold := effectiveTierTTLs(p, cfg)
+		hotE, warmE, coldE := effectiveTierEnabled(p)
+		logger.Info("effective tier configuration",
+			"project", p.ID,
+			"hot_ttl", hot.String(),
+			"warm_ttl", warm.String(),
+			"cold_ttl", cold.String(),
+			"hot_enabled", hotE,
+			"warm_enabled", warmE,
+			"cold_enabled", coldE,
+		)
+	}
+}
+
+// jsonLoggerTo builds a JSON-encoded slog.Logger that writes to the
+// supplied writer. Tests use this to capture the structured output of
+// logEffectiveTierConfig without depending on a global logger or stderr
+// interception. Kept tiny on purpose; the production path uses
+// setupLogger.
+func jsonLoggerTo(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, nil))
+}
+
+// registerTierDisabledMetric publishes one
+//
+//	hyperping_exporter_tier_disabled{project="<id>", tier="warm"|"cold"} 1
+//
+// gauge per (project, tier) pair where the operator has disabled the
+// tier via the per-project cache override. The series is absence-based:
+// no series is emitted for tiers that remain enabled, so an upgrade with
+// no cache: blocks adds zero new series to the registry.
+//
+// HOT is never disabled (parse-time fatal), so this function only ever
+// considers WARM and COLD. Each series carries a constant value of 1
+// because Prometheus best practice for enum-style self-metrics is
+// "present == 1" rather than a bimodal 0/1 gauge.
+func registerTierDisabledMetric(registry *prometheus.Registry, cfg config) {
+	desc := prometheus.NewDesc(
+		"hyperping_exporter_tier_disabled",
+		"1 for each (project, tier) pair where the operator has explicitly disabled the tier in projects-file. Absent (no series) when the tier is enabled. Distinguishes \"no data because disabled\" from \"no data because broken\" for dashboards/alerts.",
+		[]string{"project", "tier"}, nil,
+	)
+	var disabled []tierDisabledPair
+	for _, p := range cfg.projects {
+		_, warmE, coldE := effectiveTierEnabled(p)
+		if !warmE {
+			disabled = append(disabled, tierDisabledPair{project: p.ID, tier: "warm"})
+		}
+		if !coldE {
+			disabled = append(disabled, tierDisabledPair{project: p.ID, tier: "cold"})
+		}
+	}
+	// Absence-based metric: when nothing is disabled we still register
+	// the Desc (so the metric name is discoverable via /metrics-help)
+	// but emit zero series. Upgrades with no cache: blocks anywhere
+	// therefore add zero new series to the registry.
+	registry.MustRegister(&tierDisabledCollector{desc: desc, disabled: disabled})
+}
+
+type tierDisabledPair struct {
+	project string
+	tier    string
+}
+
+type tierDisabledCollector struct {
+	desc     *prometheus.Desc
+	disabled []tierDisabledPair
+}
+
+func (c *tierDisabledCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+func (c *tierDisabledCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, p := range c.disabled {
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, 1.0, p.project, p.tier)
+	}
 }
 
 func setupLogger(level, format string) *slog.Logger {

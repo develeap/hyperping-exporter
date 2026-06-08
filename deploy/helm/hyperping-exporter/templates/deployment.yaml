@@ -2,6 +2,7 @@
 {{- include "hyperping-exporter.validateCacheTTL" . -}}
 {{- include "hyperping-exporter.validateCacheMode" . -}}
 {{- include "hyperping-exporter.validateTierTTLs" . -}}
+{{- include "hyperping-exporter.validateProjectsCacheBlocks" . -}}
 {{- include "hyperping-exporter.validateReplicaCount" . -}}
 {{- include "hyperping-exporter.validateSecretSources" . -}}
 {{- include "hyperping-exporter.validateProjects" . -}}

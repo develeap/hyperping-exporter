@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Per-project cache tier overrides. Each entry in the projects file
+  accepts an optional `cache:` block that overrides any subset of the
+  global tiered-mode knobs for that project only: `hotTTL`, `warmTTL`,
+  `coldTTL`, `hotEnabled`, `warmEnabled`, `coldEnabled`. A project
+  without a `cache:` block inherits every global value byte-for-byte;
+  a `<tier>Enabled: false` skips that tier's ticker entirely (no API
+  calls, no series). `hotEnabled: false` is rejected at startup
+  because HOT is the readiness gate. The chart's
+  `config.projects[*].cache` knob renders the block verbatim into the
+  mounted projects.yaml.
+- Startup log line `effective tier configuration` per project showing
+  the resolved tier TTLs and enable flags after override merging.
+  Lands in central logging by default; the `project` attribute is the
+  natural search key.
+- `hyperping_exporter_tier_disabled{project, tier}` self-metric. One
+  series per (project, tier) pair where the operator has explicitly
+  disabled the tier. Absence-based: enabled tiers produce no series.
+  Distinguishes "no data because disabled" from "no data because
+  broken" for dashboards and alerts.
 - `--projects-file` flag (env `HYPERPING_PROJECTS_FILE`) on the exporter
   binary. The flag points at a YAML list of `{id, apiKey|apiKeyFile,
   mcpUrl?, excludeNamePattern?}` entries; the exporter fans out one
@@ -40,7 +59,11 @@ All notable changes to this project will be documented in this file.
   rollout. Recording rules that aggregate across the exporter should
   add a `by (project, ...)` or `without (project)` clause as
   appropriate.
-- Helm chart version `1.5.4 -> 1.6.0`; appVersion `1.5.1 -> 1.7.0`.
+- Helm chart version `1.5.4 -> 1.7.0`; appVersion `1.5.1 -> 1.7.0`.
+  Chart 1.7.0 ships per-project cache tier override pass-through; no
+  binary appVersion bump because the rendered chart still targets the
+  existing tag (the exporter binary on this branch understands the
+  new `cache:` schema; a subsequent release will bump appVersion).
 
 ### Migration
 
