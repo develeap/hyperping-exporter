@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -319,8 +320,17 @@ func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globa
 	if err != nil {
 		return nil, fmt.Errorf("read --projects-file %q: %w", path, err)
 	}
+	// Strict decode: KnownFields(true) turns a typo like cache.icyTTL or
+	// excludeNamePatten into a parse error instead of silently dropping the
+	// key. Tolerant decoding is the worst kind of operator footgun in a
+	// config file: the typo passes CI, the value never reaches the binary,
+	// and the only signal is "why is my override not taking effect?" hours
+	// after the rollout. The schema is fully documented in projectConfig
+	// and projectCacheOverride, so a strict decoder is safe here.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var projects []projectConfig
-	if err := yaml.Unmarshal(data, &projects); err != nil {
+	if err := dec.Decode(&projects); err != nil {
 		return nil, fmt.Errorf("parse --projects-file %q: %w", path, err)
 	}
 	if len(projects) == 0 {

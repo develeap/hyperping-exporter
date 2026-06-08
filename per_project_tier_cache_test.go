@@ -315,3 +315,37 @@ func TestPerProjectTierCache_StartupLogIncludesEffectiveConfig(t *testing.T) {
 	assert.Contains(t, out, "cold_enabled")
 	assert.Contains(t, out, "false")
 }
+
+// TestPerProjectTierCache_UnknownNestedFieldRejected: a typo under cache:
+// (e.g. cache.icyTTL: 1h) is currently silently dropped by tolerant YAML
+// decoding. Operators get no warning, only "why is my override not taking
+// effect?" hours later. The projects-file decode path is strict
+// (KnownFields(true)) so the typo surfaces at boot with a clear error
+// message naming the offending field.
+func TestPerProjectTierCache_UnknownNestedFieldRejected(t *testing.T) {
+	body := `
+- id: hyp_infra
+  apiKey: a
+  cache:
+    icyTTL: 1h
+`
+	_, stderr, ok := loadCacheFixture(t, body)
+	assert.False(t, ok, "unknown field under cache: must be a fatal config error")
+	assert.Contains(t, stderr, "icyTTL",
+		"error message must name the offending field so operators can locate the typo; got %q", stderr)
+}
+
+// TestPerProjectTierCache_UnknownTopLevelFieldRejected: same strict-decode
+// contract applies at the top level. A typo like excludeNamePatten under a
+// project entry must error at boot rather than silently inherit the global.
+func TestPerProjectTierCache_UnknownTopLevelFieldRejected(t *testing.T) {
+	body := `
+- id: hyp_infra
+  apiKey: a
+  excludeNamePatten: foo
+`
+	_, stderr, ok := loadCacheFixture(t, body)
+	assert.False(t, ok, "unknown top-level project field must be a fatal config error")
+	assert.Contains(t, stderr, "excludeNamePatten",
+		"error message must name the offending field; got %q", stderr)
+}
