@@ -1,0 +1,19 @@
+# Per-project cache override fixture (work item: feat/per-project-tier-cache).
+# Two projects: hyp_core inherits all globals (no cache: block), hyp_infra
+# overrides warmTTL and disables coldEnabled. The rendered projects.yaml
+# ConfigMap MUST carry hyp_infra's cache: block verbatim; hyp_core MUST
+# render exactly as it did before the cache: feature shipped (no orphan
+# `cache: null`, no empty map).
+config:
+  cacheMode: tiered
+  hotTTL: "60s"
+  warmTTL: "5m"
+  coldTTL: "15m"
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core
+    - id: hyp_infra
+      existingSecret: hp-infra
+      cache:
+        warmTTL: "30m"
+        coldEnabled: false
