@@ -215,6 +215,123 @@ func labelValue(m *dto.Metric, name string) string {
 	return ""
 }
 
+// TestMultiPeriod_DisabledColdTierWithMappedPeriods_NoOrphanSeries pins
+// the F5.2 behaviour: a project with cache.coldEnabled: false AND a
+// periods list that includes cold-mapped windows (7d/30d) must emit ONLY
+// the warm-mapped 24h series for each period-bearing metric. Cold-mapped
+// periods are silently skipped on the emission path because the cold
+// refresher never published a snapshot (the goroutine never started, see
+// tieredRefresher.start), so snap.reports[7d|30d] are absent and
+// emitReportMetrics's inner loop naturally no-ops.
+//
+// The test asserts:
+//   - No panic on the cold-disabled path (the stitcher tolerates a nil
+//     cold pointer; the period fan-out loop tolerates an absent reports key).
+//   - No orphan 7d / 30d series on any of the period-bearing families.
+//   - The warm-mapped 24h series IS present on each family.
+//   - The data_age_seconds metric carries NO cold-tier series (the cold
+//     refresher never ran, so snap.dataAges["cold"] is unset).
+func TestMultiPeriod_DisabledColdTierWithMappedPeriods_NoOrphanSeries(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+		reports: []hyperping.MonitorReport{
+			{UUID: "mon_1", Name: "Web", SLA: 99.5, MTTR: 60,
+				Outages: hyperping.OutageStats{Count: 1, TotalDowntime: 60, LongestOutage: 60}},
+		},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	// Multi-period config: 24h (warm-mapped) + 7d + 30d (cold-mapped). Cold
+	// tier is disabled, so the 7d/30d windows have no data source and must
+	// emit zero series; only the 24h slice (sourced from WARM) survives.
+	c := NewCollector(api, nil, 60*time.Second, newTestLogger(), "hyperping",
+		WithCacheMode(CacheModeTiered),
+		WithTierTTLs(30*time.Millisecond, 60*time.Millisecond, 120*time.Millisecond),
+		WithTierEnable(true, true, false),
+		WithPeriods([]string{"24h", "7d", "30d"}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.Start(ctx)
+		close(done)
+	}()
+	require.Eventually(t, c.IsReady, time.Second, 5*time.Millisecond,
+		"HOT must latch readiness even with COLD disabled")
+	// Wait for WARM to publish at least one report so 24h series are populated.
+	require.Eventually(t, func() bool {
+		reg := prometheus.NewRegistry()
+		if err := reg.Register(c); err != nil {
+			return false
+		}
+		mfs, _ := reg.Gather()
+		for _, mf := range mfs {
+			if mf.GetName() != "hyperping_monitor_sla_ratio" {
+				continue
+			}
+			if len(mf.GetMetric()) > 0 {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "WARM must publish a 24h SLA series within 2s")
+	cancel()
+	<-done
+
+	reg := prometheus.NewRegistry()
+	require.NoError(t, reg.Register(c))
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	// Period-bearing families that must show zero cold-mapped series and at
+	// least one warm-mapped (24h) series. The mtta family is intentionally
+	// excluded from this strict check: the warm-tier MCP path populates
+	// mttaIndex (the 24h source) only when mcp is non-nil; this test's
+	// Collector has mcp=nil so the family will be absent entirely. The
+	// other families flow from the warm-tier report payload which IS
+	// populated above.
+	periodFamilies := []string{
+		"hyperping_monitor_sla_ratio",
+		"hyperping_monitor_downtime_seconds",
+		"hyperping_monitor_outages",
+		"hyperping_monitor_longest_outage_seconds",
+		"hyperping_monitor_mttr_seconds",
+		"hyperping_tenant_avg_sla_ratio",
+	}
+	familySeen := map[string]map[string]int{} // family -> period -> count
+	for _, mf := range mfs {
+		name := mf.GetName()
+		if familySeen[name] == nil {
+			familySeen[name] = map[string]int{}
+		}
+		for _, m := range mf.GetMetric() {
+			familySeen[name][labelValue(m, "period")]++
+		}
+	}
+
+	for _, fam := range periodFamilies {
+		assert.Greater(t, familySeen[fam]["24h"], 0,
+			"%s must emit at least one period=24h series (warm-mapped, source: WARM tier)", fam)
+		assert.Equal(t, 0, familySeen[fam]["7d"],
+			"%s must emit ZERO period=7d series when cold tier is disabled; got %d", fam, familySeen[fam]["7d"])
+		assert.Equal(t, 0, familySeen[fam]["30d"],
+			"%s must emit ZERO period=30d series when cold tier is disabled; got %d", fam, familySeen[fam]["30d"])
+	}
+
+	// data_age_seconds must not carry a cold-tier series (cold goroutine
+	// never ran). Hot and warm tiers are valid.
+	for _, mf := range mfs {
+		if mf.GetName() != "hyperping_data_age_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			tier := labelValue(m, "tier")
+			assert.NotEqual(t, "cold", tier,
+				"data_age_seconds must NOT carry a cold-tier series when cold is disabled; got %v", m)
+		}
+	}
+}
+
 // TestRegistry_DefaultConfigDescSetParity is the v1.8.0 registry-surface
 // regression guard. For the default config (WithPeriods unset is the
 // chart-1.7.x behaviour; the loader collapses to ["24h"]) the Prometheus
