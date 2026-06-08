@@ -152,6 +152,79 @@ tracks alongside this release.
 > project id, **not** `All` or `.*`. The latter silently includes drill
 > or staging series in headline numbers.
 
+### Per-project cache tier overrides
+
+When `--cache-mode=tiered` is set, the global `--hot-ttl` / `--warm-ttl`
+/ `--cold-ttl` flags define the default refresh intervals applied to
+every project. Some workloads want different settings per project: the
+core production tenant may want HOT refreshes every 30s while a noisy
+third-party tenant only needs SLA snapshots every few hours. The
+projects file accepts an optional `cache:` block on any entry that
+overrides any subset of the global tier knobs for that project:
+
+```yaml
+- id: hyp_core
+  apiKeyFile: /etc/hyperping/api-key-hyp_core
+  # No cache: block — inherits every global tier setting verbatim.
+
+- id: hyp_infra
+  apiKeyFile: /etc/hyperping/api-key-hyp_infra
+  cache:
+    warmTTL: 30m   # Override only WARM; hot/cold inherit the globals.
+    coldTTL: 2h
+
+- id: hyp_thirdparty
+  apiKeyFile: /etc/hyperping/api-key-hyp_thirdparty
+  cache:
+    warmEnabled: false   # Skip WARM ticker entirely on this project.
+    coldEnabled: false   # Skip COLD ticker entirely on this project.
+```
+
+Fields are all optional; absent keys inherit the corresponding global.
+TTL values are Go duration strings (`60s`, `30m`, `2h`); enable flags
+are bools.
+
+Semantics:
+
+- `<tier>TTL`: overrides the matching global TTL for this project only.
+- `<tier>Enabled: false`: skips that tier's ticker for this project.
+  No API calls land for that tier, and no series for that tier appear
+  on the project's `/metrics` output. The other tiers and other
+  projects are untouched.
+- `hotEnabled: false` is rejected at startup: HOT carries every
+  per-monitor up/down series and is the readiness gate, so disabling
+  it produces a Pod that never readies and never scrapes.
+- `<tier>TTL` set alongside `<tier>Enabled: false` is accepted with a
+  startup warning. The enable flag wins; the TTL is ignored. Operators
+  using config-merging tooling (overlays, patches) can land in this
+  state during a rollout; we surface it instead of failing the boot.
+
+At startup the binary emits one structured log line per project
+showing the effective tier configuration after override resolution:
+
+```
+level=INFO msg="effective tier configuration" project=hyp_infra hot_ttl=1m0s warm_ttl=30m0s cold_ttl=2h0m0s hot_enabled=true warm_enabled=true cold_enabled=true
+```
+
+For dashboards, a new self-metric distinguishes "tier disabled by
+operator" from "tier broken / no data":
+
+```
+hyperping_exporter_tier_disabled{project="hyp_thirdparty",tier="warm"} 1
+hyperping_exporter_tier_disabled{project="hyp_thirdparty",tier="cold"} 1
+```
+
+The series is absence-based: only disabled (project, tier) pairs emit
+a sample. A no-override config produces zero series here, and an
+upgrade with no `cache:` blocks anywhere adds zero new series to the
+registry.
+
+A config with no `cache:` blocks anywhere produces byte-identical
+behaviour to chart 1.6.x: same effective TTLs, same API call volume,
+same series. The Helm chart's `config.projects[*].cache` knob passes
+the block through to the rendered projects file verbatim; see
+`deploy/helm/hyperping-exporter/values.yaml` for the schema.
+
 ---
 
 ## Available metrics
