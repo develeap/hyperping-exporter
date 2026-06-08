@@ -423,6 +423,23 @@ func validateProjectsCacheBlocks(projects []projectConfig, stderr io.Writer) err
 		if p.Cache.HotEnabled != nil && !*p.Cache.HotEnabled {
 			return fmt.Errorf("--projects-file: project %q has cache.hotEnabled: false; HOT must remain enabled because /readyz and every per-monitor up/down series depend on it. Set hotEnabled to true or remove the field", p.ID)
 		}
+		// Reject non-positive per-project TTLs at parse time. time.NewTicker
+		// panics on d <= 0, so a project with cache.warmTTL: "0s" would
+		// crash the binary the moment its WARM goroutine starts. The Helm
+		// chart's validateTierTTLs guards the global tier TTLs but does NOT
+		// recurse into the per-project cache: block (a chart change to do
+		// so would couple validateTierTTLs to the projects schema and we
+		// prefer the binary to own this contract). Enforce it here so a
+		// raw --projects-file (no chart) is also safe.
+		if p.Cache.HotTTL != nil && *p.Cache.HotTTL <= 0 {
+			return fmt.Errorf("--projects-file: project %q has cache.hotTTL %s; must be > 0 (time.NewTicker panics on non-positive durations)", p.ID, *p.Cache.HotTTL)
+		}
+		if p.Cache.WarmTTL != nil && *p.Cache.WarmTTL <= 0 {
+			return fmt.Errorf("--projects-file: project %q has cache.warmTTL %s; must be > 0 (time.NewTicker panics on non-positive durations)", p.ID, *p.Cache.WarmTTL)
+		}
+		if p.Cache.ColdTTL != nil && *p.Cache.ColdTTL <= 0 {
+			return fmt.Errorf("--projects-file: project %q has cache.coldTTL %s; must be > 0 (time.NewTicker panics on non-positive durations)", p.ID, *p.Cache.ColdTTL)
+		}
 		if p.Cache.WarmEnabled != nil && !*p.Cache.WarmEnabled && p.Cache.WarmTTL != nil {
 			_, _ = fmt.Fprintf(stderr, "warning: --projects-file project %q sets cache.warmTTL alongside cache.warmEnabled: false; the TTL is ignored (enabled wins). Remove warmTTL to silence this warning.\n", p.ID)
 		}

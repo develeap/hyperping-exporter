@@ -244,6 +244,42 @@ func TestPerProjectTierCache_BackwardCompat_NoCacheBlockAnywhere(t *testing.T) {
 	}
 }
 
+// TestPerProjectTierCache_RejectsNonPositiveTTL: time.NewTicker panics
+// on d <= 0, so a cache.warmTTL: 0s would crash the binary when the WARM
+// goroutine launches. The parser must reject non-positive per-project
+// TTLs at config load. Covers hot/warm/cold for symmetry.
+func TestPerProjectTierCache_RejectsNonPositiveTTL(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		field string
+	}{
+		{
+			name:  "hotTTL zero",
+			body:  "- id: p\n  apiKey: k\n  cache:\n    hotTTL: 0s\n",
+			field: "hotTTL",
+		},
+		{
+			name:  "warmTTL zero",
+			body:  "- id: p\n  apiKey: k\n  cache:\n    warmTTL: 0s\n",
+			field: "warmTTL",
+		},
+		{
+			name:  "coldTTL negative",
+			body:  "- id: p\n  apiKey: k\n  cache:\n    coldTTL: -5m\n",
+			field: "coldTTL",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr, ok := loadCacheFixture(t, tc.body)
+			assert.False(t, ok, "non-positive %s must be a fatal config error", tc.field)
+			assert.Contains(t, stderr, tc.field,
+				"error message must name the offending field; got %q", stderr)
+		})
+	}
+}
+
 // TestPerProjectTierCache_StartupLogIncludesEffectiveConfig: D4 contract.
 // run() emits a structured log line per project showing the effective TTLs
 // and enable flags so operators can verify what's running without reading
