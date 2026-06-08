@@ -274,9 +274,25 @@ MCP call is issued for MTTR fan-out.
 The `hyperping_data_age_seconds` self-metric gains a `period` label
 alongside the existing `tier` label so operators can write
 `max(data_age_seconds{period="30d"})` to see the freshness of a
-specific window's source data. The legacy `{tier=X}` series is dual
-emitted with `period=""` so existing PromQL selectors continue to match
-via Prometheus subset semantics.
+specific window's source data. The label scheme in v1.8.0:
+
+- HOT tier (legacy single-refresh ticker, or the tiered HOT tier that
+  serves up/down state) has no window and emits one series with
+  `period=""`.
+- WARM and COLD tiers emit one series per configured period that maps
+  to them (24h -> warm; 7d/30d/90d/365d -> cold). No empty-period
+  legacy series is emitted for these tiers.
+
+PromQL migration from 1.7.x:
+
+```
+# before
+sum(data_age_seconds{tier="warm"})
+# after: still works; counts the period(s) mapped to warm
+sum(data_age_seconds{tier="warm"})
+# explicit per-period query (new)
+data_age_seconds{tier="warm", period="24h"}
+```
 
 The `hyperping_monitor_mtta_seconds` metric gains a `period` label in
 v1.8.0; series identity for this metric is therefore different from

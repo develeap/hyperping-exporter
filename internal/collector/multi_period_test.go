@@ -92,17 +92,15 @@ func TestMtta_PeriodLabelOnAllSeries(t *testing.T) {
 	assert.True(t, seenMtta, "expected at least one mtta_seconds series")
 }
 
-// TestDataAge_DualLabelEmission asserts the dual-emission scheme: for
-// every tier with a non-zero data-age, one legacy series with period=""
-// (subset-matched by pre-1.8 selectors) PLUS one series per configured
-// period mapped to that tier.
+// TestDataAge_SingleSeriesPerTierPeriod asserts the v1.8.0 single-emit
+// scheme: HOT tier emits exactly one series with period="" (no window),
+// warm/cold tiers emit one series per configured period that maps to
+// them, and no legacy empty-period series is emitted for warm/cold.
 //
 // Test uses the legacy refresh path (CacheModeLegacy is the default for
-// NewCollector). The dataAges map population in the legacy path is
-// internal; we exercise it indirectly by calling Refresh and then
-// gathering the registry to inspect the series Prometheus would actually
-// scrape.
-func TestDataAge_DualLabelEmission(t *testing.T) {
+// NewCollector). Legacy populates only "hot" in dataAges, so the
+// expected series set is exactly {tier="hot", period=""}.
+func TestDataAge_SingleSeriesPerTierPeriod(t *testing.T) {
 	api := &mockAPI{
 		monitors: []hyperping.Monitor{
 			{UUID: "mon_1", Name: "Web", Status: "up"},
@@ -131,13 +129,77 @@ func TestDataAge_DualLabelEmission(t *testing.T) {
 			})
 		}
 	}
-	// Legacy mode populates only "hot" in dataAges, so expect two
-	// series: {tier=hot, period=""} (legacy form) and no period-mapped
-	// series (no cold/warm-mapped period in the configured ["24h"] is
-	// "hot"; the 24h period maps to warm, but legacy mode has no warm
-	// tier so it's omitted).
-	assert.Contains(t, seen, pair{tier: "hot", period: ""},
-		"legacy {tier=hot} series must still be emitted")
+	// Legacy populates only "hot" so we expect exactly one series.
+	assert.ElementsMatch(t, []pair{{tier: "hot", period: ""}}, seen,
+		"legacy mode must emit exactly one data_age series: {tier=hot, period=\"\"}")
+}
+
+// TestDataAge_NoOrphanEmptyPeriodForWarmCold asserts that for the default
+// `periods=["24h"]`, neither warm nor cold tier emits an empty-period
+// legacy series. The fix in v1.8.0 removes the dual-emission that caused
+// `sum(data_age_seconds{tier="warm"})` to silently double-count.
+func TestDataAge_NoOrphanEmptyPeriodForWarmCold(t *testing.T) {
+	api := &mockAPI{
+		monitors:     []hyperping.Monitor{{UUID: "mon_1", Name: "Web", Status: "up"}},
+		healthchecks: []hyperping.Healthcheck{},
+	}
+	c := newTieredCollectorForTest(api, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.Start(ctx)
+		close(done)
+	}()
+	require.Eventually(t, c.IsReady, time.Second, 5*time.Millisecond)
+	// Drive the warm + cold tier ticks by waiting a moment for the test
+	// refresher to publish; tiered_test uses sub-second TTLs so this is
+	// fast in practice.
+	require.Eventually(t, func() bool {
+		reg := prometheus.NewRegistry()
+		if err := reg.Register(c); err != nil {
+			return false
+		}
+		mfs, _ := reg.Gather()
+		for _, mf := range mfs {
+			if mf.GetName() != "hyperping_data_age_seconds" {
+				continue
+			}
+			for _, m := range mf.GetMetric() {
+				if labelValue(m, "tier") == "warm" {
+					return true
+				}
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "warm tier must publish data_age within 2s")
+	cancel()
+	<-done
+
+	reg := prometheus.NewRegistry()
+	require.NoError(t, reg.Register(c))
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	type pair struct{ tier, period string }
+	var warmSeries []pair
+	for _, mf := range mfs {
+		if mf.GetName() != "hyperping_data_age_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			tier := labelValue(m, "tier")
+			if tier != "warm" {
+				continue
+			}
+			warmSeries = append(warmSeries, pair{tier: tier, period: labelValue(m, "period")})
+		}
+	}
+	// Default test config has periods=["24h"] (warm-mapped). Expect
+	// exactly one warm series labeled period="24h", and ZERO with
+	// period="". This guards against the dual-emit regression.
+	assert.ElementsMatch(t, []pair{{tier: "warm", period: "24h"}}, warmSeries,
+		"warm tier must emit exactly one {period=24h} series and NO orphan {period=\"\"} series")
 }
 
 // labelValue returns the named label's value from a dto.Metric, or "" if

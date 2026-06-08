@@ -53,14 +53,30 @@ All notable changes to this project will be documented in this file.
   `period="24h"` (or omit the explicit period to match the full
   fan-out) during this rollout. Grafana panels keyed on this metric
   should be reviewed.
-- `hyperping_data_age_seconds` gains a `period` label alongside the
-  existing `tier` label. Backward compat is preserved via dual
-  emission: every legacy `{tier=X}` series is still emitted with
-  `period=""` (so existing PromQL like `data_age_seconds{tier="warm"}`
-  continues to match via Prometheus subset semantics), plus one series
-  per `(tier, period)` for each configured period that maps to that
-  tier. Operators wanting strict pre-1.8 series-set equality can
-  match `{period=""}`.
+- BREAKING (label scheme): `hyperping_data_age_seconds` gains a
+  `period` label alongside the existing `tier` label and switches to a
+  single-emit scheme per (tier, period) pair. The HOT tier carries no
+  window and continues to emit one series with `period=""`. The WARM
+  and COLD tiers now emit one series per configured period that maps
+  to them (24h -> warm; 7d/30d/90d/365d -> cold) and NO empty-period
+  legacy series. PromQL migration:
+
+  ```
+  # before (chart 1.7.x)
+  sum(data_age_seconds{tier="warm"})
+  # after (chart 1.8.0): still works; counts the period(s) mapped to warm
+  sum(data_age_seconds{tier="warm"})
+  # explicit per-period query
+  data_age_seconds{tier="warm", period="24h"}
+  ```
+
+  An aggregation like `sum(data_age_seconds{tier="warm"})` returns the
+  same scalar as pre-1.8 for the default `periods=["24h"]` (one warm
+  series), and the sum across configured periods for multi-period
+  configs (which is the natural "tier-level age" answer). Prior to
+  this release the v1.8.0 draft dual-emitted a legacy empty-period
+  series alongside the new per-period series, which silently
+  double-counted under `sum`; that behaviour has been removed.
 - `github.com/develeap/hyperping-go` pinned to v0.7.0 (was v0.6.3).
   Beyond the silent-zero MTTA fix, this release adds canonical
   windowed signatures `func (c *MCPClient) GetMonitorXxx(ctx, from,

@@ -277,13 +277,14 @@ func newCollectorDescs(ns, project string) collectorDescs {
 		scrapeSuccessDesc:         prometheus.NewDesc(fqn(ns, "scrape", "success"), "Whether the last API scrape succeeded (1) or failed (0).", nil, cl),
 		dataAgeDesc: prometheus.NewDesc(
 			fqn(ns, "data", "age_seconds"),
-			"Seconds elapsed since the last successful API cache refresh, labelled by tier. "+
-				"In legacy mode only `tier=\"hot\"` is emitted (matches the pre-tiered single-ticker semantics). "+
-				"In tiered mode each of `hot`/`warm`/`cold` is emitted as a separate series. "+
-				"v1.8.0 adds an extra `period` label so multi-period operators can write "+
-				"`max(data_age_seconds{period=\"30d\"})`-style queries. The legacy `{tier=...}` "+
-				"series is preserved as `{tier=..., period=\"\"}` (empty period label) so existing "+
-				"selectors like `data_age_seconds{tier=\"warm\"}` continue to match.",
+			"Seconds elapsed since the last successful API cache refresh, labelled by tier and period. "+
+				"In legacy mode and tiered-mode hot tier (which serve data without a window) the series "+
+				"is emitted once per active tier with `period=\"\"`. For warm and cold tiers the metric "+
+				"is emitted once per configured period that maps to the tier (24h -> warm; 7d/30d/90d/365d "+
+				"-> cold), so operators can write `max(data_age_seconds{period=\"30d\"})`-style queries. "+
+				"v1.8.0 BREAKING: the prior empty-period legacy series for warm/cold tiers has been "+
+				"removed; aggregations like `sum(data_age_seconds{tier=\"warm\"})` now sum across the "+
+				"configured periods mapped to that tier instead of double-counting a legacy series.",
 			[]string{"tier", "period"}, cl,
 		),
 		monitorOutageActive:       prometheus.NewDesc(fqn(ns, "monitor", "outage_active"), "Whether the monitor has an active (unresolved) outage (1) or not (0).", ml, cl),
@@ -1286,23 +1287,34 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	ch <- prometheus.MustNewConstMetric(c.scrapeSuccessDesc, prometheus.GaugeValue,
 		boolToFloat64(snap.scrapeOK))
 
-	// OPS-31: data age, labelled by tier. Tier order is fixed for stable
-	// scrape ordering across ticks; tiers with no prior success are omitted
-	// so the metric continues to mean "elapsed since last success".
+	// OPS-31: data age, labelled by tier and period. Tier order is fixed
+	// for stable scrape ordering across ticks; tiers with no prior success
+	// are omitted so the metric continues to mean "elapsed since last
+	// success".
 	//
-	// v1.8.0: the Desc now carries (tier, period) labels. We emit:
-	//   - One legacy series per tier with period="" (subset-matching
-	//     preserves pre-1.8 PromQL selectors that didn't reference period).
-	//   - One additional series per (tier, period) for every configured
-	//     period that maps to this tier, sharing the tier's age value.
-	//     This lets operators write `data_age_seconds{period="30d"}` to
-	//     see the freshness of a specific window's source data.
+	// v1.8.0: the Desc carries (tier, period) labels. Emission scheme:
+	//   - HOT tier (legacy single-refresh ticker, or the tiered HOT tier
+	//     that serves monitors/healthchecks/outages) has no window; it is
+	//     emitted once with `period=""` to retain pre-1.8 observability of
+	//     up/down freshness.
+	//   - WARM and COLD tiers serve report data tied to a window; one
+	//     series is emitted per configured period whose PeriodTier maps
+	//     to the tier. No empty-period legacy series is emitted for these
+	//     tiers; aggregations like `sum(data_age_seconds{tier="warm"})`
+	//     now sum across periods mapped to warm (1 series for the default
+	//     `periods=["24h"]`, N series for multi-period configs) instead of
+	//     double-counting a legacy empty-period series.
 	for _, tier := range []string{"hot", "warm", "cold"} {
 		age, ok := snap.dataAges[tier]
 		if !ok || age <= 0 {
 			continue
 		}
-		ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier, "")
+		if tier == "hot" {
+			// HOT carries no window; one series with period="" preserves
+			// pre-1.8 `data_age_seconds{tier="hot"}` selectors.
+			ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier, "")
+			continue
+		}
 		for _, period := range c.periods {
 			if PeriodTier(period) != tier {
 				continue
