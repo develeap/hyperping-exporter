@@ -43,13 +43,12 @@ func TestTieredRefresher_WarmDisabledSkipsAPI(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 	tr := &tieredRefresher{
-		api:         api,
-		logger:      newTestLogger(),
-		hotTTL:      10 * time.Millisecond,
-		warmTTL:     10 * time.Millisecond,
-		coldTTL:     1 * time.Hour, // suppress COLD ticks so the test isolates WARM
-		warmEnabled: false,
-		coldEnabled: true,
+		api:          api,
+		logger:       newTestLogger(),
+		hotTTL:       10 * time.Millisecond,
+		warmTTL:      10 * time.Millisecond,
+		coldTTL:      1 * time.Hour, // suppress COLD ticks so the test isolates WARM
+		warmDisabled: true,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -66,7 +65,7 @@ func TestTieredRefresher_WarmDisabledSkipsAPI(t *testing.T) {
 		"WARM disabled must yield zero ListMonitorReports calls; got %d", api.reportsCalls.Load())
 	// The WARM snapshot pointer must remain nil because no successful
 	// WARM refresh ever ran.
-	assert.Nil(t, tr.warm.Load(), "WARM snapshot must remain nil when warmEnabled=false")
+	assert.Nil(t, tr.warm.Load(), "WARM snapshot must remain nil when warmDisabled=true")
 }
 
 // TestTieredRefresher_ColdDisabledSkipsAPI mirrors the warm-disabled case
@@ -78,13 +77,12 @@ func TestTieredRefresher_ColdDisabledSkipsAPI(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 	tr := &tieredRefresher{
-		api:         api,
-		logger:      newTestLogger(),
-		hotTTL:      10 * time.Millisecond,
-		warmTTL:     1 * time.Hour, // suppress WARM ticks so the test isolates COLD
-		coldTTL:     10 * time.Millisecond,
-		warmEnabled: true,
-		coldEnabled: false,
+		api:          api,
+		logger:       newTestLogger(),
+		hotTTL:       10 * time.Millisecond,
+		warmTTL:      1 * time.Hour, // suppress WARM ticks so the test isolates COLD
+		coldTTL:      10 * time.Millisecond,
+		coldDisabled: true,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -106,13 +104,13 @@ func TestTieredRefresher_BothWarmAndColdDisabled(t *testing.T) {
 		healthchecks: []hyperping.Healthcheck{},
 	}
 	tr := &tieredRefresher{
-		api:         api,
-		logger:      newTestLogger(),
-		hotTTL:      10 * time.Millisecond,
-		warmTTL:     10 * time.Millisecond,
-		coldTTL:     10 * time.Millisecond,
-		warmEnabled: false,
-		coldEnabled: false,
+		api:          api,
+		logger:       newTestLogger(),
+		hotTTL:       10 * time.Millisecond,
+		warmTTL:      10 * time.Millisecond,
+		coldTTL:      10 * time.Millisecond,
+		warmDisabled: true,
+		coldDisabled: true,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
@@ -154,9 +152,9 @@ func TestWithTierEnable_PlumbsFlagsIntoRefresher(t *testing.T) {
 		WithTierEnable(true, false, true),
 	)
 	require.NotNil(t, c.tiered, "tiered refresher must be constructed in tiered mode")
-	assert.True(t, c.tiered.hotEnabled, "hot is always enabled")
-	assert.False(t, c.tiered.warmEnabled, "warm flag must propagate from option")
-	assert.True(t, c.tiered.coldEnabled, "cold flag must propagate from option")
+	assert.False(t, c.tiered.hotDisabled, "hot is always enabled")
+	assert.True(t, c.tiered.warmDisabled, "warm flag must propagate from option (enabled=false -> disabled=true)")
+	assert.False(t, c.tiered.coldDisabled, "cold flag must propagate from option")
 }
 
 // TestWithTierEnable_DefaultsAllEnabled: a Collector built without
@@ -170,7 +168,7 @@ func TestWithTierEnable_DefaultsAllEnabled(t *testing.T) {
 		WithTierTTLs(60*time.Second, 5*time.Minute, 15*time.Minute),
 	)
 	require.NotNil(t, c.tiered)
-	assert.True(t, c.tiered.hotEnabled, "default must be all-enabled (HOT)")
-	assert.True(t, c.tiered.warmEnabled, "default must be all-enabled (WARM)")
-	assert.True(t, c.tiered.coldEnabled, "default must be all-enabled (COLD)")
+	assert.False(t, c.tiered.hotDisabled, "default must be all-enabled (HOT)")
+	assert.False(t, c.tiered.warmDisabled, "default must be all-enabled (WARM)")
+	assert.False(t, c.tiered.coldDisabled, "default must be all-enabled (COLD)")
 }

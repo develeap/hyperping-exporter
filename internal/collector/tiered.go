@@ -33,6 +33,20 @@ type tieredRefresher struct {
 	warmTTL time.Duration
 	coldTTL time.Duration
 
+	// Per-tier disable flags. Zero-value (false, false, false) means
+	// "all enabled", which is the backward-compat default for callers
+	// that construct tieredRefresher{} literals without populating these
+	// fields (notably the existing collector tests). main.parseConfig
+	// flips warmDisabled/coldDisabled to true for a project whose
+	// cache: block sets the corresponding <tier>Enabled: false. A
+	// disabled tier launches no goroutine in start, performs zero API
+	// calls, and leaves its snapshot pointer nil. HOT must remain
+	// enabled (enforced upstream at parse time); hotDisabled is carried
+	// for symmetry but is always false in normal operation.
+	hotDisabled  bool
+	warmDisabled bool
+	coldDisabled bool
+
 	hot  atomic.Pointer[hotSnapshot]
 	warm atomic.Pointer[warmSnapshot]
 	cold atomic.Pointer[coldSnapshot]
@@ -71,54 +85,67 @@ func (t *tieredRefresher) start(ctx context.Context) {
 	// snapshot or ctx is cancelled. This mirrors the legacy Collector.Start
 	// behaviour (Refresh runs once before the ticker) so /readyz semantics
 	// stay the same: ready latches as soon as the first HOT succeeds.
-	initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
-	t.refreshHot(initCtx)
-	cancelInit()
+	if !t.hotDisabled {
+		initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
+		t.refreshHot(initCtx)
+		cancelInit()
+	}
 
 	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go func() {
-		defer wg.Done()
-		ticker := time.NewTicker(t.hotTTL)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				t.refreshHot(ctx)
+	// Only launch a goroutine per enabled tier. A disabled tier issues
+	// zero API calls and leaves its snapshot pointer at nil; the
+	// stitcher in buildCollectorSnapshot already tolerates a nil
+	// pointer so the read path needs no further change.
+	if !t.hotDisabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(t.hotTTL)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					t.refreshHot(ctx)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
-	go func() {
-		defer wg.Done()
-		ticker := time.NewTicker(t.warmTTL)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				t.refreshWarm(ctx)
+	if !t.warmDisabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(t.warmTTL)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					t.refreshWarm(ctx)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
-	go func() {
-		defer wg.Done()
-		ticker := time.NewTicker(t.coldTTL)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				t.refreshCold(ctx)
+	if !t.coldDisabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(t.coldTTL)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					t.refreshCold(ctx)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	wg.Wait()
 }
@@ -138,6 +165,11 @@ func newTieredRefresher(c *Collector, hotTTL, warmTTL, coldTTL time.Duration) *t
 		hotTTL:         hotTTL,
 		warmTTL:        warmTTL,
 		coldTTL:        coldTTL,
+		// Default *Disabled to zero (i.e. all tiers enabled). NewCollector
+		// flips warm/cold *Disabled to true only when the Collector's
+		// WithTierEnable option set the corresponding *Enabled flag to
+		// false. Test callers that construct tieredRefresher{} literals
+		// inherit the zero-value "all enabled" default from Go.
 	}
 }
 
