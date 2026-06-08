@@ -1503,8 +1503,19 @@ func (m *mockMCPTransport) CallTool(ctx context.Context, toolName string, args m
 	if err, ok := m.errors[toolName]; ok {
 		return nil, err
 	}
-	if toolName == "get_monitor_response_time" || toolName == "get_monitor_mtta" || toolName == "get_monitor_anomalies" {
-		uuid := args["uuid"].(string)
+	// v0.7.0 changed the per-monitor windowed tools to take
+	// monitor_uuids ([]string). get_monitor_anomalies still takes a
+	// single "uuid" string.
+	switch toolName {
+	case "get_monitor_response_time", "get_monitor_mtta", "get_monitor_mttr", "get_monitor_uptime":
+		raw, ok := args["monitor_uuids"].([]string)
+		if !ok || len(raw) == 0 {
+			return m.results[toolName], nil
+		}
+		key := toolName + ":" + raw[0]
+		return m.results[key], nil
+	case "get_monitor_anomalies":
+		uuid, _ := args["uuid"].(string)
 		key := toolName + ":" + uuid
 		return m.results[key], nil
 	}
@@ -1522,8 +1533,8 @@ func TestCollect_McpMetrics(t *testing.T) {
 	transport := &mockMCPTransport{
 		results: map[string]any{
 			"list_recent_alerts": map[string]any{"total": 42},
-			"get_monitor_response_time:mon_1": map[string]any{"uuid": "mon_1", "avg": 0.123},
-			"get_monitor_mtta:mon_1":         map[string]any{"uuid": "mon_1", "avg_wait": 45.0},
+			"get_monitor_response_time:mon_1": map[string]any{"avgResponseTime": 0.123},
+			"get_monitor_mtta:mon_1":         map[string]any{"mtta": 45.0},
 			"get_monitor_anomalies:mon_1":    map[string]any{"anomalies": []any{
 				map[string]any{"uuid": "a1", "score": 0.8},
 				map[string]any{"uuid": "a2", "score": 0.95},

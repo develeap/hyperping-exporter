@@ -646,13 +646,18 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 					uuid := m.UUID
 
 					// 1. Response Time
+					//
+					// v0.7.0 BREAKING: GetMonitorResponseTime now takes
+					// (ctx, from, to, uuids...). Preserve legacy behaviour by
+					// passing a 24h window centered on now and a single uuid.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-						report, err := c.mcp.GetMonitorResponseTime(opCtx, uuid)
+						now := time.Now().UTC()
+						report, err := c.mcp.GetMonitorResponseTime(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
 							mu.Lock()
-							res.responseTime[uuid] = report.Avg
+							res.responseTime[uuid] = report.AvgResponseTime
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
@@ -663,13 +668,20 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 					}
 
 					// 2. MTTA
+					//
+					// v0.7.0 BREAKING: GetMonitorMtta now takes
+					// (ctx, from, to, uuids...). Preserve legacy behaviour by
+					// passing a 24h window. The pre-v0.7.0 call silently
+					// decoded into zero values; this exporter therefore
+					// emitted mtta_seconds=0 for every monitor for months.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-						report, err := c.mcp.GetMonitorMtta(opCtx, uuid)
+						now := time.Now().UTC()
+						report, err := c.mcp.GetMonitorMtta(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
 							mu.Lock()
-							res.mtta[uuid] = report.AvgWait
+							res.mtta[uuid] = report.Mtta
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return

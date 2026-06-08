@@ -591,13 +591,18 @@ func (t *tieredRefresher) fetchMcpDataForTier(ctx context.Context, monitors []hy
 					uuid := m.UUID
 
 					// Response time.
+					//
+					// v0.7.0 BREAKING: GetMonitorResponseTime now takes
+					// (ctx, from, to, uuids...). Preserve WARM-tier
+					// behaviour by passing a 24h window per call.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-						report, err := t.mcp.GetMonitorResponseTime(opCtx, uuid)
+						now := time.Now().UTC()
+						report, err := t.mcp.GetMonitorResponseTime(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
 							mu.Lock()
-							res.responseTime[uuid] = report.Avg
+							res.responseTime[uuid] = report.AvgResponseTime
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
@@ -608,13 +613,20 @@ func (t *tieredRefresher) fetchMcpDataForTier(ctx context.Context, monitors []hy
 					}
 
 					// MTTA.
+					//
+					// v0.7.0 BREAKING: GetMonitorMtta now takes
+					// (ctx, from, to, uuids...). Pre-v0.7.0 the old call
+					// shape silently decoded into zero values; the WARM
+					// snapshot has therefore been carrying mtta=0 for every
+					// monitor. This commit restores real values.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-						report, err := t.mcp.GetMonitorMtta(opCtx, uuid)
+						now := time.Now().UTC()
+						report, err := t.mcp.GetMonitorMtta(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
 							mu.Lock()
-							res.mtta[uuid] = report.AvgWait
+							res.mtta[uuid] = report.Mtta
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
