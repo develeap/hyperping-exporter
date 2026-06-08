@@ -13,6 +13,98 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestLogDeadPeriods_WarnsOnDisabledMappedTier covers F5.3. When a
+// project configures periods that map to a disabled tier (cache.<tier>
+// Enabled=false), the binary must emit one WARN log line per (project,
+// period) so operators chasing "why is my 7d data missing?" see the
+// dead-period mapping explicitly without cross-referencing three
+// disjoint fields by hand. Legacy mode has no tier concept and therefore
+// no dead-period condition; the function is a no-op outside tiered mode.
+func TestLogDeadPeriods_WarnsOnDisabledMappedTier(t *testing.T) {
+	bFalse := false
+	cfg := config{
+		cacheMode: "tiered",
+		projects: []projectConfig{
+			// Mixed mapping with cold disabled: 7d + 30d should warn; 24h
+			// (warm-mapped, warm enabled by default) must NOT warn.
+			{
+				ID:      "hyp_core",
+				APIKey:  "a",
+				Periods: []string{"24h", "7d", "30d"},
+				Cache:   &projectCacheOverride{ColdEnabled: &bFalse},
+			},
+			// Warm disabled with only 24h configured: must warn for 24h.
+			{
+				ID:      "hyp_warm_off",
+				APIKey:  "b",
+				Periods: []string{"24h"},
+				Cache:   &projectCacheOverride{WarmEnabled: &bFalse},
+			},
+			// All tiers enabled, multi-period: must NOT warn at all.
+			{
+				ID:      "hyp_all_on",
+				APIKey:  "c",
+				Periods: []string{"24h", "7d"},
+			},
+		},
+	}
+
+	var buf strings.Builder
+	logDeadPeriods(cfg, jsonLoggerTo(&buf))
+	out := buf.String()
+
+	// Each WARN line is a JSON object on its own line; assert per-line on
+	// the (project, period) substrings rather than parsing the JSON to keep
+	// the test independent of slog's key ordering.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if out == "" {
+		lines = nil
+	}
+	assert.Len(t, lines, 3, "expected exactly 3 WARN lines (hyp_core/7d, hyp_core/30d, hyp_warm_off/24h); got %q", out)
+
+	// Every emitted line must be at WARN level.
+	for _, line := range lines {
+		assert.Contains(t, line, `"level":"WARN"`, "every dead-period line must be WARN; got %q", line)
+	}
+
+	// hyp_core: warn for 7d (cold) + 30d (cold). Must NOT warn for 24h.
+	assert.Contains(t, out, `"project":"hyp_core"`)
+	assert.Contains(t, out, `"period":"7d"`)
+	assert.Contains(t, out, `"period":"30d"`)
+	// hyp_warm_off: warn for 24h (warm).
+	assert.Contains(t, out, `"project":"hyp_warm_off"`)
+	// hyp_all_on must never appear in the warn output.
+	assert.NotContains(t, out, `"project":"hyp_all_on"`,
+		"all-enabled project must produce no dead-period warnings; got %q", out)
+
+	// Sanity check the warning copy mentions the actionable framing.
+	assert.Contains(t, out, "disabled tier",
+		"warn message must mention the disabled-tier cause so operators can grep for it")
+}
+
+// TestLogDeadPeriods_LegacyModeNoop: dead-period semantics are a tiered-
+// mode concept (per-tier enable flags do not apply in legacy mode), so
+// logDeadPeriods must produce zero output regardless of how the periods
+// list overlaps with the disabled-tier flags.
+func TestLogDeadPeriods_LegacyModeNoop(t *testing.T) {
+	bFalse := false
+	cfg := config{
+		cacheMode: "legacy",
+		projects: []projectConfig{
+			{
+				ID:      "hyp_core",
+				APIKey:  "a",
+				Periods: []string{"24h", "7d", "30d"},
+				Cache:   &projectCacheOverride{ColdEnabled: &bFalse},
+			},
+		},
+	}
+	var buf strings.Builder
+	logDeadPeriods(cfg, jsonLoggerTo(&buf))
+	assert.Empty(t, buf.String(),
+		"logDeadPeriods must be a no-op in legacy mode; got %q", buf.String())
+}
+
 // TestResolvePeriods_Default covers the absent / empty -> ["24h"] path
 // that keeps a pre-1.8 projects-file byte-identical on the wire.
 func TestResolvePeriods_Default(t *testing.T) {

@@ -826,6 +826,7 @@ func run() int {
 	// disabled tier so dashboards can distinguish operator intent from
 	// breakage.
 	logEffectiveTierConfig(cfg, logger)
+	logDeadPeriods(cfg, logger)
 	registerTierDisabledMetric(registry, cfg)
 	mux, err := newMux(cfg.metricsPath, registry, collectors)
 	if err != nil {
@@ -1024,6 +1025,44 @@ func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
 // setupLogger.
 func jsonLoggerTo(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, nil))
+}
+
+// logDeadPeriods emits one WARN log line per (project, period) where the
+// period's mapped tier is disabled. Operators investigating "why is my 7d
+// data missing?" otherwise have to cross-reference the periods list, the
+// per-project cache: block, and the period->tier mapping by hand. The
+// hyperping_exporter_tier_disabled self-metric signals the disabled tier
+// but says nothing about which configured periods become silent
+// no-ops; this log line closes that gap explicitly.
+//
+// Only emitted when cacheMode == "tiered"; legacy mode has a single
+// refresh loop with no tier concept, so the dead-period condition cannot
+// arise there. Each warn line follows the shape:
+//
+//	WARN project=<id> period=<token> tier=<warm|cold>
+//	  "period maps to disabled tier; no series will be emitted"
+//
+// so operators can `grep` for the affected (project, period) pair when a
+// dashboard query returns empty data.
+func logDeadPeriods(cfg config, logger *slog.Logger) {
+	if cfg.cacheMode != "tiered" {
+		return
+	}
+	for _, p := range cfg.projects {
+		_, warmE, coldE := effectiveTierEnabled(p)
+		for _, period := range p.Periods {
+			tier := periodToTier(period)
+			disabled := (tier == "warm" && !warmE) || (tier == "cold" && !coldE)
+			if !disabled {
+				continue
+			}
+			logger.Warn("period maps to disabled tier; no series will be emitted for this period",
+				"project", p.ID,
+				"period", period,
+				"tier", tier,
+			)
+		}
+	}
 }
 
 // registerTierDisabledMetric publishes one
