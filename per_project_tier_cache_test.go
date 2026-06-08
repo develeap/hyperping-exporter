@@ -316,6 +316,36 @@ func TestPerProjectTierCache_StartupLogIncludesEffectiveConfig(t *testing.T) {
 	assert.Contains(t, out, "false")
 }
 
+// TestPerProjectTierCache_TTLWithEnabledFalseAllProjectsWarn: the warning
+// accumulation contract is "operator with multiple typos sees every issue
+// in one boot attempt" (D3). Two projects each set a tier TTL alongside
+// the same tier's enabled: false. validateProjectsCacheBlocks runs in a
+// single linear pass and writes one warning per project; both must appear
+// in the captured stderr.
+func TestPerProjectTierCache_TTLWithEnabledFalseAllProjectsWarn(t *testing.T) {
+	body := `
+- id: hyp_alpha
+  apiKey: a
+  cache:
+    warmEnabled: false
+    warmTTL: 30m
+- id: hyp_beta
+  apiKey: b
+  cache:
+    warmEnabled: false
+    warmTTL: 45m
+`
+	_, stderr, ok := loadCacheFixture(t, body)
+	require.True(t, ok, "TTL alongside Enabled:false must NOT fail; got stderr=%q", stderr)
+	assert.Contains(t, stderr, "hyp_alpha",
+		"warning for hyp_alpha must appear; got %q", stderr)
+	assert.Contains(t, stderr, "hyp_beta",
+		"warning for hyp_beta must appear in the same pass (consolidated, not first-only); got %q", stderr)
+	// Two warnings means the "warning" string appears at least twice.
+	assert.GreaterOrEqual(t, strings.Count(strings.ToLower(stderr), "warning"), 2,
+		"both projects must produce a warning each; got %q", stderr)
+}
+
 // TestPerProjectTierCache_UnknownNestedFieldRejected: a typo under cache:
 // (e.g. cache.icyTTL: 1h) is currently silently dropped by tolerant YAML
 // decoding. Operators get no warning, only "why is my override not taking
