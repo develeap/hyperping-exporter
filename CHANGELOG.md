@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0]
+
+### Fixed
+
+- BREAKING (silent-zero bug fix): `hyperping_monitor_mtta_seconds` was
+  emitting all-zero values for every monitor on every scrape because
+  the pre-v0.7.0 `hyperping-go` MCP client sent the wrong request-arg
+  shape and decoded into a struct the server never returned. Bumping
+  to hyperping-go v0.7.0 (canonical MCP signatures) restores real
+  windowed MTTA values. Operators upgrading from chart 1.7.x will see
+  this metric flip from 0 to its actual value at rollout; alert
+  thresholds that were tuned around the buggy 0 must be re-baselined.
+- The same v0.7.0 client correctness fix repairs three other windowed
+  MCP methods (`GetMonitorMttr`, `GetMonitorResponseTime`,
+  `GetMonitorUptime`) which were affected by the same shape mismatch.
+  The exporter only calls Mtta and ResponseTime today, so the
+  observable behaviour change is MTTA only.
+
+### Added
+
+- `config.periods` field on each `projects:` entry. Allowed tokens:
+  `"24h"`, `"7d"`, `"30d"`, `"90d"`, `"365d"`. Absent or empty list
+  defaults to `["24h"]` so a chart 1.7.x values.yaml renders
+  byte-identical projects.yaml on the wire. Period -> tier mapping is
+  fixed: `24h` is warm; `7d`, `30d`, `90d`, `365d` are cold. A period
+  whose mapped tier is disabled on the project emits no series for
+  that window (existing `hyperping_exporter_tier_disabled` self-metric
+  covers the absence semantic).
+- Period fan-out on the seven period-bearing metrics
+  (`hyperping_monitor_sla_ratio`, `_downtime_seconds`, `_outages`,
+  `_longest_outage_seconds`, `_mttr_seconds`, `_mtta_seconds`, and
+  `hyperping_tenant_avg_sla_ratio`). For configured periods mapped to
+  cold tier (7d/30d/90d/365d) the cold-tier refresher issues one
+  all-monitors MCP call per period (via v0.7.0's empty-uuids semantic)
+  rather than N-monitor fan-out, keeping the new long-window fetches
+  inside the MCP burst budget.
+- README section "Multi-period metric emission" with a copy-pastable
+  YAML example showing the full opt-in across all five periods.
+- Chart render tests covering both the present-and-set and
+  absent-key paths for `config.periods` so the byte-identical
+  backward-compat claim is mechanically enforced.
+
+### Changed
+
+- BREAKING (series identity): `hyperping_monitor_mtta_seconds` now
+  ALWAYS carries a `period` label, defaulting to `period="24h"` for
+  projects that do not opt into additional windows. PromQL selectors
+  and recording rules that referenced the unlabelled form must add
+  `period="24h"` (or omit the explicit period to match the full
+  fan-out) during this rollout. Grafana panels keyed on this metric
+  should be reviewed.
+- `hyperping_data_age_seconds` gains a `period` label alongside the
+  existing `tier` label. Backward compat is preserved via dual
+  emission: every legacy `{tier=X}` series is still emitted with
+  `period=""` (so existing PromQL like `data_age_seconds{tier="warm"}`
+  continues to match via Prometheus subset semantics), plus one series
+  per `(tier, period)` for each configured period that maps to that
+  tier. Operators wanting strict pre-1.8 series-set equality can
+  match `{period=""}`.
+- `github.com/develeap/hyperping-go` pinned to v0.7.0 (was v0.6.3).
+  Beyond the silent-zero MTTA fix, this release adds canonical
+  windowed signatures `func (c *MCPClient) GetMonitorXxx(ctx, from,
+  to, uuids ...string) (*MonitorXxxResponse, error)` and renames the
+  response types (`MttaReport` -> `MonitorMttaResponse`, etc).
+- Chart bumped to 1.8.0; appVersion 1.8.0 (binary image tag follows).
+
 ## [Unreleased]
 
 ### Added

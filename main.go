@@ -996,6 +996,13 @@ func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
 	for _, p := range cfg.projects {
 		hot, warm, cold := effectiveTierTTLs(p, cfg)
 		hotE, warmE, coldE := effectiveTierEnabled(p)
+		// v1.8.0: surface the per-project periods slice + the
+		// period->tier mapping so operators can read the effective
+		// multi-period configuration without grepping the binary.
+		periodMap := make(map[string]string, len(p.Periods))
+		for _, period := range p.Periods {
+			periodMap[period] = periodToTier(period)
+		}
 		logger.Info("effective tier configuration",
 			"project", p.ID,
 			"hot_ttl", hot.String(),
@@ -1004,6 +1011,8 @@ func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
 			"hot_enabled", hotE,
 			"warm_enabled", warmE,
 			"cold_enabled", coldE,
+			"periods", p.Periods,
+			"period_tier_mapping", periodMap,
 		)
 	}
 }
