@@ -1,0 +1,14 @@
+# Per-project cache.hotEnabled: false MUST be rejected at render time.
+# The binary refuses the same value at startup; the chart catching it
+# earlier turns a CrashLoop pod into a clear render-time error pointing
+# at the offending project.
+config:
+  cacheMode: tiered
+  hotTTL: "60s"
+  warmTTL: "5m"
+  coldTTL: "15m"
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core
+      cache:
+        hotEnabled: false

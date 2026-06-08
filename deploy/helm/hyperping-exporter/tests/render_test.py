@@ -994,6 +994,27 @@ def main() -> int:
     )
     print("PASS projects-cache-override: cache: block rendered verbatim for overriding project")
 
+    # Case PC3 — per-project cache.hotEnabled: false must abort the render
+    # so operators get the validation error at template time rather than at
+    # pod boot. The binary rejects the same value at startup; catching it
+    # here turns a CrashLoop pod into a clear render-time failure.
+    assert_fail("projects-cache-hotenabled-false-fails",
+                "projects-cache-hotenabled-false-fails.values.yaml",
+                "cache.hotEnabled: false is rejected")
+
+    # Case PC4 — per-project cache.hotTTL below the 30s floor must abort.
+    # The global validateTierTTLs enforces this on config.hotTTL but does
+    # not recurse into per-project cache: blocks; the chart loses its
+    # safety net without an explicit per-project check.
+    assert_fail("projects-cache-hot-below-floor-fails",
+                "projects-cache-hot-below-floor-fails.values.yaml",
+                "below the 30s floor")
+
+    # Case PC5 — per-project cache.coldTTL below the 300s floor must abort.
+    assert_fail("projects-cache-cold-below-floor-fails",
+                "projects-cache-cold-below-floor-fails.values.yaml",
+                "below the 300s floor")
+
     print("\nALL RENDER TESTS PASSED")
     return 0
 

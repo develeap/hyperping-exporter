@@ -157,6 +157,83 @@ shape as validateCacheTTL (Go duration parsing requires a unit).
 {{- end -}}
 
 {{/*
+validateProjectsCacheBlocks. Per-project tier override safety. Same floor
+shape and same fail() error message style as validateTierTTLs, applied to
+each entry's optional cache: block. Without this check a chart user can
+slip cache.hotTTL: "1s" past the chart's safety net (validateTierTTLs only
+inspects the global config.hotTTL/warmTTL/coldTTL) and saturate the SDK
+rate limit at boot. Also rejects hotEnabled: false at render time so the
+operator sees a clear template error instead of a CrashLoop pod when the
+binary refuses the same value at startup.
+
+Skipped entirely when cacheMode is not "tiered" (cache: blocks have no
+runtime effect in legacy mode, so render-time validation would only
+generate noise). Also skipped when config.projects is empty.
+*/}}
+{{- define "hyperping-exporter.validateProjectsCacheBlocks" -}}
+{{- $mode := .Values.config.cacheMode | default "legacy" -}}
+{{- if and (eq (lower $mode) "tiered") .Values.config.projects -}}
+{{- range $i, $p := .Values.config.projects -}}
+{{- if $p.cache -}}
+{{- $id := $p.id | default (printf "(index %d)" $i) -}}
+{{- /* hotEnabled: false is fatal in the binary; reject at render time. */ -}}
+{{- if hasKey $p.cache "hotEnabled" -}}
+{{- if not $p.cache.hotEnabled -}}
+{{- fail (printf "project %q at projects[%d]: cache.hotEnabled: false is rejected. HOT carries every per-monitor up/down series and is the readiness gate; a project with HOT disabled produces a Pod that boots, never readies, and emits no scrape. Remove the field or set hotEnabled: true." $id $i) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Per-tier TTL floors mirror validateTierTTLs (hot >= 30s, warm >= 60s, cold >= 300s). */ -}}
+{{- if hasKey $p.cache "hotTTL" -}}
+{{- $v := $p.cache.hotTTL -}}
+{{- if or (not (kindIs "string" $v)) (eq $v "") -}}
+{{- fail (printf "project %q at projects[%d]: cache.hotTTL must be a non-empty quoted Go duration string (e.g. \"60s\"); got kind %s (value %v)." $id $i (kindOf $v) $v) -}}
+{{- end -}}
+{{- $n := int (regexReplaceAll "[^0-9]" $v "") -}}
+{{- $sec := 0 -}}
+{{- if hasSuffix "h" $v }}{{- $sec = mul $n 3600 -}}
+{{- else if hasSuffix "m" $v }}{{- $sec = mul $n 60 -}}
+{{- else if hasSuffix "s" $v }}{{- $sec = $n -}}
+{{- else }}{{- fail (printf "project %q at projects[%d]: cache.hotTTL %q must end in s/m/h (e.g. \"60s\"); the binary's time.ParseDuration rejects unit-less values." $id $i $v) -}}{{- end -}}
+{{- if lt $sec 30 -}}
+{{- fail (printf "project %q at projects[%d]: cache.hotTTL %q is below the 30s floor (same floor as the global config.hotTTL; see validateTierTTLs)." $id $i $v) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $p.cache "warmTTL" -}}
+{{- $v := $p.cache.warmTTL -}}
+{{- if or (not (kindIs "string" $v)) (eq $v "") -}}
+{{- fail (printf "project %q at projects[%d]: cache.warmTTL must be a non-empty quoted Go duration string (e.g. \"5m\"); got kind %s (value %v)." $id $i (kindOf $v) $v) -}}
+{{- end -}}
+{{- $n := int (regexReplaceAll "[^0-9]" $v "") -}}
+{{- $sec := 0 -}}
+{{- if hasSuffix "h" $v }}{{- $sec = mul $n 3600 -}}
+{{- else if hasSuffix "m" $v }}{{- $sec = mul $n 60 -}}
+{{- else if hasSuffix "s" $v }}{{- $sec = $n -}}
+{{- else }}{{- fail (printf "project %q at projects[%d]: cache.warmTTL %q must end in s/m/h (e.g. \"5m\")." $id $i $v) -}}{{- end -}}
+{{- if lt $sec 60 -}}
+{{- fail (printf "project %q at projects[%d]: cache.warmTTL %q is below the 60s floor (same floor as the global config.warmTTL; see validateTierTTLs)." $id $i $v) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $p.cache "coldTTL" -}}
+{{- $v := $p.cache.coldTTL -}}
+{{- if or (not (kindIs "string" $v)) (eq $v "") -}}
+{{- fail (printf "project %q at projects[%d]: cache.coldTTL must be a non-empty quoted Go duration string (e.g. \"15m\"); got kind %s (value %v)." $id $i (kindOf $v) $v) -}}
+{{- end -}}
+{{- $n := int (regexReplaceAll "[^0-9]" $v "") -}}
+{{- $sec := 0 -}}
+{{- if hasSuffix "h" $v }}{{- $sec = mul $n 3600 -}}
+{{- else if hasSuffix "m" $v }}{{- $sec = mul $n 60 -}}
+{{- else if hasSuffix "s" $v }}{{- $sec = $n -}}
+{{- else }}{{- fail (printf "project %q at projects[%d]: cache.coldTTL %q must end in s/m/h (e.g. \"15m\")." $id $i $v) -}}{{- end -}}
+{{- if lt $sec 300 -}}
+{{- fail (printf "project %q at projects[%d]: cache.coldTTL %q is below the 300s floor (same floor as the global config.coldTTL; see validateTierTTLs)." $id $i $v) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 validateCacheTTL (Contract C2.3). `fail()`s if `config.cacheTTL` is not a
 non-empty string. Operators must quote bare integers (e.g. `"60s"` not
 `60`); the binary expects a Go duration and an empty value renders

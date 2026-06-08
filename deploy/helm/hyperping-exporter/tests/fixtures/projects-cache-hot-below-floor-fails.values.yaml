@@ -1,0 +1,16 @@
+# Per-project cache.hotTTL below the 30s floor MUST be rejected at render
+# time. The global validateTierTTLs guards config.hotTTL but does not recurse
+# into per-project cache blocks; without this fixture an operator could
+# slip cache.hotTTL: "1s" past the chart and saturate the SDK rate limit
+# at boot. The binary itself only rejects non-positive TTLs, so the floor
+# is owned by the chart.
+config:
+  cacheMode: tiered
+  hotTTL: "60s"
+  warmTTL: "5m"
+  coldTTL: "15m"
+  projects:
+    - id: hyp_core
+      existingSecret: hp-core
+      cache:
+        hotTTL: "1s"
