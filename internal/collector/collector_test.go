@@ -1503,8 +1503,19 @@ func (m *mockMCPTransport) CallTool(ctx context.Context, toolName string, args m
 	if err, ok := m.errors[toolName]; ok {
 		return nil, err
 	}
-	if toolName == "get_monitor_response_time" || toolName == "get_monitor_mtta" || toolName == "get_monitor_anomalies" {
-		uuid := args["uuid"].(string)
+	// v0.7.0 changed the per-monitor windowed tools to take
+	// monitor_uuids ([]string). get_monitor_anomalies still takes a
+	// single "uuid" string.
+	switch toolName {
+	case "get_monitor_response_time", "get_monitor_mtta", "get_monitor_mttr", "get_monitor_uptime":
+		raw, ok := args["monitor_uuids"].([]string)
+		if !ok || len(raw) == 0 {
+			return m.results[toolName], nil
+		}
+		key := toolName + ":" + raw[0]
+		return m.results[key], nil
+	case "get_monitor_anomalies":
+		uuid, _ := args["uuid"].(string)
 		key := toolName + ":" + uuid
 		return m.results[key], nil
 	}
@@ -1522,8 +1533,8 @@ func TestCollect_McpMetrics(t *testing.T) {
 	transport := &mockMCPTransport{
 		results: map[string]any{
 			"list_recent_alerts": map[string]any{"total": 42},
-			"get_monitor_response_time:mon_1": map[string]any{"uuid": "mon_1", "avg": 0.123},
-			"get_monitor_mtta:mon_1":         map[string]any{"uuid": "mon_1", "avg_wait": 45.0},
+			"get_monitor_response_time:mon_1": map[string]any{"avgResponseTime": 0.123},
+			"get_monitor_mtta:mon_1":         map[string]any{"mtta": 45.0},
 			"get_monitor_anomalies:mon_1":    map[string]any{"anomalies": []any{
 				map[string]any{"uuid": "a1", "score": 0.8},
 				map[string]any{"uuid": "a2", "score": 0.95},
@@ -1545,9 +1556,9 @@ hyperping_monitor_anomaly_count{name="Web",project="default",tenant="",tier="unk
 # HELP hyperping_monitor_anomaly_score Highest anomaly score for the monitor.
 # TYPE hyperping_monitor_anomaly_score gauge
 hyperping_monitor_anomaly_score{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.95
-# HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds.
+# HELP hyperping_monitor_mtta_seconds Mean Time To Acknowledge in seconds over the labelled period. v1.8.0 BREAKING: a period label is now ALWAYS present on this metric, defaulting to "24h" for projects that do not opt into additional windows.
 # TYPE hyperping_monitor_mtta_seconds gauge
-hyperping_monitor_mtta_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 45
+hyperping_monitor_mtta_seconds{name="Web",period="24h",project="default",tenant="",tier="unknown",uuid="mon_1"} 45
 # HELP hyperping_monitor_response_time_seconds Average monitor response time in seconds.
 # TYPE hyperping_monitor_response_time_seconds gauge
 hyperping_monitor_response_time_seconds{name="Web",project="default",tenant="",tier="unknown",uuid="mon_1"} 0.123

@@ -424,6 +424,21 @@ integer; bools render with toJson so true/false round-trip cleanly.
     coldEnabled: {{ $p.cache.coldEnabled | toJson }}
   {{- end }}
 {{- end }}
+{{- /*
+Per-project periods list (feat/multi-period). Optional; when present
+renders verbatim into projects.yaml so the binary's resolvePeriods
+sees the same slice the operator wrote. Each token is quoted to
+match the chart's general policy of never letting the YAML serializer
+guess a type for a user-supplied scalar. Absent / empty list produces
+no `periods:` line and the binary's loader defaults to ["24h"], which
+keeps a pre-1.8 values.yaml byte-identical on the wire.
+*/}}
+{{- if $p.periods }}
+  periods:
+  {{- range $period := $p.periods }}
+    - {{ $period | quote }}
+  {{- end }}
+{{- end }}
 {{ end -}}
 {{- end -}}
 

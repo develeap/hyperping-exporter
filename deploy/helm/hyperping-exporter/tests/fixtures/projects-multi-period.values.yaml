@@ -1,0 +1,11 @@
+# Multi-period fixture (chart 1.8.0). When projects[*].periods is set,
+# the rendered projects.yaml must carry the periods list verbatim under
+# each project entry. Used by the multi-period render test to assert
+# pass-through correctness.
+config:
+  projects:
+    - id: hyp_core
+      apiKey: dev-core-key
+      periods: ["24h", "7d", "30d", "90d", "365d"]
+    - id: hyp_infra
+      apiKey: dev-infra-key

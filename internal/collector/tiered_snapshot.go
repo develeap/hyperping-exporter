@@ -48,12 +48,43 @@ type warmSnapshot struct {
 
 // coldSnapshot is the per-tick result of the COLD tier refresh.
 //
-// COLD carries the 7d and 30d SLA reports used for the long-window per-monitor
-// SLA gauges and for the tenant health score (which requires the 30d window).
+// COLD carries the long-window SLA reports used for the per-monitor SLA
+// gauges and for the tenant health score (which requires the 30d window).
+// The reportsByPeriod map is keyed by period token ("7d"/"30d"/"90d"/
+// "365d") and populated only for periods present in the refresher's
+// configured set; absence means "this project did not opt into that
+// window", not "fetch failed". A failed fetch for an opted-in period
+// leaves that key absent and the WARM-style stale-carry semantics apply
+// via the stitcher in buildCollectorSnapshot.
+//
+// mttaByPeriod is a per-period map of monitor UUID to the MCP-reported
+// MTTA value for that window. Empty map (not nil) when the cold refresher
+// published a snapshot but the MCP call returned no per-monitor entries;
+// nil when the project has no cold-mapped period. MTTR is NOT stored
+// here: emitReportMetrics reads r.MTTR off the per-period MonitorReport
+// already fetched into reportsByPeriod, which avoids a redundant MCP
+// per-period fetch.
+//
 // Cold-start gap: COLD is empty for ~15 min after pod boot, so
 // hyperping_tenant_health_score is absent during that window. Documented in
 // the chart CHANGELOG under "Behavior changes".
 type coldSnapshot struct {
+	// reportsByPeriod is the new multi-period storage. The legacy
+	// report7d/report30d fields are preserved for backward compatibility
+	// with existing tests; the stitcher prefers reportsByPeriod when
+	// non-nil and falls back to the legacy fields otherwise.
+	reportsByPeriod map[string][]hyperping.MonitorReport
+
+	// Per-period MTTA map for cold-tier periods. Keys are monitor UUIDs;
+	// outer map keys are period tokens ("7d"/"30d"/...). Absent map key
+	// = period not configured or MCP fetch failed for that window;
+	// absent inner key = monitor had no acknowledged alerts in the window.
+	mttaByPeriod map[string]map[string]float64
+
+	// Legacy fields retained so existing test constructors that build a
+	// coldSnapshot{report7d: ..., report30d: ...} keep compiling. The
+	// stitcher reads reportsByPeriod first; these fields are only read
+	// when reportsByPeriod is nil.
 	report7d    []hyperping.MonitorReport
 	report30d   []hyperping.MonitorReport
 	refreshedAt time.Time
@@ -135,11 +166,33 @@ func (t *tieredRefresher) buildCollectorSnapshot() collectorSnapshot {
 	}
 
 	if c := t.cold.Load(); c != nil {
-		if len(c.report7d) > 0 {
-			snap.reports["7d"] = c.report7d
+		// Prefer the per-period map when populated; fall back to the
+		// legacy report7d/report30d fields for test callers that
+		// construct a coldSnapshot{} literal without the multi-period
+		// field set. The fallback is also what older snapshots in a
+		// rolling restart would carry; the dual-write in refreshCold
+		// keeps both forms in sync after the next tick.
+		if len(c.reportsByPeriod) > 0 {
+			for period, rep := range c.reportsByPeriod {
+				if len(rep) > 0 {
+					snap.reports[period] = rep
+				}
+			}
+		} else {
+			if len(c.report7d) > 0 {
+				snap.reports["7d"] = c.report7d
+			}
+			if len(c.report30d) > 0 {
+				snap.reports["30d"] = c.report30d
+			}
 		}
-		if len(c.report30d) > 0 {
-			snap.reports["30d"] = c.report30d
+		if len(c.mttaByPeriod) > 0 {
+			if snap.mttaByPeriod == nil {
+				snap.mttaByPeriod = make(map[string]map[string]float64, len(c.mttaByPeriod))
+			}
+			for period, m := range c.mttaByPeriod {
+				snap.mttaByPeriod[period] = m
+			}
 		}
 		if !c.refreshedAt.IsZero() {
 			snap.dataAges["cold"] = time.Since(c.refreshedAt).Seconds()

@@ -86,6 +86,25 @@ type projectConfig struct {
 	// yaml tag carries no omitempty: that flag only affects encode, and we
 	// only decode here.
 	Cache *projectCacheOverride `yaml:"cache"`
+
+	// Periods is the optional list of SLA report windows that
+	// period-bearing metrics (sla_ratio, downtime_seconds, outages,
+	// longest_outage_seconds, mttr_seconds, mtta_seconds,
+	// tenant_avg_sla_ratio) are fanned out over for this project.
+	//
+	// Allowed tokens: "24h", "7d", "30d", "90d", "365d".
+	//
+	// Absent or empty list resolves to ["24h"] at load time so existing
+	// projects-file YAML byte-identical to chart 1.7.x continues to emit
+	// only the legacy 24h series.
+	//
+	// Period -> tier mapping is enforced at emission time:
+	//   - "24h"                       -> warm tier
+	//   - "7d", "30d", "90d", "365d"  -> cold tier
+	// A period whose mapped tier is disabled on this project (via the
+	// cache: block) emits no series for that period; this is the same
+	// "tier-disabled" semantic introduced in chart 1.7.0.
+	Periods []string `yaml:"periods"`
 }
 
 // projectCacheOverride is one optional `cache:` block on a project entry.
@@ -165,6 +184,79 @@ func effectiveTierEnabled(p projectConfig) (hot, warm, cold bool) {
 // characters that downstream label matchers (recording-rules, alert
 // selectors) cannot escape.
 var reProjectID = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
+
+// allowedPeriods is the closed set of accepted tokens for projectConfig.Periods.
+// Operators picking a window outside this set get a parse-time error rather
+// than a silent omit; an unknown token would otherwise build a Desc with a
+// label value the rest of the pipeline never references.
+var allowedPeriods = map[string]struct{}{
+	"24h":  {},
+	"7d":   {},
+	"30d":  {},
+	"90d":  {},
+	"365d": {},
+}
+
+// defaultPeriods is the resolved value of Periods when the projects-file
+// omits the field or supplies an empty list. Picked as a single-element
+// slice (not an empty slice) so the downstream fan-out loop always runs at
+// least once and the rendered metric set stays byte-identical to chart
+// 1.7.x for any pre-existing projects-file.
+var defaultPeriods = []string{"24h"}
+
+// resolvePeriods returns the effective periods slice for a project,
+// applying the default + validation policy:
+//
+//   - nil or empty Periods -> defaultPeriods (["24h"]).
+//   - Any token outside allowedPeriods -> error with the offending token.
+//   - Duplicate tokens collapse to a single entry preserving first-seen
+//     order. We dedupe rather than reject because the YAML decode path can
+//     accept the same key twice in different overlay layers; an error
+//     would penalize a legitimate operator workflow.
+//
+// The slice returned is a fresh allocation so the caller can mutate it
+// without aliasing the input.
+func resolvePeriods(in []string) ([]string, error) {
+	if len(in) == 0 {
+		// Return a defensive copy so callers can append without aliasing
+		// the package-level defaultPeriods.
+		out := make([]string, len(defaultPeriods))
+		copy(out, defaultPeriods)
+		return out, nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, p := range in {
+		if _, ok := allowedPeriods[p]; !ok {
+			return nil, fmt.Errorf("invalid period %q: allowed values are 24h, 7d, 30d, 90d, 365d", p)
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// periodToTier maps a period token to the cache tier the period's data
+// lives on. The mapping is fixed by D2 of the multi-period design:
+//
+//	24h                  -> warm
+//	7d, 30d, 90d, 365d   -> cold
+//
+// Periods not in allowedPeriods produce the empty string; callers should
+// have validated the token via resolvePeriods first.
+func periodToTier(period string) string {
+	switch period {
+	case "24h":
+		return "warm"
+	case "7d", "30d", "90d", "365d":
+		return "cold"
+	default:
+		return ""
+	}
+}
 
 // parseConfig is the production entry point; it writes diagnostics to os.Stderr.
 // Tests call parseConfigOut directly so they can capture the deprecation
@@ -300,12 +392,18 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 		}
 		cfg.projects = projects
 	} else {
+		// resolvePeriods cannot error on the empty-input branch so the
+		// _ return is safe; we still call it for symmetry with the
+		// projects-file path so the single-key default is sourced from
+		// the same package-level constant.
+		legacyPeriods, _ := resolvePeriods(nil)
 		cfg.projects = []projectConfig{{
 			ID:                 "default",
 			APIKey:             cfg.apiKey,
 			MCPURL:             cfg.mcpURL,
 			ExcludeNamePattern: cfg.excludeNamePattern,
 			ExcludeRx:          cfg.excludeNameRx,
+			Periods:            legacyPeriods,
 		}}
 	}
 	return cfg, true
@@ -396,6 +494,14 @@ func loadProjectsFile(path, globalMCPURL, globalExcludeNamePattern string, globa
 				return nil, fmt.Errorf("--projects-file: project %q invalid mcpUrl %q: must start with \"https://\" (or \"http://localhost\" for dev)", p.ID, p.MCPURL)
 			}
 		}
+		// Resolve + validate the optional periods list. Absent or empty
+		// collapses to ["24h"] (defaultPeriods) so a pre-multi-period
+		// projects-file is byte-identical on the wire.
+		periods, err := resolvePeriods(p.Periods)
+		if err != nil {
+			return nil, fmt.Errorf("--projects-file: project %q %w", p.ID, err)
+		}
+		p.Periods = periods
 	}
 	// Per-project cache override validation is consolidated into a single
 	// pass over the parsed list so an operator with multiple typos gets
@@ -720,6 +826,7 @@ func run() int {
 	// disabled tier so dashboards can distinguish operator intent from
 	// breakage.
 	logEffectiveTierConfig(cfg, logger)
+	logDeadPeriods(cfg, logger)
 	registerTierDisabledMetric(registry, cfg)
 	mux, err := newMux(cfg.metricsPath, registry, collectors)
 	if err != nil {
@@ -854,6 +961,7 @@ func buildCollectors(cfg config, registry *prometheus.Registry, logger *slog.Log
 			collector.WithProject(q.project.ID),
 			collector.WithExcludePattern(q.excludeRx),
 			collector.WithMCPMetrics(q.mcpMx),
+			collector.WithPeriods(q.project.Periods),
 		}
 		if cfg.cacheMode == "tiered" {
 			hot, warm, cold := effectiveTierTTLs(q.project, cfg)
@@ -889,6 +997,13 @@ func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
 	for _, p := range cfg.projects {
 		hot, warm, cold := effectiveTierTTLs(p, cfg)
 		hotE, warmE, coldE := effectiveTierEnabled(p)
+		// v1.8.0: surface the per-project periods slice + the
+		// period->tier mapping so operators can read the effective
+		// multi-period configuration without grepping the binary.
+		periodMap := make(map[string]string, len(p.Periods))
+		for _, period := range p.Periods {
+			periodMap[period] = periodToTier(period)
+		}
 		logger.Info("effective tier configuration",
 			"project", p.ID,
 			"hot_ttl", hot.String(),
@@ -897,6 +1012,8 @@ func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
 			"hot_enabled", hotE,
 			"warm_enabled", warmE,
 			"cold_enabled", coldE,
+			"periods", p.Periods,
+			"period_tier_mapping", periodMap,
 		)
 	}
 }
@@ -908,6 +1025,44 @@ func logEffectiveTierConfig(cfg config, logger *slog.Logger) {
 // setupLogger.
 func jsonLoggerTo(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, nil))
+}
+
+// logDeadPeriods emits one WARN log line per (project, period) where the
+// period's mapped tier is disabled. Operators investigating "why is my 7d
+// data missing?" otherwise have to cross-reference the periods list, the
+// per-project cache: block, and the period->tier mapping by hand. The
+// hyperping_exporter_tier_disabled self-metric signals the disabled tier
+// but says nothing about which configured periods become silent
+// no-ops; this log line closes that gap explicitly.
+//
+// Only emitted when cacheMode == "tiered"; legacy mode has a single
+// refresh loop with no tier concept, so the dead-period condition cannot
+// arise there. Each warn line follows the shape:
+//
+//	WARN project=<id> period=<token> tier=<warm|cold>
+//	  "period maps to disabled tier; no series will be emitted"
+//
+// so operators can `grep` for the affected (project, period) pair when a
+// dashboard query returns empty data.
+func logDeadPeriods(cfg config, logger *slog.Logger) {
+	if cfg.cacheMode != "tiered" {
+		return
+	}
+	for _, p := range cfg.projects {
+		_, warmE, coldE := effectiveTierEnabled(p)
+		for _, period := range p.Periods {
+			tier := periodToTier(period)
+			disabled := (tier == "warm" && !warmE) || (tier == "cold" && !coldE)
+			if !disabled {
+				continue
+			}
+			logger.Warn("period maps to disabled tier; no series will be emitted for this period",
+				"project", p.ID,
+				"period", period,
+				"tier", tier,
+			)
+		}
+	}
 }
 
 // registerTierDisabledMetric publishes one

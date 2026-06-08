@@ -110,6 +110,22 @@ func WithProject(id string) CollectorOption {
 	}
 }
 
+// WithPeriods sets the list of SLA report windows this collector fans out
+// over for the period-bearing metric set. main.resolvePeriods is the
+// canonical validator + defaulter; this option performs no second
+// validation pass so an unvalidated slice from a test harness can produce
+// an unknown-period label. Callers that don't supply WithPeriods inherit
+// defaultReportPeriods (["24h","7d","30d"]) which preserves the legacy
+// fetch/emit behaviour byte-for-byte.
+func WithPeriods(periods []string) CollectorOption {
+	return func(c *Collector) {
+		// Defensive copy so a caller mutating their slice after
+		// constructing the Collector does not silently change emission.
+		c.periods = make([]string, len(periods))
+		copy(c.periods, periods)
+	}
+}
+
 // defaultProjectID is the constLabel value used when WithProject is unset
 // or empty. Kept explicit so downstream dashboards/alerts can always
 // select on `project=<value>` without special-casing the unset path.
@@ -124,14 +140,62 @@ func resolveProjectID(id string) string {
 	return id
 }
 
-// reportPeriods defines the SLA/outage report windows fetched on each refresh.
-var reportPeriods = []string{"24h", "7d", "30d"}
+// defaultReportPeriods is the windows the legacy fetchReports path uses
+// when no per-collector override is set. Kept as a slice (not the
+// per-collector field) so test callers that construct a Collector
+// without WithPeriods get the same behaviour they got before the
+// multi-period feature.
+var defaultReportPeriods = []string{"24h", "7d", "30d"}
 
-// reportDurations maps period labels to their lookback durations.
+// reportDurations maps period labels to their lookback durations. The
+// table covers every token in main.allowedPeriods even when a particular
+// build of the exporter never asks for 90d/365d, because the cold-tier
+// refresher resolves durations dynamically from the per-collector periods
+// slice.
 var reportDurations = map[string]time.Duration{
-	"24h": 24 * time.Hour,
-	"7d":  7 * 24 * time.Hour,
-	"30d": 30 * 24 * time.Hour,
+	"24h":  24 * time.Hour,
+	"7d":   7 * 24 * time.Hour,
+	"30d":  30 * 24 * time.Hour,
+	"90d":  90 * 24 * time.Hour,
+	"365d": 365 * 24 * time.Hour,
+}
+
+// mttaValueFor returns the MTTA value for (uuid, period) from a snapshot,
+// preferring the explicit per-period map (snap.mttaByPeriod) and falling
+// back to the legacy single-window snap.mttaIndex only when the period is
+// "24h". This preserves the warm-tier MCP fetch source as the source of
+// truth for the 24h slice while letting cold-tier fan-out populate the
+// other windows independently.
+func mttaValueFor(snap collectorSnapshot, uuid, period string) (float64, bool) {
+	if snap.mttaByPeriod != nil {
+		if m, ok := snap.mttaByPeriod[period]; ok {
+			if v, ok := m[uuid]; ok {
+				return v, true
+			}
+		}
+	}
+	if period == "24h" {
+		if v, ok := snap.mttaIndex[uuid]; ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// PeriodTier maps a period token to the cache tier it lives on. Duplicated
+// here (one-line table) rather than imported from main so the collector
+// package stays free of the main->collector compile dependency. The
+// canonical mapping is defined by main.periodToTier; any future tier
+// expansion must update both tables together.
+func PeriodTier(period string) string {
+	switch period {
+	case "24h":
+		return "warm"
+	case "7d", "30d", "90d", "365d":
+		return "cold"
+	default:
+		return ""
+	}
 }
 
 // HyperpingAPI defines the Hyperping API methods used by the collector.
@@ -211,7 +275,18 @@ func newCollectorDescs(ns, project string) collectorDescs {
 		healthchecksTotal:         prometheus.NewDesc(fqn(ns, "", "healthchecks"), "Total number of healthchecks.", nil, cl),
 		scrapeDurationDesc:        prometheus.NewDesc(fqn(ns, "scrape", "duration_seconds"), "Duration of the last API scrape in seconds.", nil, cl),
 		scrapeSuccessDesc:         prometheus.NewDesc(fqn(ns, "scrape", "success"), "Whether the last API scrape succeeded (1) or failed (0).", nil, cl),
-		dataAgeDesc:               prometheus.NewDesc(fqn(ns, "data", "age_seconds"), "Seconds elapsed since the last successful API cache refresh, labelled by tier. In legacy mode only `tier=\"hot\"` is emitted (matches the pre-tiered single-ticker semantics). In tiered mode each of `hot`/`warm`/`cold` is emitted as a separate series.", []string{"tier"}, cl),
+		dataAgeDesc: prometheus.NewDesc(
+			fqn(ns, "data", "age_seconds"),
+			"Seconds elapsed since the last successful API cache refresh, labelled by tier and period. "+
+				"In legacy mode and tiered-mode hot tier (which serve data without a window) the series "+
+				"is emitted once per active tier with `period=\"\"`. For warm and cold tiers the metric "+
+				"is emitted once per configured period that maps to the tier (24h -> warm; 7d/30d/90d/365d "+
+				"-> cold), so operators can write `max(data_age_seconds{period=\"30d\"})`-style queries. "+
+				"v1.8.0 BREAKING: the prior empty-period legacy series for warm/cold tiers has been "+
+				"removed; aggregations like `sum(data_age_seconds{tier=\"warm\"})` now sum across the "+
+				"configured periods mapped to that tier instead of double-counting a legacy series.",
+			[]string{"tier", "period"}, cl,
+		),
 		monitorOutageActive:       prometheus.NewDesc(fqn(ns, "monitor", "outage_active"), "Whether the monitor has an active (unresolved) outage (1) or not (0).", ml, cl),
 		monitorActiveOutageStatus: prometheus.NewDesc(fqn(ns, "monitor", "active_outage_status_code"), "HTTP status code of the current active outage; 0 when no active outage.", ml, cl),
 		monitorSLA:                prometheus.NewDesc(fqn(ns, "monitor", "sla_ratio"), "Monitor SLA as a ratio (0–1) over the labelled period.", mpl, cl),
@@ -253,8 +328,10 @@ func newCollectorDescs(ns, project string) collectorDescs {
 		),
 		monitorMtta: prometheus.NewDesc(
 			fqn(ns, "monitor", "mtta_seconds"),
-			"Mean Time To Acknowledge in seconds.",
-			ml, cl,
+			"Mean Time To Acknowledge in seconds over the labelled period. "+
+				"v1.8.0 BREAKING: a period label is now ALWAYS present on this metric, "+
+				"defaulting to \"24h\" for projects that do not opt into additional windows.",
+			mpl, cl,
 		),
 		monitorAnomalyCount: prometheus.NewDesc(
 			fqn(ns, "monitor", "anomaly_count"),
@@ -314,6 +391,18 @@ type collectorSnapshot struct {
 	anomalyCountIndex map[string]int
 	anomalyScoreIndex map[string]float64
 	totalAlerts       int
+
+	// Per-period MTTA for the multi-period fan-out. Outer map keyed by
+	// period token ("24h"/"7d"/"30d"/"90d"/"365d"). When nil/empty, the
+	// period-bearing MTTA series for that window is not emitted. The
+	// 24h entry shadows mttaIndex (above) for the warm-tier source;
+	// cold-mapped periods are populated from the cold-tier MCP fetch only.
+	//
+	// Per-period MTTR uses a different source: the MonitorReport.MTTR
+	// field already on every cold-tier report fetch (see
+	// emitReportMetrics). No separate snapshot field is needed because
+	// the emission path reads r.MTTR off snap.reports[period] directly.
+	mttaByPeriod map[string]map[string]float64
 }
 
 // Collector fetches Hyperping data on a background timer and serves
@@ -342,6 +431,12 @@ type Collector struct {
 	coldEnabled   bool
 	tierEnableSet bool
 	tiered        *tieredRefresher
+
+	// periods is the per-collector list of SLA report windows fanned out
+	// on the period-bearing metrics. Defaulted by NewCollector to
+	// defaultReportPeriods when WithPeriods was not supplied; main's
+	// resolvePeriods is the authoritative validator at config-load time.
+	periods []string
 
 	// Cache (protected by mu).
 	mu                 sync.RWMutex
@@ -400,6 +495,14 @@ func NewCollector(api HyperpingAPI, mcp *hyperping.MCPClient, cacheTTL time.Dura
 		c.hotEnabled = true
 		c.warmEnabled = true
 		c.coldEnabled = true
+	}
+	// Default periods to the historical full set when WithPeriods was
+	// not supplied. Tests that construct a Collector directly (no
+	// WithPeriods) get the legacy fan-out exactly as before; the
+	// projects-file path always supplies WithPeriods via buildCollectors.
+	if c.periods == nil {
+		c.periods = make([]string, len(defaultReportPeriods))
+		copy(c.periods, defaultReportPeriods)
 	}
 	// In tiered mode build the refresher up front so callers can drive
 	// per-tier refreshes directly (tests do this) and so Start has nothing
@@ -497,14 +600,18 @@ func (c *Collector) fetchCoreData(ctx context.Context) (coreData, error) {
 
 // fetchReports fetches SLA reports for all periods in parallel. Failures per
 // period are logged as warnings; the returned map omits periods that failed.
+//
+// The set of periods is sourced from c.periods (defaulted by NewCollector
+// to defaultReportPeriods when WithPeriods was not used) so per-project
+// configuration controls which windows are fetched in legacy mode.
 func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string][]hyperping.MonitorReport {
-	results := make(map[string][]hyperping.MonitorReport, len(reportPeriods))
+	results := make(map[string][]hyperping.MonitorReport, len(c.periods))
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
 		failures int
 	)
-	for _, p := range reportPeriods {
+	for _, p := range c.periods {
 		dur := reportDurations[p]
 		from := now.Add(-dur).Format(time.RFC3339)
 		to := now.Format(time.RFC3339)
@@ -525,7 +632,7 @@ func (c *Collector) fetchReports(ctx context.Context, now time.Time) map[string]
 		}(p, from, to)
 	}
 	wg.Wait()
-	if failures == len(reportPeriods) {
+	if failures == len(c.periods) {
 		c.logger.Warn("all report period fetches failed; SLA metrics will use stale data")
 	}
 	return results
@@ -646,13 +753,18 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 					uuid := m.UUID
 
 					// 1. Response Time
+					//
+					// v0.7.0 BREAKING: GetMonitorResponseTime now takes
+					// (ctx, from, to, uuids...). Preserve legacy behaviour by
+					// passing a 24h window centered on now and a single uuid.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-						report, err := c.mcp.GetMonitorResponseTime(opCtx, uuid)
+						now := time.Now().UTC()
+						report, err := c.mcp.GetMonitorResponseTime(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
 							mu.Lock()
-							res.responseTime[uuid] = report.Avg
+							res.responseTime[uuid] = report.AvgResponseTime
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
@@ -663,13 +775,20 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 					}
 
 					// 2. MTTA
+					//
+					// v0.7.0 BREAKING: GetMonitorMtta now takes
+					// (ctx, from, to, uuids...). Preserve legacy behaviour by
+					// passing a 24h window. The pre-v0.7.0 call silently
+					// decoded into zero values; this exporter therefore
+					// emitted mtta_seconds=0 for every monitor for months.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-						report, err := c.mcp.GetMonitorMtta(opCtx, uuid)
+						now := time.Now().UTC()
+						report, err := c.mcp.GetMonitorMtta(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
 						if err == nil && report != nil {
 							mu.Lock()
-							res.mtta[uuid] = report.AvgWait
+							res.mtta[uuid] = report.Mtta
 							mu.Unlock()
 						} else if ctx.Err() != nil {
 							return
@@ -1066,9 +1185,20 @@ func (c *Collector) emitMonitorMetrics(ch chan<- prometheus.Metric, snap collect
 			ch <- prometheus.MustNewConstMetric(c.monitorResponseTimeAvg, prometheus.GaugeValue,
 				val, m.UUID, name, tenant, tier)
 		}
-		if val, ok := snap.mttaIndex[m.UUID]; ok {
+		// v1.8.0: MTTA now fans out across configured periods. The 24h
+		// slice is sourced from the warm-tier per-monitor map
+		// (snap.mttaIndex) when no per-period override exists; other
+		// periods come from snap.mttaByPeriod populated by the cold tier.
+		// When neither source has a value for (uuid, period), no series
+		// is emitted for that combination (matches the pre-1.8 behaviour
+		// of skipping the metric on missing data).
+		for _, period := range c.periods {
+			val, ok := mttaValueFor(snap, m.UUID, period)
+			if !ok {
+				continue
+			}
 			ch <- prometheus.MustNewConstMetric(c.monitorMtta, prometheus.GaugeValue,
-				val, m.UUID, name, tenant, tier)
+				val, m.UUID, name, tenant, tier, period)
 		}
 		if val, ok := snap.anomalyCountIndex[m.UUID]; ok {
 			ch <- prometheus.MustNewConstMetric(c.monitorAnomalyCount, prometheus.GaugeValue,
@@ -1097,8 +1227,14 @@ func (c *Collector) emitHealthcheckMetrics(ch chan<- prometheus.Metric, snap col
 }
 
 // emitReportMetrics sends per-monitor SLA/outage report metrics and per-period tenant averages.
+//
+// Iterates over c.periods rather than the package-level defaultReportPeriods
+// so a project that opts into a subset (e.g. just 24h) emits exactly that
+// subset's series. Periods whose mapped tier is disabled on this project
+// produce no entry in snap.reports[period] (the refresher never populates
+// them), so the inner loop is naturally a no-op for those.
 func (c *Collector) emitReportMetrics(ch chan<- prometheus.Metric, snap collectorSnapshot) {
-	for _, period := range reportPeriods {
+	for _, period := range c.periods {
 		reports := snap.reports[period]
 		slaSum := 0.0
 		// slaCount tracks reports actually summed (visible monitors only); using
@@ -1154,12 +1290,39 @@ func (c *Collector) emitTenantMetrics(ch chan<- prometheus.Metric, snap collecto
 	ch <- prometheus.MustNewConstMetric(c.scrapeSuccessDesc, prometheus.GaugeValue,
 		boolToFloat64(snap.scrapeOK))
 
-	// OPS-31: data age, labelled by tier. Tier order is fixed for stable
-	// scrape ordering across ticks; tiers with no prior success are omitted
-	// so the metric continues to mean "elapsed since last success".
+	// OPS-31: data age, labelled by tier and period. Tier order is fixed
+	// for stable scrape ordering across ticks; tiers with no prior success
+	// are omitted so the metric continues to mean "elapsed since last
+	// success".
+	//
+	// v1.8.0: the Desc carries (tier, period) labels. Emission scheme:
+	//   - HOT tier (legacy single-refresh ticker, or the tiered HOT tier
+	//     that serves monitors/healthchecks/outages) has no window; it is
+	//     emitted once with `period=""` to retain pre-1.8 observability of
+	//     up/down freshness.
+	//   - WARM and COLD tiers serve report data tied to a window; one
+	//     series is emitted per configured period whose PeriodTier maps
+	//     to the tier. No empty-period legacy series is emitted for these
+	//     tiers; aggregations like `sum(data_age_seconds{tier="warm"})`
+	//     now sum across periods mapped to warm (1 series for the default
+	//     `periods=["24h"]`, N series for multi-period configs) instead of
+	//     double-counting a legacy empty-period series.
 	for _, tier := range []string{"hot", "warm", "cold"} {
-		if age, ok := snap.dataAges[tier]; ok && age > 0 {
-			ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier)
+		age, ok := snap.dataAges[tier]
+		if !ok || age <= 0 {
+			continue
+		}
+		if tier == "hot" {
+			// HOT carries no window; one series with period="" preserves
+			// pre-1.8 `data_age_seconds{tier="hot"}` selectors.
+			ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier, "")
+			continue
+		}
+		for _, period := range c.periods {
+			if PeriodTier(period) != tier {
+				continue
+			}
+			ch <- prometheus.MustNewConstMetric(c.dataAgeDesc, prometheus.GaugeValue, age, tier, period)
 		}
 	}
 

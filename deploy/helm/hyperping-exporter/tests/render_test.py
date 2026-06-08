@@ -248,9 +248,9 @@ BASELINE_ARGS = [
 # bumps hyperping-go to v0.6.0 for WithStatus support, and adds the
 # tier label to hyperping_data_age_seconds; chart 1.5.3 ships this
 # image as its default).
-EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.7.0"
-EXPECTED_VERSION = "1.7.0"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.7.0"
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.8.0"
+EXPECTED_VERSION = "1.8.0"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.8.0"
 
 
 def main() -> int:
@@ -1014,6 +1014,72 @@ def main() -> int:
     assert_fail("projects-cache-cold-below-floor-fails",
                 "projects-cache-cold-below-floor-fails.values.yaml",
                 "below the 300s floor")
+
+    # Case MP1 — multi-period (chart 1.8.0). projects[*].periods is rendered
+    # verbatim into projects.yaml for the project that sets it; a project
+    # without an override must NOT carry a periods: key (defaulting is the
+    # binary's job, not the chart's).
+    rendered = helm_template("projects-multi-period.values.yaml")
+    projects_yaml_text = _extract_projects_yaml(rendered)
+    assert projects_yaml_text is not None, (
+        "FAIL projects-multi-period: rendered projects.yaml document not located"
+    )
+    parsed = yaml.safe_load(projects_yaml_text)
+    assert isinstance(parsed, list) and len(parsed) == 2, (
+        f"FAIL projects-multi-period: expected 2 project entries; got {parsed!r}"
+    )
+    by_id = {p["id"]: p for p in parsed}
+    assert by_id["hyp_core"].get("periods") == ["24h", "7d", "30d", "90d", "365d"], (
+        f"FAIL projects-multi-period: hyp_core.periods must equal full list; got {by_id['hyp_core'].get('periods')!r}"
+    )
+    assert "periods" not in by_id["hyp_infra"], (
+        f"FAIL projects-multi-period: hyp_infra has no override; periods: key must be absent (binary defaults); "
+        f"got {by_id['hyp_infra']!r}"
+    )
+    print("PASS projects-multi-period: periods rendered verbatim; absent key not emitted as null")
+
+    # Case MP2 — no-periods backward compat (chart 1.8.0). A projects-file
+    # values.yaml that pre-dates the multi-period feature renders the same
+    # projects.yaml shape as chart 1.7.x: no orphan `periods:` line, no
+    # `null` placeholder. The dev-inline fixture (no periods on either
+    # project) is the natural witness.
+    rendered = helm_template("projects-dev-inline.values.yaml")
+    projects_yaml_text = _extract_projects_yaml(rendered)
+    assert projects_yaml_text is not None, (
+        "FAIL projects-multi-period-absent: rendered projects.yaml document not located"
+    )
+    parsed = yaml.safe_load(projects_yaml_text)
+    for p in parsed:
+        assert "periods" not in p, (
+            f"FAIL projects-multi-period-absent: project {p.get('id')!r} must NOT carry a periods: key when "
+            f"unconfigured (binary's resolvePeriods owns the default); got {p!r}"
+        )
+    print("PASS projects-multi-period-absent: no orphan periods: keys in pre-1.8 values.yaml")
+
+    # Case MP3 — invalid period token (chart 1.8.0). The chart does NOT
+    # validate the period token alphabet; that responsibility lives in
+    # the binary's resolvePeriods (main.go: allowedPeriods is the closed
+    # set {24h,7d,30d,90d,365d}). The chart's job is to render the
+    # operator's list verbatim into projects.yaml so the binary surfaces
+    # the offending token in its error, with the project id wrapped.
+    # This case pins that boundary so a future template-side validation
+    # addition is a deliberate, test-visible change, and any regression
+    # that drops the verbatim passthrough also fails here.
+    rendered = helm_template("projects-multi-period-invalid-token.values.yaml")
+    projects_yaml_text = _extract_projects_yaml(rendered)
+    assert projects_yaml_text is not None, (
+        "FAIL projects-multi-period-invalid-token: rendered projects.yaml not located"
+    )
+    parsed = yaml.safe_load(projects_yaml_text)
+    assert isinstance(parsed, list) and len(parsed) == 1, (
+        f"FAIL projects-multi-period-invalid-token: expected 1 project entry; got {parsed!r}"
+    )
+    assert parsed[0]["periods"] == ["24h", "42d"], (
+        f"FAIL projects-multi-period-invalid-token: chart must pass periods through verbatim "
+        f"(binary owns validation); got {parsed[0].get('periods')!r}"
+    )
+    print("PASS projects-multi-period-invalid-token: chart renders 42d verbatim; binary rejects at startup "
+          "(see main.TestLoadProjectsFile_PeriodsInvalid)")
 
     print("\nALL RENDER TESTS PASSED")
     return 0

@@ -225,6 +225,80 @@ same series. The Helm chart's `config.projects[*].cache` knob passes
 the block through to the rendered projects file verbatim; see
 `deploy/helm/hyperping-exporter/values.yaml` for the schema.
 
+### Multi-period metric emission
+
+The period-bearing metric set (SLA ratio, downtime, outages, longest
+outage, MTTR, MTTA, and the tenant SLA average) fans out across the
+SLA report windows configured for each project. The default window is
+`24h` so a chart 1.7.x values.yaml renders byte-identical projects.yaml
+on the wire; operators opt into the additional windows by setting the
+`periods` field on a project entry:
+
+```yaml
+- id: hyp_core
+  apiKeyFile: /etc/hyperping/api-key-hyp_core
+  periods: ["24h", "7d", "30d", "90d", "365d"]
+
+- id: hyp_infra
+  apiKeyFile: /etc/hyperping/api-key-hyp_infra
+  # No periods field; resolves to ["24h"] (legacy behaviour).
+```
+
+Allowed tokens are `24h`, `7d`, `30d`, `90d`, `365d`. Any other token
+produces an actionable parse-time error (the offending token and the
+project id are both echoed in the error message). Duplicate tokens are
+deduplicated; an empty list resolves to the `["24h"]` default.
+
+Period -> tier mapping (fixed):
+
+| Period      | Tier  |
+|-------------|-------|
+| `24h`       | warm  |
+| `7d`        | cold  |
+| `30d`       | cold  |
+| `90d`       | cold  |
+| `365d`      | cold  |
+
+The mapping is enforced at emission: a project that disables the cold
+tier (`cache.coldEnabled: false`) emits no `7d`/`30d`/`90d`/`365d`
+series, regardless of what its `periods` list contains. The same is
+true symmetrically for warm-disabled projects and the `24h` series.
+
+The exporter takes one all-monitors MCP call per cold-mapped period
+(via the v0.7.0 `monitor_uuids` empty-slice semantic), so 5 configured
+periods cost 5 MCP calls per cold refresh tick rather than `N x 5` for
+a project with `N` monitors. Per-period MTTR is sourced from the SLA
+report endpoint (which already carries `MTTR` per window) so no extra
+MCP call is issued for MTTR fan-out.
+
+The `hyperping_data_age_seconds` self-metric gains a `period` label
+alongside the existing `tier` label so operators can write
+`max(data_age_seconds{period="30d"})` to see the freshness of a
+specific window's source data. The label scheme in v1.8.0:
+
+- HOT tier (legacy single-refresh ticker, or the tiered HOT tier that
+  serves up/down state) has no window and emits one series with
+  `period=""`.
+- WARM and COLD tiers emit one series per configured period that maps
+  to them (24h -> warm; 7d/30d/90d/365d -> cold). No empty-period
+  legacy series is emitted for these tiers.
+
+PromQL migration from 1.7.x:
+
+```
+# before
+sum(data_age_seconds{tier="warm"})
+# after: still works; counts the period(s) mapped to warm
+sum(data_age_seconds{tier="warm"})
+# explicit per-period query (new)
+data_age_seconds{tier="warm", period="24h"}
+```
+
+The `hyperping_monitor_mtta_seconds` metric gains a `period` label in
+v1.8.0; series identity for this metric is therefore different from
+chart 1.7.x. PromQL referencing the unlabelled form must be updated.
+See the CHANGELOG entry for v1.8.0 for the rollout notes.
+
 ---
 
 ## Available metrics

@@ -144,6 +144,18 @@ config:
   #       warmEnabled: false   # bool; skip WARM ticker for this project
   #       coldEnabled: false   # bool; skip COLD ticker for this project
   #
+  #   periods:            OPTIONAL list of SLA report windows this project
+  #                       fans the period-bearing metric set over. Allowed
+  #                       tokens are "24h", "7d", "30d", "90d", "365d".
+  #                       Absent / empty list defaults to ["24h"] so an
+  #                       unchanged chart 1.7.x values.yaml renders the same
+  #                       projects.yaml on the wire as v1.8.0. Period -> tier
+  #                       mapping is fixed: 24h is warm; 7d/30d/90d/365d are
+  #                       cold. A period whose mapped tier is disabled for
+  #                       this project emits no series for that window.
+  #
+  #     periods: ["24h", "7d", "30d", "90d", "365d"]
+  #
   #   Example: hyp_thirdparty stops emitting WARM/COLD series to save the
   #   shared SDK rate-limit budget; hyp_infra refreshes WARM less often
   #   while leaving every other project at the global defaults:
