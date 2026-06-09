@@ -711,7 +711,7 @@ func (c *Collector) fetchMcpData(ctx context.Context, monitors []hyperping.Monit
 			return
 		}
 		mu.Lock()
-		res.totalAlerts = alerts.Total
+		res.totalAlerts = alerts.Total()
 		mu.Unlock()
 	}()
 

@@ -695,7 +695,7 @@ func (t *tieredRefresher) fetchMcpDataForTier(ctx context.Context, monitors []hy
 			return
 		}
 		mu.Lock()
-		res.totalAlerts = alerts.Total
+		res.totalAlerts = alerts.Total()
 		mu.Unlock()
 	}()
 

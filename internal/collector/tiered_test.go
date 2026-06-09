@@ -327,7 +327,7 @@ func TestTieredRefresher_WarmPartialMcpFailureRetainsStaleValues(t *testing.T) {
 	transport := &mockMCPTransport{
 		results: map[string]any{
 			// Global alerts succeeds.
-			"list_recent_alerts": map[string]any{"total": 99},
+			"list_recent_alerts": map[string]any{"totalAlerts": 99},
 		},
 		errors: map[string]error{
 			// All per-monitor calls fail -> failures > 0 -> stale carry.

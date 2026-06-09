@@ -1532,7 +1532,7 @@ func TestCollect_McpMetrics(t *testing.T) {
 
 	transport := &mockMCPTransport{
 		results: map[string]any{
-			"list_recent_alerts": map[string]any{"total": 42},
+			"list_recent_alerts":              map[string]any{"totalAlerts": 42},
 			"get_monitor_response_time:mon_1": map[string]any{"avgResponseTime": 0.123},
 			"get_monitor_mtta:mon_1":         map[string]any{"mtta": 45.0},
 			"get_monitor_anomalies:mon_1":    map[string]any{"anomalies": []any{
@@ -1617,7 +1617,7 @@ func TestFetchMcpData_ContextCancellation(t *testing.T) {
 
 	transport := &mockMCPTransport{
 		results: map[string]any{
-			"list_recent_alerts": map[string]any{"total": 42},
+			"list_recent_alerts": map[string]any{"totalAlerts": 42},
 		},
 	}
 	// We want to test that workers stop if context is cancelled.
