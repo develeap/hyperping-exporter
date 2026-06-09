@@ -2,8 +2,30 @@ apiVersion: v1
 entries:
   hyperping-exporter:
   - apiVersion: v2
+    appVersion: 1.8.2
+    created: "2026-06-09T06:31:07.407841243Z"
+    description: Prometheus exporter for the Hyperping monitoring service
+    digest: b68f329f4acfe3ab03ba0204869721103bc2bd7d8bd82e084dc12587918b1dbe
+    keywords:
+    - prometheus
+    - hyperping
+    - monitoring
+    - exporter
+    - observability
+    maintainers:
+    - email: team@develeap.com
+      name: Develeap
+      url: https://github.com/develeap
+    name: hyperping-exporter
+    sources:
+    - https://github.com/develeap/hyperping-exporter
+    type: application
+    urls:
+    - https://develeap.github.io/hyperping-exporter/hyperping-exporter-1.8.2.tgz
+    version: 1.8.2
+  - apiVersion: v2
     appVersion: 1.8.1
-    created: "2026-06-08T16:40:53.298395171Z"
+    created: "2026-06-09T06:31:07.406894866Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: a9c2ef23c07f14e54958b210ef069ceb6a4f7b631943bcbec454c85f3738d6eb
     keywords:
@@ -25,7 +47,7 @@ entries:
     version: 1.8.1
   - apiVersion: v2
     appVersion: 1.8.0
-    created: "2026-06-08T16:40:53.29761883Z"
+    created: "2026-06-09T06:31:07.405950944Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: 5a39d6819aed763ef4068ab8d4526ef992ec5bcd297ec357470acc2283d2a0a5
     keywords:
@@ -47,7 +69,7 @@ entries:
     version: 1.8.0
   - apiVersion: v2
     appVersion: 1.7.0
-    created: "2026-06-08T16:40:53.296346777Z"
+    created: "2026-06-09T06:31:07.404983679Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: a4ad8a226ac9218a1bd5b943a57800e9c45b15e5bad8068a175c831c0de1b367
     keywords:
@@ -69,7 +91,7 @@ entries:
     version: 1.6.0
   - apiVersion: v2
     appVersion: 1.5.1
-    created: "2026-06-08T16:40:53.295637497Z"
+    created: "2026-06-09T06:31:07.403325429Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: c8d34a3d4a78d8c9f3b0948714b271d3225a5deb966c270bbd2b4c51c529e1b8
     keywords:
@@ -91,7 +113,7 @@ entries:
     version: 1.5.4
   - apiVersion: v2
     appVersion: 1.5.0
-    created: "2026-06-08T16:40:53.294999074Z"
+    created: "2026-06-09T06:31:07.402526398Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: 4a9db5fbe454a13cec4ac50e643e03dc245be8b62a3d80194ecd64efcc538d3a
     keywords:
@@ -113,7 +135,7 @@ entries:
     version: 1.5.3
   - apiVersion: v2
     appVersion: 1.4.2
-    created: "2026-06-08T16:40:53.294369084Z"
+    created: "2026-06-09T06:31:07.40170768Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: e24aeeeb55e732b75c1fd943b8f716705ccc8f3b2a24861511422b3e0ccdb95d
     keywords:
@@ -135,7 +157,7 @@ entries:
     version: 1.5.2
   - apiVersion: v2
     appVersion: 1.4.1
-    created: "2026-06-08T16:40:53.293761748Z"
+    created: "2026-06-09T06:31:07.400832466Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: f018a7ef5c716a1fb650a5c1a38878d41aeb54833c1a9882df9dfd24653f8a78
     keywords:
@@ -157,7 +179,7 @@ entries:
     version: 1.5.1
   - apiVersion: v2
     appVersion: 1.4.1
-    created: "2026-06-08T16:40:53.293136355Z"
+    created: "2026-06-09T06:31:07.400042101Z"
     description: Prometheus exporter for the Hyperping monitoring service
     digest: 6c35bd433c8bf0c4ea6171741797acc20bd375fa0308991bfe5a3a03f5a6e763
     keywords:
@@ -177,4 +199,4 @@ entries:
     urls:
     - https://develeap.github.io/hyperping-exporter/hyperping-exporter-1.5.0.tgz
     version: 1.5.0
-generated: "2026-06-08T16:40:53.292413164Z"
+generated: "2026-06-09T06:31:07.39911451Z"
