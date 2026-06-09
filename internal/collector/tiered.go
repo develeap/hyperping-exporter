@@ -766,15 +766,33 @@ func (t *tieredRefresher) fetchMcpDataForTier(ctx context.Context, monitors []hy
 					// shape silently decoded into zero values; the WARM
 					// snapshot has therefore been carrying mtta=0 for every
 					// monitor. This commit restores real values.
+					//
+					// v1.8.2 fix: only record a per-monitor MTTA entry when
+					// the response carries a Monitors slice with a matching
+					// UUID. Reading report.Mtta (the project-wide aggregate)
+					// into the per-UUID map leaks zero-valued series for
+					// projects without acknowledged alerts (Monitors is
+					// empty, aggregate is 0) and would leak the aggregate
+					// itself if it were non-zero. This mirrors the cold-tier
+					// semantic at tiered.go:523-526.
 					{
 						opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 						now := time.Now().UTC()
 						report, err := t.mcp.GetMonitorMtta(opCtx, now.Add(-24*time.Hour), now, uuid)
 						cancel()
-						if err == nil && report != nil {
-							mu.Lock()
-							res.mtta[uuid] = report.Mtta
-							mu.Unlock()
+						if err == nil && report != nil && len(report.Monitors) > 0 {
+							// Per-UUID call should return exactly one entry
+							// for the queried uuid; iterate defensively in
+							// case the server returns extras and pick the
+							// matching uuid only.
+							for _, e := range report.Monitors {
+								if e.UUID == uuid {
+									mu.Lock()
+									res.mtta[uuid] = e.Mtta
+									mu.Unlock()
+									break
+								}
+							}
 						} else if ctx.Err() != nil {
 							return
 						} else if err != nil {
