@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.2]
+
+### Fixed
+
+- `hyperping_alerts` was stuck at 0 across every project regardless of
+  the real upstream count. The `hyperping-go` v0.7.0 `AlertHistory`
+  struct declared `{Alerts, Total}` while the live MCP server response
+  shape is `{timeGroups, totalAlerts, downAlerts, upAlerts, rawAlerts}`.
+  The Go decoder silently produced an all-zero struct, so the exporter
+  faithfully reported `total = 0` while alerts were happening upstream.
+  v1.8.2 bumps to hyperping-go v0.7.1 which corrects the shape and
+  exposes a nil-safe `Total()` accessor; both exporter callsites
+  (legacy `collector.go` and tiered `tiered.go` warm-tier) switch to
+  the method form. **Behaviour change at rollout:** `hyperping_alerts`
+  starts moving for projects with non-zero alert history. Alert rules
+  that treated this gauge as effectively-constant should be reviewed.
+- The MCP transport "invalid character 'M' looking for beginning of
+  value" warning on every warm tick stops. hyperping-go v0.7.1 fixes
+  `CallTool` to send `arguments: {}` when the caller passes nil args
+  (the server rejected the malformed request with a textual
+  `MCP error -32602: Input validation ...` reply that the client tried
+  to JSON-decode, hence the noisy warning).
+- Warm-tier 24h `hyperping_monitor_mtta_seconds` series stop emitting
+  misleading zeros for projects without acknowledged alerts. The
+  warm-tier per-UUID `get_monitor_mtta` call was reading the response's
+  top-level `mtta` aggregate (which is 0 when the project has no acks
+  in the window) into `res.mtta[uuid]`, producing one zero-valued
+  `period="24h"` series per monitor. The cold tier already handled this
+  shape correctly. v1.8.2 mirrors the cold-tier semantic in the warm
+  path: only record an entry when the response's `monitors` array
+  carries a matching uuid, and read the per-monitor value from that
+  entry rather than the aggregate. **Behaviour change at rollout:** the
+  warm 24h MTTA series disappear for any project whose Hyperping
+  account does not acknowledge alerts. They reappear automatically
+  once acks start flowing upstream.
+
+### Changed
+
+- Chart version + appVersion bumped to `1.8.2`.
+
+### Verification
+
+- All existing tests pass under `-race -count=1`. Three new tests pin
+  the warm-tier emit-suppression contract (empty Monitors -> no entry;
+  populated Monitors -> per-monitor value, never aggregate; mixed
+  fixture -> only populated uuids end up in the snapshot).
+- Helm render tests pass with version pins moved to `1.8.2`.
+- See README "MTTA precondition" for why this metric may still be
+  absent across every period after the fix lands (Layer 3 upstream
+  precondition: the project must actually acknowledge alerts).
+
 ## [1.8.1]
 
 ### Fixed

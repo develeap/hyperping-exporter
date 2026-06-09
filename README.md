@@ -340,6 +340,42 @@ See the CHANGELOG entry for v1.8.0 for the rollout notes.
 | `hyperping_monitor_longest_outage` | Gauge | Longest outage seconds in period. | `uuid`, `name`, `tenant`, `tier`, `period` |
 | `hyperping_monitor_mttr` | Gauge | Mean Time To Resolve in period. | `uuid`, `name`, `tenant`, `tier`, `period` |
 
+### MTTA precondition (why the metric may be absent)
+
+`hyperping_monitor_mtta_seconds` measures the mean time between an alert
+firing upstream and a human acknowledging it. The metric has a hard
+upstream precondition that the exporter cannot work around: the
+Hyperping project must have **acknowledged** alerts in the queried
+window. If `list_recent_alerts.rawAlerts[*].acknowledgedAt` is null for
+every alert (no on-call schedule, no ack flow configured), MTTA is
+empty across every configured period regardless of the exporter's
+behavior. This is layer 3 of a three-layer chain:
+
+1. **Layer 1 (server shape):** the MCP `get_monitor_mtta` tool must be
+   called with the correct `monitor_uuids` shape. Pre-v1.8.1 the cold
+   path sent empty uuids and got aggregate-only data; v1.8.1 fixed this
+   for cold and v1.8.2 carries the fix into warm.
+2. **Layer 2 (wiring quirk):** the warm tier must record per-monitor
+   values from the response's `monitors` array, not the top-level
+   aggregate. Pre-v1.8.2 this leaked aggregate zeros into per-monitor
+   series. v1.8.2 fixes the wiring so warm matches cold semantically.
+3. **Layer 3 (upstream data):** the project must actually acknowledge
+   alerts. Layers 1 and 2 only get the exporter to "honest absence";
+   the metric requires acks to exist.
+
+Operator self-check:
+
+- Hit MCP `list_recent_alerts` directly and look for non-null
+  `acknowledgedAt` on at least one alert in the window.
+- In Prometheus:
+  `hyperping_alerts > 0 unless ignoring(period) hyperping_monitor_mtta_seconds`
+  flags projects with alert history but no MTTA series at all.
+
+v1.8.2 deliberately moves the metric from "misleadingly zero-emitting"
+to "honest absence" for projects without acks. Dashboards and alerts
+that treated MTTA series as always-present should switch to
+`absent_over_time()` or accept gaps.
+
 ### Healthcheck metrics
 
 | Metric | Type | Description | Labels |
