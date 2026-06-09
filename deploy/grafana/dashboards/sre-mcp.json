@@ -141,7 +141,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "avg(hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "expr": "avg(hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\",period=\"24h\"})",
           "legendFormat": "Avg MTTA",
           "instant": true
         }
@@ -325,7 +325,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"}",
+          "expr": "hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\",period=\"24h\"}",
           "legendFormat": "{{name}}"
         }
       ]
@@ -360,7 +360,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "topk(10, hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\"})",
+          "expr": "topk(10, hyperping_monitor_mtta_seconds{tier=~\"$tier\",tenant=~\"$tenant\",period=\"24h\"})",
           "legendFormat": "{{name}}",
           "instant": true
         }
