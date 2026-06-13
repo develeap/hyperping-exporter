@@ -742,9 +742,36 @@ func registerProjectReadyGauge(registry *prometheus.Registry, namespace string, 
 	}
 }
 
-func newMux(metricsPath string, registry *prometheus.Registry, collectors []*collector.Collector) (http.Handler, error) {
+// probeHandler implements the Prometheus multi-target pattern: one scrape per
+// named module (project), using a throwaway per-request registry so the
+// response contains only hyperping_* series for the requested project with no
+// process_*, go_*, or build_info clutter. HTTP 400 is returned for a missing
+// or unrecognised module parameter; HTTP 200 for any known module regardless
+// of data freshness (operators alert on hyperping_scrape_success == 0).
+func probeHandler(collectorIndex map[string]*collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		module := r.URL.Query().Get("module")
+		if module == "" {
+			http.Error(w, "missing required parameter: module", http.StatusBadRequest)
+			return
+		}
+		c, ok := collectorIndex[module]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown module: %q", module), http.StatusBadRequest)
+			return
+		}
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(c)
+		h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true})
+		h.ServeHTTP(w, r)
+	}
+}
+
+func newMux(metricsPath string, registry *prometheus.Registry, collectors []*collector.Collector,
+	collectorIndex map[string]*collector.Collector) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
+	mux.Handle("/probe", probeHandler(collectorIndex))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
@@ -780,6 +807,7 @@ func newMux(metricsPath string, registry *prometheus.Registry, collectors []*col
 		Version:     version,
 		Links: []web.LandingLinks{
 			{Address: metricsPath, Text: "Metrics"},
+			{Address: "/probe", Text: "Probe (multi-target)"},
 			{Address: "/healthz", Text: "Health"},
 			{Address: "/readyz", Text: "Readiness"},
 		},
@@ -828,7 +856,11 @@ func run() int {
 	logEffectiveTierConfig(cfg, logger)
 	logDeadPeriods(cfg, logger)
 	registerTierDisabledMetric(registry, cfg)
-	mux, err := newMux(cfg.metricsPath, registry, collectors)
+	collectorIndex := make(map[string]*collector.Collector, len(collectors))
+	for _, c := range collectors {
+		collectorIndex[c.Project()] = c
+	}
+	mux, err := newMux(cfg.metricsPath, registry, collectors, collectorIndex)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
 		return 1

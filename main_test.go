@@ -123,7 +123,7 @@ func TestNewMux(t *testing.T) {
 	)
 	reg := prometheus.NewRegistry()
 
-	mux, err := newMux("/metrics", reg, []*collector.Collector{c})
+	mux, err := newMux("/metrics", reg, []*collector.Collector{c}, map[string]*collector.Collector{})
 	require.NoError(t, err)
 	require.NotNil(t, mux)
 
@@ -174,7 +174,7 @@ func TestNewMux_ReadyzOrSemantics(t *testing.T) {
 		collector.WithProject("hp_infra"),
 	)
 	reg := prometheus.NewRegistry()
-	mux, err := newMux("/metrics", reg, []*collector.Collector{healthy, broken})
+	mux, err := newMux("/metrics", reg, []*collector.Collector{healthy, broken}, map[string]*collector.Collector{})
 	require.NoError(t, err)
 
 	// Both unready: 503.
