@@ -184,6 +184,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Grafana SRE dashboard** (`deploy/grafana/dashboards/sre-mcp.json`, uid `hyperping-sre-mcp`) surfacing MCP-derived metrics: per-monitor response time, fleet p95, MTTA distribution, anomaly score top-N, the `hyperping:fleet:anomalies_high` recording rule, and the `hyperping_alerts` snapshot. Closes the visibility gap left after v1.4.0 added MCP-derived alerts (`HyperpingMonitorAnomalyHigh`, `HyperpingMonitorMTTAHigh`) without panels for the underlying metrics. Requires `--mcp-url`.
 - Per-project cache tier overrides. Each entry in the projects file
   accepts an optional `cache:` block that overrides any subset of the
   global tiered-mode knobs for that project only: `hotTTL`, `warmTTL`,
