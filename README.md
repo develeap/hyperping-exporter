@@ -115,6 +115,7 @@ All flags can also be set via environment variables.
 | `--exclude-name-pattern` | `(flag only)` | *(none)* | RE2 regex; monitors whose name matches are dropped from all per-monitor metrics and tenant aggregates. Typical use: `'\[DRILL|\[TEST'` to keep synthetic monitors out of fleet health. |
 | `--projects-file` | `HYPERPING_PROJECTS_FILE` | *(none)* | Path to a YAML list of `{id, apiKey\|apiKeyFile, mcpUrl?, excludeNamePattern?}` entries. Mutually exclusive with `--api-key` / `--api-key-file` / `HYPERPING_API_KEY`. Enables multi-project mode: every metric series carries a `project` constLabel set to the entry's `id`. See the [Multi-project deployments](#multi-project-deployments) section. |
 | `--web.config.file` | `(flag only)` | *(none)* | Path to web config file for TLS / basic auth. See [exporter-toolkit web-configuration](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md). |
+| `--disable-metrics-endpoint` | `HYPERPING_DISABLE_METRICS_ENDPOINT` | `false` | Skip the HTTP server entirely (push-only mode). Requires `--otlp-endpoint`. Suppresses `/metrics`, `/healthz`, `/readyz`. The chart also suppresses ports, probes, and Service. See the push-only mode section above for probe strategy guidance. |
 
 > Only `HYPERPING_API_KEY` is read from the environment by default;
 > all other options use CLI flags, which map cleanly to Docker `command:`
