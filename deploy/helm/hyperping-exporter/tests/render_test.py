@@ -808,6 +808,19 @@ def main() -> int:
               "servicemonitor-enabled: interval passes through")
     assert_scalars_clean(rendered, "servicemonitor-enabled")
 
+    # Case DM3 — serviceMonitor.enabled=true + disableMetricsEndpoint=true:
+    # the ServiceMonitor guard `if and serviceMonitor.enabled (not disableMetricsEndpoint)`
+    # must suppress the resource so Prometheus does not try to scrape a
+    # metrics endpoint that the binary is not serving.
+    rendered = helm_template("servicemonitor-disabled-push-only.values.yaml")
+    sm_dm3 = [d for d in docs(rendered) if d and d.get("kind") == "ServiceMonitor"]
+    assert not sm_dm3, (
+        f"FAIL DM3: ServiceMonitor must be suppressed when disableMetricsEndpoint=true; "
+        f"got {sm_dm3!r}"
+    )
+    print("PASS DM3: ServiceMonitor absent when serviceMonitor.enabled=true + disableMetricsEndpoint=true")
+    assert_scalars_clean(rendered, "DM3")
+
     # ---- Multi-project rendering (work item: exporter-chart-projects-values) ----
     # These cases pin down the chart contract for the new config.projects list.
     # They fail today because the templates / values.yaml have not yet been
