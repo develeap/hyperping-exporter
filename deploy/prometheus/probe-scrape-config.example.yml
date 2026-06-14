@@ -1,0 +1,28 @@
+# Example Prometheus scrape configuration for the multi-target /probe endpoint.
+#
+# Instead of running one exporter pod per Hyperping project, a single exporter
+# binary serves all configured projects. Each project ID in the targets list
+# must match an entry in the exporter's --projects-file YAML (the "id" field).
+#
+# Standard multi-target relabeling pattern (same as blackbox_exporter):
+#   1. Copy __address__ (the target, i.e. the project ID) to __param_module
+#      so the exporter receives ?module=<project-id> in the scrape URL.
+#   2. Copy __param_module to instance so the "instance" label in Prometheus
+#      reflects the project ID rather than the exporter's host:port.
+#   3. Replace __address__ with the exporter's actual host:port so Prometheus
+#      dials the exporter, not an address derived from the project ID.
+#
+scrape_configs:
+  - job_name: hyperping
+    metrics_path: /probe
+    static_configs:
+      - targets:
+          - hyp_core    # must match an "id" entry in the exporter's projects-file
+          - hyp_infra
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_module
+      - source_labels: [__param_module]
+        target_label: instance
+      - target_label: __address__
+        replacement: hyperping-exporter:9312
