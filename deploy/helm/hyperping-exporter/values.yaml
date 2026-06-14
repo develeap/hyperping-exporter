@@ -114,9 +114,34 @@ config:
   # when disableMetricsEndpoint is true and otlp.endpoint is empty.
   #
   # Probe strategy: ports, livenessProbe, readinessProbe, and Service are
-  # suppressed when this is true. Operators must provide alternative pod
-  # health signals (e.g. an exec probe against the OTLP collector, or
-  # process-level liveness via a sidecar).
+  # suppressed when this is true. The default httpGet probes cannot work
+  # without an HTTP server. Three alternatives:
+  #
+  #   1. No probes (chart default): Kubernetes detects container failure
+  #      via process exit and restarts it via restartPolicy: Always.
+  #      Suitable for background push exporters where scrape availability
+  #      is not a concern.
+  #
+  #   2. Exec probe targeting the OTLP collector: verify the downstream
+  #      collector is reachable. Because the chart gates the entire probe
+  #      block on `not .Values.config.disableMetricsEndpoint`, inject the
+  #      probe via a Helm post-renderer or a Kustomize patch. Example:
+  #
+  #        livenessProbe:
+  #          exec:
+  #            command: ["grpc_health_probe", "-addr=otel-collector:4317"]
+  #          initialDelaySeconds: 15
+  #          periodSeconds: 30
+  #          failureThreshold: 3
+  #
+  #      grpc_health_probe must be available in the image or installed by
+  #      an init container. For HTTP collectors replace with:
+  #        ["wget", "-qO-", "http://otel-collector:13133/"]
+  #
+  #   3. Startup-only probe: a startupProbe that checks the exporter
+  #      process is alive (kill -0 1) once at startup; no ongoing
+  #      liveness rechecks after it succeeds. Also requires
+  #      post-rendering. Requires Kubernetes 1.20+.
   #
   # The prometheus.io/* annotations on the Deployment are also suppressed
   # so annotation-based scrape discovery does not attempt to scrape a
