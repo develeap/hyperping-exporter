@@ -61,6 +61,26 @@ helm install hyperping-exporter develeap/hyperping-exporter \
 
 See `deploy/helm/hyperping-exporter/values.yaml` for the full value reference and `CHANGELOG.md` for upgrade notes between chart versions.
 
+**OTLP push** — enable metric push to an OpenTelemetry collector alongside `/metrics`:
+
+```bash
+helm install hyperping-exporter develeap/hyperping-exporter \
+  --set config.existingSecret=hyperping-api-key \
+  --set otlp.endpoint=otel-collector.monitoring:4317 \
+  --set otlp.protocol=grpc \
+  --set otlp.interval=60s
+```
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `otlp.endpoint` | `""` | OTLP collector `host:port`. Empty disables push. Env: `OTEL_EXPORTER_OTLP_ENDPOINT`. |
+| `otlp.protocol` | `"grpc"` | Transport: `"grpc"` (port 4317) or `"http"` (port 4318). Env: `OTEL_EXPORTER_OTLP_PROTOCOL`. |
+| `otlp.headers` | `""` | Comma-separated `key=value` pairs for OTLP request headers. Env: `OTEL_EXPORTER_OTLP_HEADERS`. |
+| `otlp.interval` | `"60s"` | Push interval (quoted Go duration). Env: none (use `otlp.interval`). |
+| `otlp.insecure` | `false` | Disable TLS (dev/localhost only). Env: `OTEL_EXPORTER_OTLP_INSECURE`. |
+
+**Network policy note**: the chart's default `networkPolicy.egress` allows TCP/443 to `0.0.0.0/0` minus RFC1918. An in-cluster OTLP collector (gRPC 4317 / HTTP 4318) in private RFC1918 space is blocked by the default `except` list. Set `networkPolicy.egress.except: []` or use `networkPolicy.fqdnRestriction.enabled: true` (Cilium) to permit intra-cluster OTLP traffic.
+
 </details>
 
 Metrics are served at `http://localhost:9312/metrics`.

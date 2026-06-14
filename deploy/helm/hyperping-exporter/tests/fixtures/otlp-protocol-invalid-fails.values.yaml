@@ -1,0 +1,5 @@
+config:
+  apiKey: x
+otlp:
+  endpoint: localhost:4317
+  protocol: websocket

@@ -7,6 +7,8 @@
 {{- include "hyperping-exporter.validateSecretSources" . -}}
 {{- include "hyperping-exporter.validateProjects" . -}}
 {{- include "hyperping-exporter.validateWebConfigFile" . -}}
+{{- include "hyperping-exporter.validateOtlpProtocol" . -}}
+{{- include "hyperping-exporter.validateOtlpInterval" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -79,6 +81,17 @@ spec:
             {{- end }}
             {{- if .Values.config.mcpUrl }}
             - {{ include "hyperping-exporter.arg" (list "--mcp-url" .Values.config.mcpUrl) }}
+            {{- end }}
+            {{- if (.Values.otlp | default dict).endpoint }}
+            - {{ include "hyperping-exporter.arg" (list "--otlp-endpoint" .Values.otlp.endpoint) }}
+            - {{ include "hyperping-exporter.arg" (list "--otlp-protocol" .Values.otlp.protocol) }}
+            {{- if .Values.otlp.headers }}
+            - {{ include "hyperping-exporter.arg" (list "--otlp-headers" .Values.otlp.headers) }}
+            {{- end }}
+            - {{ include "hyperping-exporter.arg" (list "--otlp-interval" .Values.otlp.interval) }}
+            {{- if .Values.otlp.insecure }}
+            - {{ include "hyperping-exporter.arg" (list "--otlp-insecure" .Values.otlp.insecure) }}
+            {{- end }}
             {{- end }}
             {{- $cacheMode := .Values.config.cacheMode | default "legacy" }}
             {{- if eq (lower $cacheMode) "tiered" }}

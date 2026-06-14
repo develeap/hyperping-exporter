@@ -248,9 +248,9 @@ BASELINE_ARGS = [
 # bumps hyperping-go to v0.6.0 for WithStatus support, and adds the
 # tier label to hyperping_data_age_seconds; chart 1.5.3 ships this
 # image as its default).
-EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.8.2"
-EXPECTED_VERSION = "1.8.2"
-EXPECTED_CHART_LABEL = "hyperping-exporter-1.8.2"
+EXPECTED_IMAGE_DEFAULT = "khaledsalhabdeveleap/hyperping-exporter:1.9.0"
+EXPECTED_VERSION = "1.9.0"
+EXPECTED_CHART_LABEL = "hyperping-exporter-1.9.0"
 
 
 def main() -> int:
@@ -1080,6 +1080,52 @@ def main() -> int:
     )
     print("PASS projects-multi-period-invalid-token: chart renders 42d verbatim; binary rejects at startup "
           "(see main.TestLoadProjectsFile_PeriodsInvalid)")
+
+    # ---- OTLP push Helm wiring (work item: chore/38808c-helm-otlp-values) ----
+
+    # Case OTLP1 — endpoint-only: core flags always render; optional flags
+    # (headers, insecure) are suppressed at defaults.
+    rendered = helm_template("otlp-endpoint-only.values.yaml")
+    assert_eq(
+        deployment_args(rendered),
+        BASELINE_ARGS + [
+            "--otlp-endpoint=localhost:4317",
+            "--otlp-protocol=grpc",
+            "--otlp-interval=60s",
+        ],
+        "otlp-endpoint-only: baseline + core OTLP args; no headers or insecure at defaults",
+    )
+    assert_scalars_clean(rendered, "otlp-endpoint-only")
+
+    # Case OTLP2 — all five values set. Every optional arg renders because
+    # headers is non-empty and insecure is true.
+    rendered = helm_template("otlp-full.values.yaml")
+    assert_eq(
+        deployment_args(rendered),
+        BASELINE_ARGS + [
+            "--otlp-endpoint=otel-collector.monitoring:4317",
+            "--otlp-protocol=http",
+            "--otlp-headers=Authorization=Bearer tok,X-Scope=prod",
+            "--otlp-interval=30s",
+            "--otlp-insecure=true",
+        ],
+        "otlp-full: baseline + all five OTLP args in template order",
+    )
+    assert_scalars_clean(rendered, "otlp-full")
+
+    # Case OTLP3 — invalid protocol aborts the render.
+    assert_fail(
+        "otlp-protocol-invalid-fails",
+        "otlp-protocol-invalid-fails.values.yaml",
+        "otlp.protocol",
+    )
+
+    # Case OTLP4 — empty interval aborts the render.
+    assert_fail(
+        "otlp-interval-empty-fails",
+        "otlp-interval-empty-fails.values.yaml",
+        "otlp.interval",
+    )
 
     print("\nALL RENDER TESTS PASSED")
     return 0

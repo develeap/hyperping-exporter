@@ -512,6 +512,39 @@ rather than at apply time.
 {{- end -}}
 
 {{/*
+validateOtlpProtocol. When otlp.endpoint is non-empty, otlp.protocol must be
+"grpc" or "http" (case-insensitive; mirrors the binary's --otlp-protocol
+validation at startup in main.go). Skipped entirely when otlp.endpoint is
+empty (OTLP push disabled; no protocol arg rendered).
+*/}}
+{{- define "hyperping-exporter.validateOtlpProtocol" -}}
+{{- $otlp := .Values.otlp | default dict -}}
+{{- if $otlp.endpoint -}}
+{{- $proto := $otlp.protocol | default "grpc" -}}
+{{- $lc := lower $proto -}}
+{{- if and (ne $lc "grpc") (ne $lc "http") -}}
+{{- fail (printf "otlp.protocol %q is not supported. Allowed values: \"grpc\" (gRPC/4317), \"http\" (HTTP/JSON/4318) (case-insensitive). Matches the binary's --otlp-protocol validation." $proto) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+validateOtlpInterval. When otlp.endpoint is non-empty, otlp.interval must be a
+non-empty string. An empty or non-string value would render `--otlp-interval=`
+which the binary's flag.Duration parser rejects at startup. Same error shape as
+validateCacheTTL. Skipped when otlp.endpoint is empty (OTLP push disabled).
+*/}}
+{{- define "hyperping-exporter.validateOtlpInterval" -}}
+{{- $otlp := .Values.otlp | default dict -}}
+{{- if $otlp.endpoint -}}
+{{- $interval := $otlp.interval -}}
+{{- if or (not (kindIs "string" $interval)) (eq ($interval | default "") "") -}}
+{{- fail (printf "otlp.interval must be a non-empty quoted Go duration string (e.g. \"60s\"); empty or non-string values would render `--otlp-interval=` which the binary's flag.Duration parser rejects at startup. Got kind %s (value %v). Quote the value in values.yaml." (kindOf $otlp.interval) $otlp.interval) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 validateNoTestKeys (R4-8, Contract C8.1). The chart currently has NO
 consumer of `internal._test*` keys (the prior PDB rendering gate that
 honored `internal._testBypassReplicaCheck` was removed in 57cbbb2). The
