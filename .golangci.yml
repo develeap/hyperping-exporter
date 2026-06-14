@@ -4,6 +4,19 @@ linters:
   default: standard
   enable:
     - gosec
+    - gocritic
+    - revive
+
+  settings:
+    govet:
+      enable:
+        - nilness
+    gocritic:
+      # ifElseChain: the existing fetchMcpData per-fetch blocks intentionally
+      # use if / else if ctx.Err() != nil { return } / else if err != nil { log }
+      # to short-circuit on cancellation; rewriting to switch obscures that.
+      disabled-checks:
+        - ifElseChain
 
   exclusions:
     rules:

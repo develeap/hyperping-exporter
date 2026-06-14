@@ -11,9 +11,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// prometheusClientMetrics implements client.Metrics using Prometheus counters,
+// ClientMetrics implements client.Metrics using Prometheus counters,
 // histograms, and gauges registered under the "hyperping_client" namespace.
-type prometheusClientMetrics struct {
+type ClientMetrics struct {
 	apiCallDuration     *prometheus.HistogramVec
 	retryTotal          *prometheus.CounterVec
 	circuitBreakerState *prometheus.GaugeVec
@@ -24,10 +24,10 @@ type prometheusClientMetrics struct {
 // fan-out can register one client-metrics set per project without Desc
 // collision. Empty project collapses to "default" for back-compat with
 // single-project deployments.
-func NewClientMetrics(registry *prometheus.Registry, namespace, project string) *prometheusClientMetrics {
+func NewClientMetrics(registry *prometheus.Registry, namespace, project string) *ClientMetrics {
 	clientNS := namespace + "_client"
 	cl := prometheus.Labels{"project": resolveProjectID(project)}
-	m := &prometheusClientMetrics{
+	m := &ClientMetrics{
 		apiCallDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace:   clientNS,
 			Name:        "api_call_duration_seconds",
@@ -56,13 +56,13 @@ func NewClientMetrics(registry *prometheus.Registry, namespace, project string) 
 }
 
 // RecordAPICall implements client.Metrics.
-func (m *prometheusClientMetrics) RecordAPICall(_ context.Context, method, path string, statusCode int, durationSec float64) {
+func (m *ClientMetrics) RecordAPICall(_ context.Context, method, path string, statusCode int, durationSec float64) {
 	path = strings.SplitN(path, "?", 2)[0]
 	m.apiCallDuration.WithLabelValues(method, path, strconv.Itoa(statusCode)).Observe(durationSec)
 }
 
 // RecordRetry implements client.Metrics.
-func (m *prometheusClientMetrics) RecordRetry(_ context.Context, method, path string, attempt int) {
+func (m *ClientMetrics) RecordRetry(_ context.Context, method, path string, attempt int) {
 	path = strings.SplitN(path, "?", 2)[0]
 	m.retryTotal.WithLabelValues(method, path, strconv.Itoa(attempt)).Inc()
 }
@@ -70,7 +70,7 @@ func (m *prometheusClientMetrics) RecordRetry(_ context.Context, method, path st
 // RecordCircuitBreakerState implements client.Metrics.
 // It resets all state gauges to 0 before setting the current state to 1
 // so the active state is always unambiguous.
-func (m *prometheusClientMetrics) RecordCircuitBreakerState(_ context.Context, state string) {
+func (m *ClientMetrics) RecordCircuitBreakerState(_ context.Context, state string) {
 	for _, s := range []string{"closed", "open", "half-open"} {
 		m.circuitBreakerState.WithLabelValues(s).Set(0)
 	}

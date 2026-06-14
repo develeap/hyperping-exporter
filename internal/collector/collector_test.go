@@ -1495,11 +1495,11 @@ type mockMCPTransport struct {
 	errors  map[string]error
 }
 
-func (m *mockMCPTransport) Initialize(ctx context.Context) (map[string]any, error) {
+func (m *mockMCPTransport) Initialize(_ context.Context) (map[string]any, error) {
 	return nil, nil
 }
 
-func (m *mockMCPTransport) CallTool(ctx context.Context, toolName string, args map[string]any) (any, error) {
+func (m *mockMCPTransport) CallTool(_ context.Context, toolName string, args map[string]any) (any, error) {
 	if err, ok := m.errors[toolName]; ok {
 		return nil, err
 	}
@@ -2190,7 +2190,7 @@ func TestCollect_MonitorName_TruncatedAt256(t *testing.T) {
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
 
-	const cap = maxLabelValueBytes
+	const maxBytes = maxLabelValueBytes
 
 	checked := 0
 	for _, mf := range mfs {
@@ -2200,8 +2200,8 @@ func TestCollect_MonitorName_TruncatedAt256(t *testing.T) {
 					continue
 				}
 				v := lp.GetValue()
-				assert.LessOrEqual(t, len(v), cap,
-					"metric %q name label is %d bytes; cap is %d", mf.GetName(), len(v), cap)
+				assert.LessOrEqual(t, len(v), maxBytes,
+					"metric %q name label is %d bytes; cap is %d", mf.GetName(), len(v), maxBytes)
 				assert.True(t, strings.HasPrefix(longName, strings.TrimRight(v, "…")),
 					"truncated name must be a prefix of the original")
 				checked++

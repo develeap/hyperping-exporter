@@ -15,7 +15,7 @@
 //
 // The new field surface is (warmEnabled, coldEnabled) bool on tieredRefresher;
 // HOT is always enabled (a Collector with HOT disabled is rejected upstream
-// at parseConfig time). A new WithTierEnable(hot, warm, cold bool) CollectorOption
+// at parseConfig time). A new WithTierEnable(hot, warm, cold bool) Option
 // plumbs the flags from main.buildCollectors into the Collector.
 
 package collector
@@ -138,7 +138,7 @@ func TestTieredRefresher_BothWarmAndColdDisabled(t *testing.T) {
 	assert.Nil(t, tr.cold.Load(), "COLD snapshot must remain nil")
 }
 
-// TestWithTierEnable_PlumbsFlagsIntoRefresher: the new CollectorOption
+// TestWithTierEnable_PlumbsFlagsIntoRefresher: the new Option
 // must reach the tieredRefresher fields. Without this option the defaults
 // are (true, true, true) so existing call sites stay byte-identical.
 func TestWithTierEnable_PlumbsFlagsIntoRefresher(t *testing.T) {
