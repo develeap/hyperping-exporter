@@ -587,3 +587,83 @@ func TestNewHTTPServer_Hardening(t *testing.T) {
 	assert.Equal(t, 120*time.Second, srv.IdleTimeout)
 	assert.Equal(t, 1<<20, srv.MaxHeaderBytes)
 }
+
+func TestParseConfig_OTLPEndpointFromFlag(t *testing.T) {
+	resetFlags(t, []string{"test", "--otlp-endpoint", "localhost:4317", "--otlp-insecure"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "localhost:4317", cfg.otlpEndpoint)
+	assert.Equal(t, "grpc", cfg.otlpProtocol, "default protocol must be grpc")
+	assert.True(t, cfg.otlpInsecure)
+}
+
+func TestParseConfig_OTLPEndpointFromEnv(t *testing.T) {
+	resetFlags(t, []string{"test"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otelcollector:4317")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "otelcollector:4317", cfg.otlpEndpoint, "OTEL_EXPORTER_OTLP_ENDPOINT env var must be picked up")
+}
+
+func TestParseConfig_OTLPProtocolValidation(t *testing.T) {
+	resetFlags(t, []string{"test", "--otlp-endpoint", "localhost:4317", "--otlp-protocol", "mqtt"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	var buf bytes.Buffer
+	_, ok := parseConfigOut(&buf)
+	assert.False(t, ok, "invalid protocol with endpoint set must fail")
+	assert.Contains(t, buf.String(), "mqtt")
+}
+
+func TestParseConfig_OTLPProtocolDefault(t *testing.T) {
+	resetFlags(t, []string{"test"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "grpc", cfg.otlpProtocol, "absent --otlp-protocol must default to grpc")
+}
+
+func TestParseConfig_OTLPProtocolSkipsValidationWhenNoEndpoint(t *testing.T) {
+	resetFlags(t, []string{"test", "--otlp-protocol", "invalid"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	_, ok := parseConfig()
+	assert.True(t, ok, "invalid protocol without endpoint must not fail (push mode disabled)")
+}
+
+func TestParseConfig_OTLPHeadersFromEnv(t *testing.T) {
+	resetFlags(t, []string{"test", "--otlp-endpoint", "localhost:4317", "--otlp-insecure"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer tok")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.Equal(t, "Authorization=Bearer tok", cfg.otlpHeaders)
+}
+
+func TestParseOTLPHeaders(t *testing.T) {
+	h := parseOTLPHeaders("Authorization=Bearer tok,X-Custom=val")
+	require.NotNil(t, h)
+	assert.Equal(t, "Bearer tok", h["Authorization"])
+	assert.Equal(t, "val", h["X-Custom"])
+}
+
+func TestParseOTLPHeaders_Empty(t *testing.T) {
+	h := parseOTLPHeaders("")
+	assert.Nil(t, h, "empty input must return nil")
+}
+
+func TestParseOTLPHeaders_MalformedPair(t *testing.T) {
+	h := parseOTLPHeaders("keyonly,,=emptykey,good=val")
+	require.NotNil(t, h)
+	_, hasKeyonly := h["keyonly"]
+	assert.False(t, hasKeyonly, "pair without '=' must be skipped")
+	_, hasEmptyKey := h[""]
+	assert.False(t, hasEmptyKey, "pair with empty key must be skipped")
+	assert.Equal(t, "val", h["good"])
+}
