@@ -28,6 +28,7 @@ import (
 
 	hyperping "github.com/develeap/hyperping-go"
 	"github.com/develeap/hyperping-exporter/internal/collector"
+	"github.com/develeap/hyperping-exporter/internal/otelpush"
 )
 
 var version = "dev"
@@ -55,6 +56,12 @@ type config struct {
 	mcpURL             string
 	excludeNamePattern string
 	excludeNameRx      *regexp.Regexp
+
+	otlpEndpoint string
+	otlpProtocol string
+	otlpHeaders  string
+	otlpInterval time.Duration
+	otlpInsecure bool
 
 	// projects is the resolved list of per-project configurations. The
 	// legacy single-key path (--api-key / --api-key-file / HYPERPING_API_KEY
@@ -294,11 +301,30 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	flag.StringVar(&cfg.mcpURL, "mcp-url", "", "Custom Hyperping MCP server URL (default: https://api.hyperping.io/v1/mcp)")
 	flag.StringVar(&cfg.excludeNamePattern, "exclude-name-pattern", "", "RE2 regex; monitors whose name matches are excluded from all metrics and tenant aggregates")
 	flag.StringVar(&cfg.projectsFile, "projects-file", "", "Path to a YAML list of {id, apiKey|apiKeyFile, mcpUrl?, excludeNamePattern?} entries. Mutually exclusive with --api-key/--api-key-file/HYPERPING_API_KEY. Env: HYPERPING_PROJECTS_FILE.")
+	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", `OTLP collector endpoint (e.g. localhost:4317). When set, metrics are pushed via OTLP in addition to /metrics. Env: OTEL_EXPORTER_OTLP_ENDPOINT.`)
+	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", `OTLP transport protocol: "grpc" (default) or "http". Env: OTEL_EXPORTER_OTLP_PROTOCOL.`)
+	flag.StringVar(&cfg.otlpHeaders, "otlp-headers", "", `Comma-separated key=value pairs for OTLP request headers (e.g. "Authorization=Bearer tok"). Env: OTEL_EXPORTER_OTLP_HEADERS.`)
+	flag.DurationVar(&cfg.otlpInterval, "otlp-interval", 60*time.Second, "OTLP push interval.")
+	flag.BoolVar(&cfg.otlpInsecure, "otlp-insecure", false, "Disable TLS for OTLP transport (dev/localhost only). Env: OTEL_EXPORTER_OTLP_INSECURE.")
 	flag.Parse()
 
 	// HYPERPING_PROJECTS_FILE env fallback (mirrors --api-key/HYPERPING_API_KEY pattern).
 	if cfg.projectsFile == "" {
 		cfg.projectsFile = os.Getenv("HYPERPING_PROJECTS_FILE")
+	}
+
+	// OTLP env fallbacks per OTEL_EXPORTER_OTLP_* convention.
+	if cfg.otlpEndpoint == "" {
+		cfg.otlpEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	}
+	if cfg.otlpProtocol == "grpc" && os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL") != "" {
+		cfg.otlpProtocol = os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+	}
+	if cfg.otlpHeaders == "" {
+		cfg.otlpHeaders = os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")
+	}
+	if !cfg.otlpInsecure && os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true" {
+		cfg.otlpInsecure = true
 	}
 
 	// Mutual exclusion: --api-key / --api-key-file / HYPERPING_API_KEY
@@ -377,6 +403,15 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 			return cfg, false
 		}
 		cfg.excludeNameRx = rx
+	}
+	if cfg.otlpEndpoint != "" {
+		switch strings.ToLower(cfg.otlpProtocol) {
+		case "grpc", "http":
+			cfg.otlpProtocol = strings.ToLower(cfg.otlpProtocol)
+		default:
+			_, _ = fmt.Fprintf(stderr, "error: invalid --otlp-protocol %q: must be \"grpc\" or \"http\"\n", cfg.otlpProtocol)
+			return cfg, false
+		}
 	}
 
 	// Resolve cfg.projects. Two shapes:
@@ -742,9 +777,36 @@ func registerProjectReadyGauge(registry *prometheus.Registry, namespace string, 
 	}
 }
 
-func newMux(metricsPath string, registry *prometheus.Registry, collectors []*collector.Collector) (http.Handler, error) {
+// probeHandler implements the Prometheus multi-target pattern: one scrape per
+// named module (project), using a throwaway per-request registry so the
+// response contains only hyperping_* series for the requested project with no
+// process_*, go_*, or build_info clutter. HTTP 400 is returned for a missing
+// or unrecognised module parameter; HTTP 200 for any known module regardless
+// of data freshness (operators alert on hyperping_scrape_success == 0).
+func probeHandler(collectorIndex map[string]*collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		module := r.URL.Query().Get("module")
+		if module == "" {
+			http.Error(w, "missing required parameter: module", http.StatusBadRequest)
+			return
+		}
+		c, ok := collectorIndex[module]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown module: %q", module), http.StatusBadRequest)
+			return
+		}
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(c)
+		h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true})
+		h.ServeHTTP(w, r)
+	}
+}
+
+func newMux(metricsPath string, registry *prometheus.Registry, collectors []*collector.Collector,
+	collectorIndex map[string]*collector.Collector) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
+	mux.Handle("/probe", probeHandler(collectorIndex))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
@@ -780,6 +842,7 @@ func newMux(metricsPath string, registry *prometheus.Registry, collectors []*col
 		Version:     version,
 		Links: []web.LandingLinks{
 			{Address: metricsPath, Text: "Metrics"},
+			{Address: "/probe", Text: "Probe (multi-target)"},
 			{Address: "/healthz", Text: "Health"},
 			{Address: "/readyz", Text: "Readiness"},
 		},
@@ -789,6 +852,24 @@ func newMux(metricsPath string, registry *prometheus.Registry, collectors []*col
 	}
 	mux.Handle("/", landingPage)
 	return mux, nil
+}
+
+// parseOTLPHeaders parses comma-separated key=value pairs into a map.
+// It follows the OTEL_EXPORTER_OTLP_HEADERS spec: pairs are split on comma,
+// and each pair is split on the first '=' character. Pairs that lack an '='
+// or have an empty key are silently skipped. Returns nil for empty input.
+func parseOTLPHeaders(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	headers := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if ok && k != "" {
+			headers[k] = v
+		}
+	}
+	return headers
 }
 
 func run() int {
@@ -828,7 +909,11 @@ func run() int {
 	logEffectiveTierConfig(cfg, logger)
 	logDeadPeriods(cfg, logger)
 	registerTierDisabledMetric(registry, cfg)
-	mux, err := newMux(cfg.metricsPath, registry, collectors)
+	collectorIndex := make(map[string]*collector.Collector, len(collectors))
+	for _, c := range collectors {
+		collectorIndex[c.Project()] = c
+	}
+	mux, err := newMux(cfg.metricsPath, registry, collectors, collectorIndex)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
 		return 1
@@ -836,6 +921,35 @@ func run() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if cfg.otlpEndpoint != "" {
+		otelCfg := otelpush.Config{
+			Endpoint:  cfg.otlpEndpoint,
+			Protocol:  cfg.otlpProtocol,
+			Headers:   parseOTLPHeaders(cfg.otlpHeaders),
+			Interval:  cfg.otlpInterval,
+			Insecure:  cfg.otlpInsecure,
+			Namespace: cfg.namespace,
+		}
+		pusher, err := otelpush.NewPusher(ctx, otelCfg, collectors)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: initialize OTLP pusher: %v\n", err)
+			return 1
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := pusher.Shutdown(shutdownCtx); err != nil {
+				logger.Error("OTLP pusher shutdown error", "error", err)
+			}
+		}()
+		logger.Info("OTLP push enabled",
+			"endpoint", cfg.otlpEndpoint,
+			"protocol", cfg.otlpProtocol,
+			"interval", cfg.otlpInterval,
+		)
+	}
+
 	// One Start per Collector so each project's tieredRefresher (or
 	// legacy ticker) runs independently. A rate-limit pause on one
 	// project does not stall the others.
