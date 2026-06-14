@@ -545,6 +545,21 @@ validateCacheTTL. Skipped when otlp.endpoint is empty (OTLP push disabled).
 {{- end -}}
 
 {{/*
+validateDisableMetricsEndpoint. When config.disableMetricsEndpoint is true,
+otlp.endpoint must be set. A push-only Pod without an OTLP collector produces
+no observable output and is always a misconfiguration; failing here prevents a
+silently-idle Pod.
+*/}}
+{{- define "hyperping-exporter.validateDisableMetricsEndpoint" -}}
+{{- if .Values.config.disableMetricsEndpoint -}}
+{{- $otlp := .Values.otlp | default dict -}}
+{{- if not $otlp.endpoint -}}
+{{- fail "config.disableMetricsEndpoint requires otlp.endpoint to be set. Push-only mode produces no observable output without an OTLP collector endpoint; set otlp.endpoint (e.g. \"otel-collector:4317\") or remove disableMetricsEndpoint." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 validateNoTestKeys (R4-8, Contract C8.1). The chart currently has NO
 consumer of `internal._test*` keys (the prior PDB rendering gate that
 honored `internal._testBypassReplicaCheck` was removed in 57cbbb2). The

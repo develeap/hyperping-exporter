@@ -1,0 +1,5 @@
+config:
+  apiKey: x
+  disableMetricsEndpoint: true
+otlp:
+  endpoint: otel-collector.monitoring:4317

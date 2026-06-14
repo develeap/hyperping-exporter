@@ -9,6 +9,15 @@ import (
 	hyperping "github.com/develeap/hyperping-go"
 )
 
+// SanitizeURL strips query parameters and fragments from raw, matching the
+// Prometheus-path label sanitization used to keep URL cardinality bounded.
+// Exported for use by bridge consumers outside this package.
+func SanitizeURL(raw string) string { return sanitizeURL(raw) }
+
+// CapLabel truncates name to maxLabelValueBytes when necessary, matching the
+// Prometheus-path label cap. Exported for bridge consumers.
+func CapLabel(name string) string { return capLabel(name) }
+
 // Snapshot is a public, read-only view of a Collector's cached state.
 // It is intended for consumers outside the collector package (e.g. the OTLP
 // push bridge in internal/otelpush). The struct is a shallow copy of the
@@ -52,6 +61,16 @@ type Snapshot struct {
 	ExcludedCount int
 	// ScrapeOK is true when the last scrape of core monitor data succeeded.
 	ScrapeOK bool
+	// Healthchecks is the last-refreshed list of healthcheck monitors.
+	Healthchecks []hyperping.Healthcheck
+	// RegionDownIndex maps monitor UUID to (region -> is_down). Absent key means no region data.
+	RegionDownIndex map[string]map[string]bool
+	// OpenIncidentCount is the count of open (non-resolved) incidents.
+	OpenIncidentCount int
+	// ActiveMaintenanceCount is the count of currently active maintenance windows.
+	ActiveMaintenanceCount int
+	// ScrapeDuration is the elapsed time of the last API cache refresh.
+	ScrapeDuration time.Duration
 }
 
 // TakeSnapshot returns a public Snapshot of the Collector's current cached
@@ -92,17 +111,26 @@ func (c *Collector) TakeSnapshot() Snapshot {
 	if !c.lastSuccessTime.IsZero() {
 		dataAges["hot"] = time.Since(c.lastSuccessTime).Seconds()
 	}
+	outageIdx := buildActiveOutageIndex(c.outages)
+	maintenanceIdx, activeMaintCount := buildMaintenanceIndex(c.maintenanceWindows, c.monitors)
 	return Snapshot{
-		Monitors:          c.monitors,
-		Reports:           reports,
-		ResponseTimeIndex: rtIdx,
-		MttaIndex:         mttaIdx,
-		AnomalyCountIndex: anomCountIdx,
-		AnomalyScoreIndex: anomScoreIdx,
-		TotalAlerts:       c.totalAlerts,
-		DataAges:          dataAges,
-		ExcludedCount:     c.excludedCount,
-		ScrapeOK:          c.lastScrapeOK,
+		Monitors:               c.monitors,
+		OutageIndex:            outageIdx,
+		MaintenanceIndex:       maintenanceIdx,
+		Healthchecks:           c.healthchecks,
+		RegionDownIndex:        buildRegionDownIndex(outageIdx),
+		OpenIncidentCount:      countOpenIncidents(c.incidents),
+		ActiveMaintenanceCount: activeMaintCount,
+		ScrapeDuration:         c.lastScrapeDur,
+		Reports:                reports,
+		ResponseTimeIndex:      rtIdx,
+		MttaIndex:              mttaIdx,
+		AnomalyCountIndex:      anomCountIdx,
+		AnomalyScoreIndex:      anomScoreIdx,
+		TotalAlerts:            c.totalAlerts,
+		DataAges:               dataAges,
+		ExcludedCount:          c.excludedCount,
+		ScrapeOK:               c.lastScrapeOK,
 	}
 }
 
@@ -110,19 +138,24 @@ func (c *Collector) TakeSnapshot() Snapshot {
 // Snapshot type. Called by TakeSnapshot in tiered mode.
 func snapshotFromInternal(snap collectorSnapshot) Snapshot {
 	return Snapshot{
-		Monitors:          snap.monitors,
-		OutageIndex:       snap.outageIndex,
-		MaintenanceIndex:  snap.maintenanceIndex,
-		Reports:           snap.reports,
-		ResponseTimeIndex: snap.responseTimeIndex,
-		MttaIndex:         snap.mttaIndex,
-		MttaByPeriod:      snap.mttaByPeriod,
-		AnomalyCountIndex: snap.anomalyCountIndex,
-		AnomalyScoreIndex: snap.anomalyScoreIndex,
-		TotalAlerts:       snap.totalAlerts,
-		DataAges:          snap.dataAges,
-		ExcludedCount:     snap.excludedCount,
-		ScrapeOK:          snap.scrapeOK,
+		Monitors:               snap.monitors,
+		OutageIndex:            snap.outageIndex,
+		MaintenanceIndex:       snap.maintenanceIndex,
+		Healthchecks:           snap.healthchecks,
+		RegionDownIndex:        snap.regionDownIndex,
+		OpenIncidentCount:      snap.openIncidentCount,
+		ActiveMaintenanceCount: snap.activeMaintenanceCount,
+		ScrapeDuration:         snap.scrapeDur,
+		Reports:                snap.reports,
+		ResponseTimeIndex:      snap.responseTimeIndex,
+		MttaIndex:              snap.mttaIndex,
+		MttaByPeriod:           snap.mttaByPeriod,
+		AnomalyCountIndex:      snap.anomalyCountIndex,
+		AnomalyScoreIndex:      snap.anomalyScoreIndex,
+		TotalAlerts:            snap.totalAlerts,
+		DataAges:               snap.dataAges,
+		ExcludedCount:          snap.excludedCount,
+		ScrapeOK:               snap.scrapeOK,
 	}
 }
 
