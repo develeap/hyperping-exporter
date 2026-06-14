@@ -368,7 +368,7 @@ func emitSLAMetrics(
 ) {
 	for period, reports := range snap.Reports {
 		for _, r := range reports {
-			o.ObserveFloat64(slaRatio, r.SLA,
+			o.ObserveFloat64(slaRatio, r.SLA/100.0,
 				metric.WithAttributes(
 					attribute.String("uuid", r.UUID),
 					attribute.String("period", period),
