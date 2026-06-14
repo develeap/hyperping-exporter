@@ -195,6 +195,42 @@ config:
   # `helm upgrade`, run `kubectl rollout restart deployment/<name>`.
   projects: []
 
+# OTLP push configuration. When otlp.endpoint is empty (the default), OTLP push
+# is disabled and no OTLP flags are passed to the binary. When endpoint is set,
+# the exporter pushes metrics to the OTLP collector in addition to serving them
+# on /metrics.
+#
+# The binary validates the protocol at startup; the chart validates at render
+# time via validateOtlpProtocol so operators get a clear error before a Pod is
+# created. Allowed protocol values: "grpc" (default, gRPC/4317) and "http"
+# (HTTP/JSON over port 4318).
+#
+# Network policy note: if networkPolicy.enabled is true, the default egress
+# block allows TCP/443 to 0.0.0.0/0 minus RFC1918. An in-cluster OTLP
+# collector (gRPC 4317, HTTP 4318) in RFC1918 space is blocked by the default
+# except list. Operators must set networkPolicy.egress.except: [] or use the
+# Cilium FQDN variant to permit intra-cluster OTLP traffic.
+otlp:
+  # OTLP collector endpoint (host:port). When empty, OTLP push is disabled.
+  # Env fallback: OTEL_EXPORTER_OTLP_ENDPOINT.
+  # Example: "otel-collector.monitoring:4317"
+  endpoint: ""
+  # Transport protocol: "grpc" (default) or "http".
+  # Env fallback: OTEL_EXPORTER_OTLP_PROTOCOL.
+  protocol: "grpc"
+  # Comma-separated key=value pairs for OTLP request headers.
+  # Example: "Authorization=Bearer tok,X-Scope=prod"
+  # Env fallback: OTEL_EXPORTER_OTLP_HEADERS.
+  headers: ""
+  # OTLP push interval. Must be a non-empty quoted Go duration string (e.g.
+  # "60s"). The chart rejects an empty string at render time via
+  # validateOtlpInterval; the binary's flag.Duration parser would also reject
+  # it at startup.
+  interval: "60s"
+  # Disable TLS for the OTLP transport. For dev/localhost only.
+  # Env fallback: OTEL_EXPORTER_OTLP_INSECURE.
+  insecure: false
+
 service:
   type: ClusterIP
   port: 9312
