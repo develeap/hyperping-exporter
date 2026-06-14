@@ -84,8 +84,8 @@ func TestBridge_EmitsGauges(t *testing.T) {
 		},
 		Reports: map[string][]hyperping.MonitorReport{
 			"24h": {
-				{UUID: "m1", SLA: 0.999},
-				{UUID: "m2", SLA: 0.950},
+				{UUID: "m1", SLA: 99.9},
+				{UUID: "m2", SLA: 95.0},
 			},
 		},
 		ResponseTimeIndex: map[string]float64{"m1": 0.042},
@@ -102,6 +102,10 @@ func TestBridge_EmitsGauges(t *testing.T) {
 	slaRatio := findMetric(rm, "hyperping_monitor_sla_ratio")
 	require.NotNil(t, slaRatio, "hyperping_monitor_sla_ratio metric must be present")
 	assert.GreaterOrEqual(t, dataPointCount(slaRatio), 2)
+	for _, dp := range gaugeDataPoints(slaRatio) {
+		assert.LessOrEqual(t, dp.Value, 1.0, "sla_ratio must be in [0,1], not [0,100]")
+		assert.GreaterOrEqual(t, dp.Value, 0.0)
+	}
 
 	dataAge := findMetric(rm, "hyperping_data_age_seconds")
 	require.NotNil(t, dataAge, "hyperping_data_age_seconds metric must be present")
