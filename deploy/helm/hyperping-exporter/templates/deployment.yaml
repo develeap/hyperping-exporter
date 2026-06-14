@@ -107,7 +107,7 @@ spec:
             - {{ include "hyperping-exporter.arg" (list "--projects-file" "/etc/hyperping/projects.yaml") }}
             {{- end }}
             {{- if .Values.config.disableMetricsEndpoint }}
-            - "--disable-metrics-endpoint"
+            - {{ include "hyperping-exporter.arg" (list "--disable-metrics-endpoint" .Values.config.disableMetricsEndpoint) }}
             {{- end }}
           {{- if and (not .Values.config.projects) (gt (int (include "hyperping-exporter.secretSourceCount" .)) 0) }}
           env:

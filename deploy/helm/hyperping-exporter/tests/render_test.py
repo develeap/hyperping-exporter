@@ -1140,7 +1140,7 @@ def main() -> int:
             "--otlp-endpoint=otel-collector.monitoring:4317",
             "--otlp-protocol=grpc",
             "--otlp-interval=60s",
-            "--disable-metrics-endpoint",
+            "--disable-metrics-endpoint=true",
         ],
         "DM1: push-only args include OTLP flags and --disable-metrics-endpoint",
     )
