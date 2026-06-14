@@ -1,0 +1,9 @@
+config:
+  apiKey: x
+  disableMetricsEndpoint: true
+otlp:
+  endpoint: otel-collector.monitoring:4317
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
