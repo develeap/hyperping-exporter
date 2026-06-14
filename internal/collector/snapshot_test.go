@@ -16,6 +16,33 @@ import (
 	hyperping "github.com/develeap/hyperping-go"
 )
 
+// TestCollector_TakeSnapshot_LegacyNewFields verifies that the five new
+// Snapshot fields are populated by TakeSnapshot in legacy cache mode.
+func TestCollector_TakeSnapshot_LegacyNewFields(t *testing.T) {
+	api := &mockAPI{
+		monitors: []hyperping.Monitor{
+			{UUID: "uuid-1", Name: "Prod/web", Status: "up"},
+		},
+		healthchecks: []hyperping.Healthcheck{
+			{UUID: "hc-1", Name: "heartbeat", Period: 300},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := NewCollector(api, nil, 60*time.Second, logger, "hyperping")
+
+	c.Refresh(context.Background())
+	require.True(t, c.IsReady())
+
+	snap := c.TakeSnapshot()
+
+	require.Len(t, snap.Healthchecks, 1, "Healthchecks must be populated")
+	assert.Equal(t, "hc-1", snap.Healthchecks[0].UUID)
+	assert.NotNil(t, snap.RegionDownIndex, "RegionDownIndex must be non-nil")
+	assert.GreaterOrEqual(t, snap.OpenIncidentCount, 0, "OpenIncidentCount must be non-negative")
+	assert.GreaterOrEqual(t, snap.ActiveMaintenanceCount, 0, "ActiveMaintenanceCount must be non-negative")
+	assert.Greater(t, snap.ScrapeDuration, time.Duration(0), "ScrapeDuration must be positive after Refresh")
+}
+
 // TestCollector_TakeSnapshot_Legacy verifies that TakeSnapshot returns a
 // populated snapshot after a successful Refresh in legacy cache mode.
 func TestCollector_TakeSnapshot_Legacy(t *testing.T) {
