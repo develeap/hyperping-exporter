@@ -667,3 +667,52 @@ func TestParseOTLPHeaders_MalformedPair(t *testing.T) {
 	assert.False(t, hasEmptyKey, "pair with empty key must be skipped")
 	assert.Equal(t, "val", h["good"])
 }
+
+func TestParseConfig_DisableMetricsEndpoint_Flag(t *testing.T) {
+	resetFlags(t, []string{"test", "--disable-metrics-endpoint", "--otlp-endpoint", "localhost:4317"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.True(t, cfg.disableMetricsEndpoint)
+}
+
+func TestParseConfig_DisableMetricsEndpoint_EnvFallback(t *testing.T) {
+	resetFlags(t, []string{"test", "--otlp-endpoint", "localhost:4317"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+	t.Setenv("HYPERPING_DISABLE_METRICS_ENDPOINT", "true")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.True(t, cfg.disableMetricsEndpoint)
+}
+
+func TestParseConfig_DisableMetricsEndpoint_EnvFallback_One(t *testing.T) {
+	resetFlags(t, []string{"test", "--otlp-endpoint", "localhost:4317"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+	t.Setenv("HYPERPING_DISABLE_METRICS_ENDPOINT", "1")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.True(t, cfg.disableMetricsEndpoint)
+}
+
+func TestParseConfig_DisableMetricsEndpoint_RequiresOTLP(t *testing.T) {
+	resetFlags(t, []string{"test", "--disable-metrics-endpoint"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	var buf bytes.Buffer
+	_, ok := parseConfigOut(&buf)
+	assert.False(t, ok, "--disable-metrics-endpoint without --otlp-endpoint must fail")
+	assert.Contains(t, buf.String(), "otlp-endpoint")
+}
+
+func TestParseConfig_DisableMetricsEndpoint_WithOTLP(t *testing.T) {
+	resetFlags(t, []string{"test", "--disable-metrics-endpoint", "--otlp-endpoint", "otel:4317"})
+	t.Setenv("HYPERPING_API_KEY", "testkey")
+
+	cfg, ok := parseConfig()
+	require.True(t, ok)
+	assert.True(t, cfg.disableMetricsEndpoint)
+	assert.Equal(t, "otel:4317", cfg.otlpEndpoint)
+}

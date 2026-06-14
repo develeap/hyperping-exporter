@@ -63,6 +63,8 @@ type config struct {
 	otlpInterval time.Duration
 	otlpInsecure bool
 
+	disableMetricsEndpoint bool
+
 	// projects is the resolved list of per-project configurations. The
 	// legacy single-key path (--api-key / --api-key-file / HYPERPING_API_KEY
 	// without --projects-file) synthesises a single entry with ID="default"
@@ -306,6 +308,7 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	flag.StringVar(&cfg.otlpHeaders, "otlp-headers", "", `Comma-separated key=value pairs for OTLP request headers (e.g. "Authorization=Bearer tok"). Env: OTEL_EXPORTER_OTLP_HEADERS.`)
 	flag.DurationVar(&cfg.otlpInterval, "otlp-interval", 60*time.Second, "OTLP push interval.")
 	flag.BoolVar(&cfg.otlpInsecure, "otlp-insecure", false, "Disable TLS for OTLP transport (dev/localhost only). Env: OTEL_EXPORTER_OTLP_INSECURE.")
+	flag.BoolVar(&cfg.disableMetricsEndpoint, "disable-metrics-endpoint", false, "Skip the Prometheus HTTP metrics endpoint entirely. Requires --otlp-endpoint. Env: HYPERPING_DISABLE_METRICS_ENDPOINT.")
 	flag.Parse()
 
 	// HYPERPING_PROJECTS_FILE env fallback (mirrors --api-key/HYPERPING_API_KEY pattern).
@@ -325,6 +328,10 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 	}
 	if !cfg.otlpInsecure && os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true" {
 		cfg.otlpInsecure = true
+	}
+	envDisable := os.Getenv("HYPERPING_DISABLE_METRICS_ENDPOINT")
+	if !cfg.disableMetricsEndpoint && (envDisable == "true" || envDisable == "1") {
+		cfg.disableMetricsEndpoint = true
 	}
 
 	// Mutual exclusion: --api-key / --api-key-file / HYPERPING_API_KEY
@@ -412,6 +419,10 @@ func parseConfigOut(stderr io.Writer) (config, bool) {
 			_, _ = fmt.Fprintf(stderr, "error: invalid --otlp-protocol %q: must be \"grpc\" or \"http\"\n", cfg.otlpProtocol)
 			return cfg, false
 		}
+	}
+	if cfg.disableMetricsEndpoint && cfg.otlpEndpoint == "" {
+		_, _ = fmt.Fprintln(stderr, "error: --disable-metrics-endpoint requires --otlp-endpoint (push-only mode produces no output without an OTLP collector)")
+		return cfg, false
 	}
 
 	// Resolve cfg.projects. Two shapes:
@@ -879,7 +890,6 @@ func run() int {
 	}
 
 	logger := setupLogger(cfg.logLevel, cfg.logFormat)
-	registry := newBaseRegistry(cfg.namespace)
 
 	if cfg.excludeNameRx != nil {
 		logger.Info("monitor exclusion filter active", "pattern", cfg.excludeNamePattern)
@@ -892,32 +902,26 @@ func run() int {
 		)
 	}
 
+	// In push-only mode, a throwaway registry absorbs client/MCP internal
+	// metrics from buildCollectors so no HTTP server is needed.
+	var registry *prometheus.Registry
+	if cfg.disableMetricsEndpoint {
+		registry = prometheus.NewRegistry()
+	} else {
+		registry = newBaseRegistry(cfg.namespace)
+	}
+
 	collectors, err := buildCollectors(cfg, registry, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: build collectors: %v\n", err)
 		return 1
 	}
-	for _, c := range collectors {
-		registry.MustRegister(c)
-	}
-	registerProjectReadyGauge(registry, cfg.namespace, collectors)
-	// Operator visibility (D4 / D5 from the design): emit one structured
-	// log line per project showing the effective tier configuration, and
-	// register an absence-based self-metric that surfaces any explicitly
-	// disabled tier so dashboards can distinguish operator intent from
-	// breakage.
+
+	// Operator visibility: structured log lines for effective tier config.
+	// These run regardless of --disable-metrics-endpoint because they emit
+	// log lines, not Prometheus metrics.
 	logEffectiveTierConfig(cfg, logger)
 	logDeadPeriods(cfg, logger)
-	registerTierDisabledMetric(registry, cfg)
-	collectorIndex := make(map[string]*collector.Collector, len(collectors))
-	for _, c := range collectors {
-		collectorIndex[c.Project()] = c
-	}
-	mux, err := newMux(cfg.metricsPath, registry, collectors, collectorIndex)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
-		return 1
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -956,6 +960,33 @@ func run() int {
 	for _, c := range collectors {
 		go c.Start(ctx)
 	}
+
+	if cfg.disableMetricsEndpoint {
+		logger.Info("push-only mode: HTTP metrics endpoint disabled; liveness/readiness must be provided externally",
+			"version", version,
+			"namespace", cfg.namespace,
+		)
+		<-ctx.Done()
+		logger.Info("shutting down")
+		return 0
+	}
+
+	// --- HTTP scrape path (default) ---
+	for _, c := range collectors {
+		registry.MustRegister(c)
+	}
+	registerProjectReadyGauge(registry, cfg.namespace, collectors)
+	registerTierDisabledMetric(registry, cfg)
+	collectorIndex := make(map[string]*collector.Collector, len(collectors))
+	for _, c := range collectors {
+		collectorIndex[c.Project()] = c
+	}
+	mux, err := newMux(cfg.metricsPath, registry, collectors, collectorIndex)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: create landing page: %v\n", err)
+		return 1
+	}
+
 	noSocket := false
 	srv := newHTTPServer(cfg.listenAddr, mux)
 	webFlags := &web.FlagConfig{
