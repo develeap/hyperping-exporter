@@ -1,0 +1,4 @@
+config:
+  apiKey: x
+otlp:
+  endpoint: localhost:4317

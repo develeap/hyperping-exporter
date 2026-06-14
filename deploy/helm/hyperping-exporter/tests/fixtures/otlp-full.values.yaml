@@ -1,0 +1,8 @@
+config:
+  apiKey: x
+otlp:
+  endpoint: otel-collector.monitoring:4317
+  protocol: http
+  headers: "Authorization=Bearer tok,X-Scope=prod"
+  interval: "30s"
+  insecure: true
