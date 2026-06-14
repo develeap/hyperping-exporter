@@ -1127,6 +1127,52 @@ def main() -> int:
         "otlp.interval",
     )
 
+    # ---- disable-metrics-endpoint (push-only mode, ticket #09d711) ----
+
+    # Case DM1 — push-only mode renders correctly.
+    # Service must be absent; Deployment must have no ports, no liveness/
+    # readiness probes, no prometheus.io/* annotations; args include
+    # --disable-metrics-endpoint and the OTLP args.
+    rendered = helm_template("disable-metrics-endpoint.values.yaml")
+    assert_eq(
+        deployment_args(rendered),
+        BASELINE_ARGS + [
+            "--otlp-endpoint=otel-collector.monitoring:4317",
+            "--otlp-protocol=grpc",
+            "--otlp-interval=60s",
+            "--disable-metrics-endpoint",
+        ],
+        "DM1: push-only args include OTLP flags and --disable-metrics-endpoint",
+    )
+    dep_dm1 = find_deployment(rendered)
+    c_dm1 = dep_dm1["spec"]["template"]["spec"]["containers"][0]
+    assert c_dm1.get("ports") is None, \
+        f"FAIL DM1: ports must be absent in push-only mode; got {c_dm1.get('ports')!r}"
+    print("PASS DM1: no ports in push-only mode")
+    assert c_dm1.get("livenessProbe") is None, \
+        f"FAIL DM1: livenessProbe must be absent in push-only mode"
+    print("PASS DM1: no livenessProbe in push-only mode")
+    assert c_dm1.get("readinessProbe") is None, \
+        f"FAIL DM1: readinessProbe must be absent in push-only mode"
+    print("PASS DM1: no readinessProbe in push-only mode")
+    annotations_dm1 = dep_dm1["spec"]["template"]["metadata"].get("annotations") or {}
+    for anno_key in ("prometheus.io/scrape", "prometheus.io/port", "prometheus.io/path"):
+        assert anno_key not in annotations_dm1, \
+            f"FAIL DM1: {anno_key} must be absent in push-only mode; got {annotations_dm1!r}"
+    print("PASS DM1: no prometheus.io/* annotations in push-only mode")
+    svc_dm1 = next((d for d in docs(rendered) if d and d.get("kind") == "Service"), None)
+    assert svc_dm1 is None, \
+        f"FAIL DM1: Service must not render in push-only mode; got {svc_dm1!r}"
+    print("PASS DM1: Service absent in push-only mode")
+    assert_scalars_clean(rendered, "DM1")
+
+    # Case DM2 — disableMetricsEndpoint without otlp.endpoint aborts render.
+    assert_fail(
+        "DM2",
+        "disable-metrics-no-otlp-fails.values.yaml",
+        "disableMetricsEndpoint",
+    )
+
     print("\nALL RENDER TESTS PASSED")
     return 0
 

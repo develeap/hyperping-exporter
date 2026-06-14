@@ -107,6 +107,22 @@ config:
   # endpoint (https://api.hyperping.io/v1/mcp).
   mcpUrl: ""
 
+  # Push-only mode. When true, the binary skips the Prometheus HTTP metrics
+  # endpoint entirely (no registry, no mux, no ListenAndServe). The process
+  # blocks on signal instead, pushing metrics via OTLP on the configured
+  # interval. Requires otlp.endpoint to be set; the chart aborts the render
+  # when disableMetricsEndpoint is true and otlp.endpoint is empty.
+  #
+  # Probe strategy: ports, livenessProbe, readinessProbe, and Service are
+  # suppressed when this is true. Operators must provide alternative pod
+  # health signals (e.g. an exec probe against the OTLP collector, or
+  # process-level liveness via a sidecar).
+  #
+  # The prometheus.io/* annotations on the Deployment are also suppressed
+  # so annotation-based scrape discovery does not attempt to scrape a
+  # non-existent endpoint.
+  disableMetricsEndpoint: false
+
   # Multi-project deployment knob. When non-empty, the chart switches to the
   # `--projects-file=/etc/hyperping/projects.yaml` path: a Secret carrying one
   # `api-key-<id>` data entry per project is mounted at /etc/hyperping, and

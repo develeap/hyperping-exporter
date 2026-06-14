@@ -9,6 +9,7 @@
 {{- include "hyperping-exporter.validateWebConfigFile" . -}}
 {{- include "hyperping-exporter.validateOtlpProtocol" . -}}
 {{- include "hyperping-exporter.validateOtlpInterval" . -}}
+{{- include "hyperping-exporter.validateDisableMetricsEndpoint" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,9 +30,11 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
+        {{- if not .Values.config.disableMetricsEndpoint }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.service.port | quote }}
         prometheus.io/path: {{ .Values.config.metricsPath | quote }}
+        {{- end }}
         {{- if .Values.config.projects }}
         # checksum of the rendered projects.yaml so a chart upgrade that
         # changes the project list (or any per-project field that flows
@@ -103,6 +106,9 @@ spec:
             {{- if .Values.config.projects }}
             - {{ include "hyperping-exporter.arg" (list "--projects-file" "/etc/hyperping/projects.yaml") }}
             {{- end }}
+            {{- if .Values.config.disableMetricsEndpoint }}
+            - "--disable-metrics-endpoint"
+            {{- end }}
           {{- if and (not .Values.config.projects) (gt (int (include "hyperping-exporter.secretSourceCount" .)) 0) }}
           env:
             - name: HYPERPING_API_KEY
@@ -111,6 +117,7 @@ spec:
                   name: {{ include "hyperping-exporter.secretName" . }}
                   key: api-key
           {{- end }}
+          {{- if not .Values.config.disableMetricsEndpoint }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
@@ -119,6 +126,7 @@ spec:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
